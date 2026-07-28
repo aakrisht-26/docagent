@@ -1,0 +1,51 @@
+# ============================================================
+# DocAgent -- Python Dependencies
+# Install with: pip install -r requirements.txt
+# ============================================================
+
+# PDF Parsing
+pdfplumber>=0.10.3
+PyMuPDF>=1.23.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+opencv-python-headless==4.8.1.78
+numpy==1.26.4
+paddlepaddle>=2.6.2
+paddleocr>=2.6.0.3
+
+# Excel / CSV Parsing
+openpyxl>=3.1.2
+pandas>=2.0.0
+
+# Text Processing
+ftfy>=6.1.3
+
+# LLM Integration (xAI Grok / OpenAI compatible)
+openai>=1.12.0
+
+# PDF Export (for download button)
+reportlab>=4.0.0
+
+# Configuration
+PyYAML>=6.0.1
+
+# UI
+streamlit>=1.35.0
+
+# Infrastructure
+python-dotenv>=1.0.0
+
+# HTTP
+requests>=2.31.0
+
+# Logging
+rich>=13.7.0
+
+# Audio & YouTube Processing
+yt-dlp>=2024.01.01
+pydub>=0.25.1
+ffmpeg-python>=0.2.1
+
+# Testing
+pytest>=7.4.0
+pytest-mock>=3.11.0

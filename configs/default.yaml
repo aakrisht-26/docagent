@@ -1,0 +1,70 @@
+# ============================================================
+# DocAgent -- Default Configuration (Groq-only)
+# All values can be overridden via environment variables.
+# ============================================================
+
+app:
+  name: "DocAgent"
+  version: "1.0.0"
+  max_file_size_mb: 50
+  log_level: "INFO"
+  log_file: "logs/docagent.log"
+
+# -- Groq Cloud API Settings ------------------------------------
+# REQUIRED: Set GROQ_API_KEY as an environment variable.
+groq:
+  enabled: true
+  api_keys: "PASTE_MULTIPLE_GROQ_API_KEYS_HERE" # Comma separated for fallback
+  api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"  # Single key Or set GROQ_API_KEY env var
+  base_url: "https://api.groq.com/openai/v1"
+  model: "llama-3.3-70b-versatile"
+  timeout_seconds: 180
+  temperature: 0.15
+
+# -- PDF Parsing Settings ---------------------------------------
+pdf:
+  use_ocr_fallback: true
+  ocr_language: "eng"
+  extract_tables: true
+  max_pages: 500
+  use_gpu: true # For PP-Structure Table Vision
+  # High-fidelity table extraction (PP-Structure) runs on GPU in seconds/page
+  # but takes 15-25 MINUTES/page on CPU. It is automatically skipped when no
+  # CUDA GPU is detected. Set the following to true ONLY if you accept very slow
+  # CPU processing and still want PP-Structure table parsing.
+  allow_cpu_structure: false
+
+# -- Excel Parsing Settings -------------------------------------
+excel:
+  max_sheets: 50
+  include_formulas: false
+  max_rows_per_sheet: 10000
+
+# -- Audio & YouTube Settings ----------------------------------
+audio:
+  max_duration_seconds: 3600  # 1 hour limit
+  default_language: null      # auto-detect
+  extract_timestamps: true    # Include word-level timings from Whisper
+
+# -- Summarization Settings ------------------------------------
+summarization:
+  chunk_size: 4000
+  chunk_overlap: 300
+  max_summary_length: 3000
+  extractive_sentences: 15
+
+# -- Classification Settings ------------------------------------
+classification:
+  questionnaire_threshold: 0.35
+
+# -- Question Extraction Settings -------------------------------
+question_extraction:
+  min_questions: 1
+  dedup: true
+  max_questions: 200
+  llm_threshold: 0
+
+# -- Export / Download Settings ---------------------------------
+export:
+  pdf_font_size: 11
+  pdf_margin_inch: 0.9
