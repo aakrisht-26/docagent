@@ -73,3 +73,43 @@ Two things had to be fixed for a fresh clone to actually work:
 
 **Verification:** `python tests/e2e/e2e.py all` → exit 0, all 5 stages PASS
 (pdf, excel, audio, youtube, rag), run from the in-repo location.
+
+Additionally proved the acceptance criterion rather than assuming it: cloned the
+pushed branch to a clean directory with **no `.env`**, injected the API key by
+environment variable only, and ran `python tests/e2e/e2e.py all` inside the
+clone → exit 0, all 5 PASS. Fixture SHA-256 hashes match between the committed
+blobs and the working files, confirming the `.gitattributes` fix.
+
+---
+
+### Task 2 — Make a fresh clone runnable ✅
+
+**Committed:** see `docs: make a fresh clone runnable`
+
+Three parts:
+
+**`.env.example`** — new file documenting all 9 variables the code actually
+reads. Enumerated by grepping for both direct reads (`os.getenv`,
+`os.environ.get`) and indirect ones (`DOCAGENT_GROQ_ENABLED` is read through the
+`_env_bool` helper, so a naive grep misses it). Placeholder values only; no real
+key appears anywhere. The multiline `GROQ_API_KEYS` form is shown **quoted**,
+with an explanation of the silent single-key truncation that happens without
+quotes.
+
+**`.streamlit/config.toml`** — removed the `.gitignore` rule that excluded the
+whole `.streamlit/` directory and committed the theme config. It contains only
+theme keys (`base`, `font`, and four colours) — no secrets. Replaced the blanket
+rule with a targeted `.streamlit/secrets.toml` ignore, so the one file in that
+directory that *would* hold credentials stays untrackable. Verified: a planted
+`secrets.toml` is still ignored, and `.env` is still ignored and unstaged.
+
+**`README.md`** — replaced the Getting Started section with five ordered
+fresh-clone steps: clone/install, API key, system binaries, verify, run. The
+binaries now have their own table stating exactly what breaks without each
+(ffmpeg → YouTube fails in postprocessing after downloading, local audio fails
+to convert, file uploads unaffected; tesseract → scanned PDFs with no text layer
+produce an empty document, text-layer PDFs unaffected). Added the missing
+`winget` commands for Windows, a PATH-propagation warning, the verification
+command, and an env-var reference table expanded from 4 rows to all 9.
+
+**Verification:** `python tests/e2e/e2e.py all` → exit 0, all 5 stages PASS.

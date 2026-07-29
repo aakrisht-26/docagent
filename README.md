@@ -27,66 +27,115 @@ DocAgent is a high-performance, modular AI agent for intelligent document unders
 
 ## Getting Started
 
-### Prerequisites
+Follow these five steps in order on a fresh clone. Step 3 is the one people skip,
+and it is the one that breaks audio and YouTube.
 
-- **Python 3.10+**
-- **Groq API Key** — [Groq Cloud Console](https://console.groq.com/)
-- **ffmpeg** (required for audio and YouTube processing)
+### 1. Clone and install Python dependencies
+
+Requires **Python 3.10+**.
 
 ```bash
+git clone https://github.com/aakrisht-26/docagent.git
+cd docagent
+pip install -r requirements.txt
+```
+
+### 2. Add your Groq API key
+
+Get one from the [Groq Cloud Console](https://console.groq.com/keys), then:
+
+```bash
+cp .env.example .env
+```
+
+On Windows use `copy .env.example .env` (cmd) or `Copy-Item .env.example .env`
+(PowerShell). Open `.env` and replace the placeholder keys with real ones.
+
+`.env.example` documents every supported variable. Only the API key is required;
+everything else has a working default in `configs/default.yaml`.
+
+> **Multiple keys must be quoted if split across lines.** DocAgent rotates
+> round-robin across keys and fails over on rate limits (429) and invalid keys
+> (401). If you write the value unquoted across several lines, python-dotenv
+> stops at the first newline, silently loads only the first key, and logs
+> `Python-dotenv could not parse statement starting at line N`.
+
+**Without a key:** the app still runs. Classification falls back to heuristics
+and summarisation to extractive mode; chat, question extraction, and audio
+transcription are unavailable.
+
+### 3. Install the system binaries
+
+These are **external programs, not pip packages**. `pip install ffmpeg-python`
+does *not* give you ffmpeg.
+
+| Binary | Needed for | Without it |
+|---|---|---|
+| **ffmpeg** + **ffprobe** | Audio and YouTube | YouTube downloads the stream, then fails in postprocessing with `ffprobe and ffmpeg not found`. Local audio files fail to convert. PDF, Excel and CSV are unaffected. |
+| **tesseract** | OCR fallback for scanned PDFs | Scanned or photographed PDFs with no text layer produce an empty document. PDFs with a text layer are unaffected, since pdfplumber and PyMuPDF handle those first. |
+
+```bash
+# Windows (winget) — ffmpeg ships ffprobe alongside it
+winget install --id Gyan.FFmpeg -e
+winget install --id UB-Mannheim.TesseractOCR -e
+
 # macOS
-brew install ffmpeg
+brew install ffmpeg tesseract
 
 # Ubuntu / Debian
-sudo apt-get install ffmpeg
-
-# Windows
-choco install ffmpeg
+sudo apt-get install ffmpeg tesseract-ocr
 ```
 
-- **Tesseract OCR** (optional — only needed for scanned/image PDFs)
-
-### Installation
+Verify all three are visible before continuing. On Windows you may need a new
+terminal after installing, since PATH changes do not reach already-running
+processes:
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/DocAgent.git
-cd DocAgent
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Or install as a CLI package
-pip install -e .
+ffmpeg -version && ffprobe -version && tesseract --version
 ```
 
-### Configuration
+### 4. Verify the install end to end
 
-Create a `.env` file in the project root. Multiple keys are supported for automatic rotation:
+This runs the real pipeline against committed fixtures and the live Groq API —
+one PDF, one Excel workbook, one audio file, one YouTube video, and a two-turn
+RAG exchange:
 
 ```bash
-# .env
-GROQ_API_KEYS="gsk_key1,gsk_key2,gsk_key3"
+python tests/e2e/e2e.py all
 ```
 
-DocAgent rotates through these keys automatically if any one hits a rate limit.
+Exit code 0 with five `PASS` rows means the install is good. Run a single stage
+with `python tests/e2e/e2e.py pdf` (or `excel`, `audio`, `youtube`, `rag`).
 
-All settings can also be overridden via environment variables:
+Unit tests, which need no API key or network:
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `GROQ_API_KEY` / `GROQ_API_KEYS` | Groq API key(s) | — |
-| `DOCAGENT_MAX_FILE_MB` | Max upload size | 50 |
-| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
-| `DOCAGENT_LOG_LEVEL` | Logging verbosity | INFO |
+```bash
+pytest tests/ -v
+```
 
-### Run the App
+### 5. Run the app
 
 ```bash
 streamlit run ui/app.py
 ```
 
 Open `http://localhost:8501` in your browser.
+
+### Environment variable reference
+
+All settings can be overridden by environment variable; see `.env.example` for
+the full annotated list.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GROQ_API_KEYS` / `GROQ_API_KEY` | Groq API key(s), comma-separated | — |
+| `DOCAGENT_MAX_FILE_MB` | Max upload size in MB | 50 |
+| `DOCAGENT_LOG_LEVEL` | Logging verbosity | INFO |
+| `DOCAGENT_LOG_FILE` | Log file path | logs/docagent.log |
+| `DOCAGENT_GROQ_ENABLED` | Set false to disable all LLM calls | true |
+| `DOCAGENT_GROQ_URL` | OpenAI-compatible endpoint | https://api.groq.com/openai/v1 |
+| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
+| `DOCAGENT_GROQ_TIMEOUT` | Per-request timeout in seconds | 180 |
 
 ---
 
