@@ -412,6 +412,8 @@ leftover CLI claims — none remain.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.
 
+<!-- task-9-end -->
+
 ---
 
 ### Task 10 — Make the upload limits agree, and reject before upload ✅
@@ -491,3 +493,72 @@ warning is gone). A side benefit is that the root-logger mutation documented in
 Task 6 no longer happens at all in normal operation.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.
+
+---
+
+### Task 11a — Resolve the OpenCV collision ✅
+
+**Committed:** see `build: collapse three OpenCV installs onto the pinned headless build`
+
+Authorised one-off exception to the no-pip rule, scoped to this task only.
+
+**Before:** `opencv-python` 4.13.0.92, `opencv-contrib-python` 4.10.0.84 and
+`opencv-python-headless` 4.8.1.78 all installed, `import cv2` → **4.10.0**.
+**After:** `opencv-python-headless` 4.8.1.78 alone, `import cv2` → **4.8.1**.
+
+Ran exactly the documented sequence: uninstalled all three (confirmed `cv2` was
+fully gone — `ModuleNotFoundError` and no `cv2` directory left behind), then
+installed the pin with `--no-cache-dir`.
+
+> Note on the version string: `cv2.__version__` reports **`4.8.1`**, not
+> `4.8.1.78`. The trailing component is the packaging build number and is not
+> part of the module version. `pip list` confirms the distribution is
+> `4.8.1.78`. Flagging because the task asked to verify "4.8.1.78" specifically.
+
+**OCR comparison — no difference whatsoever.**
+
+Captured the OCR tier directly from `PDFReaderSkill` (pre-text-cleaner,
+pre-LLM, so OpenCV is the only variable), twice before and twice after. Both
+pairs were byte-identical, establishing that OCR is deterministic here and the
+comparison is valid rather than coincidental.
+
+| | Before | After |
+|---|---|---|
+| `cv2.__version__` | 4.10.0 | 4.8.1 |
+| Engine | `ocr_tesseract` | `ocr_tesseract` |
+| Words | 178 | 178 |
+| Characters | 1256 | 1256 |
+| Full text | \<identical\> | \<identical\> |
+
+Byte-identical, so there was nothing to report as changed and no temptation to
+tune anything.
+
+**The deskew branch was confirmed to actually run**, because "no change" is
+only meaningful if the risky path executed. Measured under 4.8.1:
+
+```
+page 1: minAreaRect raw=1.3020  adjusted=-1.3020  deskew_branch_fires=True
+page 2: minAreaRect raw=1.2313  adjusted=-1.2313  deskew_branch_fires=True
+```
+
+Both match the 1.2° skew baked into the fixture and fall inside the
+`0.5° < |angle| < 15°` window that triggers `warpAffine`, so `minAreaRect` and
+`warpAffine` were both exercised on both versions.
+
+**Honest scope limit:** this shows the convention did not change between 4.8.1
+and 4.10.0 *for near-1° positive angles*. The `minAreaRect` convention change is
+most visible near ±45° and ±90°, which this fixture does not cover. The
+`scanned` stage is a regression detector for this configuration, not coverage of
+the angle space.
+
+`DEPENDENCIES.md` section 1 updated to RESOLVED with the measured evidence.
+
+**Unrelated pre-existing conflicts** surfaced by `pip check`, none involving
+OpenCV, none introduced here — recorded, not acted on: `streamlit 1.37.1`
+requires `pandas<3` but 3.0.3 is installed; `shap` wants `numpy>=2`;
+`opentelemetry-proto` and `streamlit` disagree with `protobuf 7.35.0`. The
+streamlit/pandas one reinforces the DEPENDENCIES.md note about the unbounded
+`pandas>=2.0.0` specifier. Left alone per your instruction.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed
+(warnings still 2); app boots clean (health 200, empty stderr).

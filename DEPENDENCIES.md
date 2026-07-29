@@ -13,9 +13,24 @@ commands to resolve them.
 
 ---
 
-## 1. Three conflicting OpenCV distributions
+## 1. Three conflicting OpenCV distributions — ✅ RESOLVED
 
-### What is installed
+> **Resolved on 2026-07-29.** The commands in this section were run. The
+> environment now has a single OpenCV distribution:
+>
+> ```
+> opencv-python-headless  4.8.1.78      →  import cv2 → 4.8.1
+> ```
+>
+> `opencv-python` and `opencv-contrib-python` are gone, and the pin in
+> `requirements.txt` now matches what actually loads.
+>
+> **OCR output is byte-identical across the change.** The `minAreaRect` risk
+> described below was tested rather than assumed — see
+> "Verified impact on OCR" at the end of this section. The rest of the section
+> is kept as the record of what the problem was.
+
+### What was installed
 
 | Distribution | Version | Files owned under `cv2/` |
 |---|---|---|
@@ -93,6 +108,50 @@ python -c "import cv2; print(cv2.__version__, cv2.__file__)"
 Expect `4.8.1` and a path under `site-packages/cv2/`. Then re-run
 `python tests/e2e/e2e.py scanned` — that is the stage that exercises the OCR
 preprocessing chain, and the one that would reveal a behavioural change.
+
+> Note: `cv2.__version__` reports **`4.8.1`**, not `4.8.1.78`. The trailing
+> component is the packaging build number and does not appear in the module
+> version. `pip list` is the place to confirm `4.8.1.78`.
+
+### Verified impact on OCR
+
+The concern was that `minAreaRect`'s angle convention changed across the 4.x
+line and the deskew step branches on that angle, so moving 4.10.0 → 4.8.1 could
+silently change OCR output. This was measured, not assumed.
+
+**Method.** The OCR tier was captured directly from `PDFReaderSkill`
+(pre-text-cleaner, pre-LLM, so OpenCV is the only variable), twice before the
+change and twice after. Both pairs were byte-identical, confirming OCR is
+deterministic here and that a comparison is meaningful.
+
+**Result — no difference:**
+
+| | Before | After |
+|---|---|---|
+| `cv2.__version__` | 4.10.0 | 4.8.1 |
+| Engine | `ocr_tesseract` | `ocr_tesseract` |
+| Words | 178 | 178 |
+| Characters | 1256 | 1256 |
+| Full text | \<identical\> | \<identical\> |
+
+**The deskew branch genuinely runs**, so this is not a case of the risky code
+path being skipped. Under 4.8.1 the measured angles are:
+
+```
+page 1: minAreaRect raw=1.3020  adjusted=-1.3020  deskew_branch_fires=True
+page 2: minAreaRect raw=1.2313  adjusted=-1.2313  deskew_branch_fires=True
+```
+
+Those match the 1.2° skew deliberately baked into the fixture, and both fall
+inside the `0.5° < |angle| < 15°` window that triggers `warpAffine`. So
+`minAreaRect` and `warpAffine` were both exercised and produced identical
+downstream text on both versions.
+
+**Scope of this result.** It shows the convention did not change *between
+4.8.1 and 4.10.0 for near-1° positive angles*. It is not a general guarantee:
+the convention change is most visible near ±45° and ±90°, which this fixture
+does not cover. Treat the `scanned` stage as a regression detector for this
+configuration, not as full coverage of the angle space.
 
 ---
 
