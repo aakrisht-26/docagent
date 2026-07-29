@@ -24,6 +24,13 @@ groq:
   model: "llama-3.3-70b-versatile"
   timeout_seconds: 180
   temperature: 0.15
+  # Rates used only to ESTIMATE spend in the per-run cost line. These are not
+  # billed figures — verify against https://groq.com/pricing before relying on
+  # them, and update if the model changes. Set both to 0 to disable the estimate.
+  # Defaults below are for llama-3.3-70b-versatile.
+  pricing:
+    input_usd_per_million: 0.59
+    output_usd_per_million: 0.79
 
 # -- PDF Parsing Settings ---------------------------------------
 pdf:

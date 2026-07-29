@@ -620,3 +620,52 @@ success-first-try; 401→rotate; **retired key skipped entirely on the next call
 **Verification:** all 6 e2e stages PASS (exit 0), transcription confirmed working
 through the new path for both local audio (59 words) and YouTube (37 words);
 `pytest tests/ -q` → 41 passed.
+
+---
+
+### Task 13 — Token usage and estimated cost per run ✅
+
+**Committed:** see `feat(llm): log token usage and estimated cost per run`
+
+Usage is captured from each chat response's `usage` object and accumulated in a
+module-level `UsageTotals` record. It has to be module-level rather than
+per-instance because **every skill builds its own `LLMClient`**, so a per-client
+counter would only ever see a fraction of a run. `BaseAgent._begin_pipeline()`
+zeroes it and `_log_pipeline_summary()` reports it, so totals are strictly
+per-run.
+
+Tokens are recorded **before** the response is inspected for usable choices —
+they were spent whether or not the reply turned out to be usable.
+
+Output appended to the existing per-stage breakdown:
+
+```
+tokens: 2,199 total (1,638 prompt + 561 completion) over 3 LLM call(s), 0 cache hit(s)
+  llama-3.3-70b-versatile: 3 call(s), 1,638 prompt + 561 completion
+  transcription: 1 call(s) — billed per second of audio, not tokens; excluded from the estimate
+estimated cost: $0.001410 USD (estimate, not a billed figure)
+```
+
+Cache hits are counted separately, so a run served from cache is visibly cheap
+rather than looking like it made no calls.
+
+**Deliberate honesty about the estimate.** Rates live in `groq.pricing` in
+`configs/default.yaml` (0.59 / 0.79 USD per million in/out for
+llama-3.3-70b-versatile) rather than hardcoded, are labelled in the config,
+docstring and log line as **estimates rather than billed figures** with a pointer
+to verify against current pricing, and can be zeroed to disable the estimate
+entirely (verified: emits "not calculated"). **Whisper is excluded rather than
+guessed at** — it is billed per second of audio and the `response_format="text"`
+reply carries no usage object, so transcription calls are counted and explicitly
+noted as excluded instead of being given a fabricated number.
+
+`GroqConfig.pricing` was added to the dataclass, the YAML loader and `to_dict()`
+— without the last one the rates would have been silently dropped on the way to
+the agent.
+
+**Verified per-run isolation** rather than assuming it: 1500 tokens recorded,
+reset, then 15 more → reports 15, not 1515. All 6 stages report distinct costs
+($0.000428–$0.001418), confirming counters do not leak between runs.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+app boots clean (health 200, empty stderr).

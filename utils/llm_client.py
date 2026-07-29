@@ -15,11 +15,72 @@ from __future__ import annotations
 
 import random
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Usage accounting ──────────────────────────────────────────────────────────
+#
+# Skills each build their own LLMClient, so per-run totals are accumulated in a
+# module-level record rather than per instance. The agent resets it at the start
+# of a pipeline run and reads it at the end.
+
+@dataclass
+class UsageTotals:
+    """Token and call counts accumulated since the last reset."""
+    calls: int = 0
+    cache_hits: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    transcriptions: int = 0
+    per_model: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    def record_chat(self, model: str, prompt: int, completion: int) -> None:
+        self.calls += 1
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        slot = self.per_model.setdefault(model, {"calls": 0, "prompt": 0, "completion": 0})
+        slot["calls"] += 1
+        slot["prompt"] += prompt
+        slot["completion"] += completion
+
+
+_USAGE = UsageTotals()
+
+
+def reset_usage() -> None:
+    """Zero the per-run usage counters. Called at the start of a pipeline run."""
+    global _USAGE
+    _USAGE = UsageTotals()
+
+
+def get_usage() -> UsageTotals:
+    """Return the usage accumulated since the last `reset_usage()`."""
+    return _USAGE
+
+
+def estimate_cost_usd(usage: UsageTotals, pricing: Optional[Dict[str, Any]] = None) -> float:
+    """
+    Estimate spend in USD from token counts.
+
+    Rates come from `groq.pricing` in configs/default.yaml and are **estimates**
+    that must be checked against current published pricing — they are not billed
+    figures. Audio transcription is excluded: Whisper is billed per second of
+    audio, not per token, and the text response carries no usage object.
+    """
+    pricing = pricing or {}
+    in_rate = float(pricing.get("input_usd_per_million", 0.0))
+    out_rate = float(pricing.get("output_usd_per_million", 0.0))
+    return (usage.prompt_tokens / 1_000_000 * in_rate
+            + usage.completion_tokens / 1_000_000 * out_rate)
 
 # Groq defaults
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -275,6 +336,7 @@ class LLMClient:
         if self._cache is not None:
             cached = self._cache.get(self.model, messages, temp, max_tokens)
             if cached is not None:
+                _USAGE.cache_hits += 1
                 logger.debug("LLM cache hit — skipping API call")
                 return cached
 
@@ -285,6 +347,18 @@ class LLMClient:
                 temperature=temp,
                 max_tokens=max_tokens,
             )
+
+            # Record usage before inspecting choices: the tokens were spent
+            # whether or not the response turned out to be usable.
+            usage = getattr(response, "usage", None)
+            prompt_toks = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_toks = int(getattr(usage, "completion_tokens", 0) or 0)
+            _USAGE.record_chat(self.model, prompt_toks, completion_toks)
+            logger.debug(
+                f"tokens: prompt={prompt_toks} completion={completion_toks} "
+                f"model={self.model}"
+            )
+
             if not response.choices:
                 logger.warning("Groq API returned an empty choices array.")
                 return None
@@ -324,6 +398,7 @@ class LLMClient:
                     file=fh,
                     response_format=response_format,
                 )
+            _USAGE.transcriptions += 1
             text = response if isinstance(response, str) else getattr(response, "text", None)
             return text.strip() if isinstance(text, str) else None
 

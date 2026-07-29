@@ -139,6 +139,8 @@ class GroqConfig:
     model: str = "llama-3.3-70b-versatile"
     timeout_seconds: int = 180
     temperature: float = 0.15
+    #: Rates for the per-run cost ESTIMATE only; not billed figures.
+    pricing: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -238,6 +240,7 @@ class AppConfig:
                 "model": self.groq.model,
                 "timeout_seconds": self.groq.timeout_seconds,
                 "temperature": self.groq.temperature,
+                "pricing": self.groq.pricing,
             },
             "pdf": {
                 "use_ocr_fallback": self.pdf.use_ocr_fallback,
@@ -311,6 +314,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             model          = os.getenv("DOCAGENT_GROQ_MODEL", gro_r.get("model", "llama-3.3-70b-versatile")),
             timeout_seconds= int(os.getenv("DOCAGENT_GROQ_TIMEOUT", gro_r.get("timeout_seconds", 180))),
             temperature    = float(gro_r.get("temperature", 0.15)),
+            pricing        = dict(gro_r.get("pricing") or {}),
         ),
         pdf  = PDFConfig(**{k: v for k, v in pdf_r.items() if k in PDFConfig.__dataclass_fields__}) if pdf_r else PDFConfig(),
         excel= ExcelConfig(**{k: v for k, v in xls_r.items() if k in ExcelConfig.__dataclass_fields__}) if xls_r else ExcelConfig(),

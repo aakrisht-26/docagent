@@ -62,7 +62,12 @@ class BaseAgent(ABC):
 
     def _begin_pipeline(self, label: str) -> None:
         """Mark the start of a run so stage logs can report cumulative elapsed time."""
+        from utils.llm_client import reset_usage
+
         self._pipeline_start = time.monotonic()
+        # Skills each construct their own LLMClient, so token totals accumulate
+        # in a module-level record that has to be zeroed per run.
+        reset_usage()
         self.logger.info(f"═══ Pipeline START: {label} ═══")
 
     def _elapsed_ms(self) -> float:
@@ -131,6 +136,40 @@ class BaseAgent(ABC):
             f"    {'':9}{'overhead':<{widest}}  {overhead:8.0f} ms  "
             f"{(overhead / total_ms * 100) if total_ms else 0.0:5.1f}%"
         )
+        self._log_usage_summary()
+
+    def _log_usage_summary(self) -> None:
+        """Emit token usage and an estimated cost for the run just completed."""
+        from utils.llm_client import estimate_cost_usd, get_usage
+
+        usage = get_usage()
+        if not usage.calls and not usage.transcriptions and not usage.cache_hits:
+            return
+
+        pricing = (self.config.get("groq") or {}).get("pricing") or {}
+        cost = estimate_cost_usd(usage, pricing)
+
+        self.logger.info(
+            f"    tokens: {usage.total_tokens:,} total "
+            f"({usage.prompt_tokens:,} prompt + {usage.completion_tokens:,} completion) "
+            f"over {usage.calls} LLM call(s), {usage.cache_hits} cache hit(s)"
+        )
+        for model, s in usage.per_model.items():
+            self.logger.info(
+                f"      {model}: {s['calls']} call(s), "
+                f"{s['prompt']:,} prompt + {s['completion']:,} completion"
+            )
+        if usage.transcriptions:
+            self.logger.info(
+                f"      transcription: {usage.transcriptions} call(s) "
+                f"— billed per second of audio, not tokens; excluded from the estimate"
+            )
+        if cost > 0:
+            self.logger.info(f"    estimated cost: ${cost:.6f} USD (estimate, not a billed figure)")
+        else:
+            self.logger.info(
+                "    estimated cost: not calculated (groq.pricing rates are unset or zero)"
+            )
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name='{self.name}'>"
