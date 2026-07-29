@@ -76,6 +76,75 @@ def retrieval_hit(case: dict, selected_sources: list) -> bool:
     return any(e in selected_sources for e in expected)
 
 
+def anchor_sources(chunks: list) -> list:
+    """The first and last chunk, which the selector always appends.
+
+    These are structural padding, not retrieval decisions: `_select_chunks`
+    adds them regardless of the question. On the 20-page PDF that means pages 1
+    and 20 appear in almost every selection, so a "5 chunk" selection is really
+    3 ranked choices plus 2 freebies. Counting an anchor as a retrieval success
+    would flatter any method that keeps them.
+    """
+    if not chunks:
+        return []
+    if len(chunks) == 1:
+        return [chunks[0]["page_or_sheet"]]
+    return [chunks[0]["page_or_sheet"], chunks[-1]["page_or_sheet"]]
+
+
+def keyword_scorer(chat):
+    """Reproduce DocumentChatSkill's keyword-overlap score for a (question, text)."""
+    def score(question: str, text: str) -> float:
+        return float(len(chat._tokenize(question) & chat._tokenize(text)))
+    return score
+
+
+def score_sources(question: str, chunks: list, scorer) -> dict:
+    """source -> relevance score under whichever retrieval method is active.
+
+    Recomputed here rather than read out of the skill, so that measuring does
+    not require changing the code under test.
+    """
+    return {c["page_or_sheet"]: scorer(question, c.get("text", "")) for c in chunks}
+
+
+def classify_hit(case: dict, selected_sources: list, scores: dict,
+                 anchors: list) -> str:
+    """'ranked' | 'incidental' | 'miss'.
+
+    A hit only counts as **ranked** when the correct chunk *strictly outscored
+    every chunk that was left out*. Anything weaker is **incidental**:
+
+      - Tied with an excluded chunk. Its place was decided by tie-break order,
+        not by relevance. `lg-xls-02` is the worked example: every quarterly
+        sheet scores identically because `_tokenize` matches `[a-z]{3,}` and so
+        never sees "Q1" or "Q3" at all. Asking about Q1 and asking about Q3
+        produce byte-identical selections; Q1 is "correct" only because it sorts
+        first. Counting that as retrieval working would be self-deception.
+      - Present only as a first/last anchor, which the selector appends
+        regardless of the question.
+
+    For `match: "all"` cases every required chunk must clear the bar.
+    """
+    expected = case["expected_sources"]
+    if not retrieval_hit(case, selected_sources):
+        return "miss"
+
+    needed = expected if case.get("match") == "all" else \
+        [e for e in expected if e in selected_sources]
+    excluded = [s for s in scores if s not in selected_sources]
+
+    for source in needed:
+        mine = scores.get(source, 0.0)
+        # Tied with, or beaten by, something that did not make the cut.
+        if any(scores.get(other, 0.0) >= mine for other in excluded):
+            return "incidental"
+        # Guaranteed a slot by being an anchor, without earning one.
+        if source in anchors and mine <= 0:
+            return "incidental"
+    return "ranked"
+
+
 def answer_hit(case: dict, reply: str) -> bool:
     """True if any expected fragment appears in the reply (case-insensitive)."""
     lowered = (reply or "").lower()
@@ -100,15 +169,23 @@ def main(argv: list) -> int:
         selected = chat._select_chunks(case["question"], chunks)
         sources = [c["page_or_sheet"] for c in selected]
 
+        anchors = anchor_sources(chunks)
+        scores = score_sources(case["question"], chunks, keyword_scorer(chat))
+        # Slots that were an actual choice, i.e. not structural anchors.
+        chosen = [s for s in sources if s not in anchors]
+
         record = {
             "id": case["id"],
             "fixture": case["fixture"],
             "category": case["category"],
             "expected": case["expected_sources"],
             "selected": sources,
+            "anchors_in_selection": [s for s in sources if s in anchors],
+            "chosen_slots": len(chosen),
             "n_selected": len(selected),
             "n_chunks": len(chunks),
             "retrieval_hit": retrieval_hit(case, sources),
+            "hit_kind": classify_hit(case, sources, scores, anchors),
             "answer_hit": None,
         }
 
@@ -129,25 +206,29 @@ def main(argv: list) -> int:
         return 0
 
     # ── Per-case detail ───────────────────────────────────────────────────────
-    print("=" * 92)
-    print(f"{'id':<12} {'category':<15} {'exp':<14} {'selected':<22} {'ret':<5} {'ans'}")
-    print("=" * 92)
+    print("=" * 104)
+    print(f"{'id':<12} {'category':<15} {'exp':<13} {'selected':<26} "
+          f"{'anchors':<9} {'chosen':<7} {'result'}")
+    print("=" * 104)
     for r in results:
-        ret = "HIT " if r["retrieval_hit"] else "MISS"
-        ans = "" if r["answer_hit"] is None else ("HIT" if r["answer_hit"] else "MISS")
-        sel = ",".join(str(s) for s in r["selected"])[:20]
+        ans = "" if r["answer_hit"] is None else ("  ans:HIT" if r["answer_hit"] else "  ans:MISS")
+        sel = ",".join(str(s) for s in r["selected"])[:25]
         exp = ",".join(str(s) for s in r["expected"])[:12]
-        print(f"{r['id']:<12} {r['category']:<15} {exp:<14} {sel:<22} {ret:<5} {ans}")
+        anc = ",".join(str(s) for s in r["anchors_in_selection"])[:8]
+        kind = {"ranked": "RANKED", "incidental": "INCIDENTAL", "miss": "MISS"}[r["hit_kind"]]
+        print(f"{r['id']:<12} {r['category']:<15} {exp:<13} {sel:<26} "
+              f"{anc:<9} {r['chosen_slots']:<7} {kind}{ans}")
 
     def summarise(title: str, rows: list) -> None:
         if not rows:
             return
         hits = sum(1 for r in rows if r["retrieval_hit"])
-        line = f"  {title:<34} retrieval {hits}/{len(rows)} = {hits / len(rows) * 100:5.1f}%"
+        rank = sum(1 for r in rows if r["hit_kind"] == "ranked")
+        line = (f"  {title:<34} any {hits}/{len(rows):<6} ranked {rank}/{len(rows)}")
         scored = [r for r in rows if r["answer_hit"] is not None]
         if scored:
             ah = sum(1 for r in scored if r["answer_hit"])
-            line += f"   answers {ah}/{len(scored)} = {ah / len(scored) * 100:5.1f}%"
+            line += f"   answers {ah}/{len(scored)}"
         print(line)
 
     print()
@@ -173,11 +254,27 @@ def main(argv: list) -> int:
     for category in sorted(by_cat):
         summarise(category, by_cat[category])
 
+    incidental = [r for r in meaningful if r["hit_kind"] == "incidental"]
+    if incidental:
+        print()
+        print("=" * 104)
+        print("INCIDENTAL HITS — correct chunk present, but not ranked for this question")
+        print("=" * 104)
+        for r in incidental:
+            print(f"  {r['id']:<12} expected {str(r['expected']):<22} "
+                  f"selected {r['selected']} (anchors {r['anchors_in_selection']})")
+        print("  These inflate the 'any' number. The 'ranked' column is the honest one.")
+
     print()
-    print("=" * 92)
+    print("=" * 104)
     summarise("HEADLINE (meaningful fixtures)", meaningful)
     summarise("trivial fixtures (no signal)", [r for r in results if r["fixture"] in TRIVIAL])
-    print("=" * 92)
+    anchor_slots = sum(len(r["anchors_in_selection"]) for r in meaningful)
+    chosen_slots = sum(r["chosen_slots"] for r in meaningful)
+    print(f"  {'slot accounting (meaningful)':<34} "
+          f"{chosen_slots} chosen + {anchor_slots} anchor = "
+          f"{chosen_slots + anchor_slots} total selected")
+    print("=" * 104)
     return 0
 
 

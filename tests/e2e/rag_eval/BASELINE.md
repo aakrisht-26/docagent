@@ -35,45 +35,77 @@ sanity check on the harness, not as signal.
 built to be genuinely hard rather than 20 unrelated topics — see
 `fixture_content.py`.
 
+## Two things that would otherwise flatter the numbers
+
+### Anchors are not retrieval decisions
+
+`_select_chunks` appends the **first and last chunk regardless of the question**.
+On the 20-page PDF that means pages 1 and 20 are in almost every selection, so a
+"5 chunk" selection is really **3 ranked choices plus 2 freebies**.
+
+Across the meaningful fixtures: **39 chosen slots + 34 anchor slots = 73
+selected**. Roughly *half* of everything handed to the model was structural
+padding, not retrieval. Any comparison must count chosen slots, not selected
+chunks.
+
+### "Hit" is not the same as "retrieved"
+
+A hit only counts as **ranked** when the correct chunk *strictly outscored every
+chunk that was left out*. Anything weaker is **incidental** — present, but not
+because retrieval found it.
+
+`lg-xls-02` is the worked example, and it is worse than it looks. `_tokenize`
+matches `[a-z]{3,}`, so it **never sees "Q1" or "Q3" at all**. Every quarterly
+sheet therefore ties on exactly the same score:
+
+```
+lg-xls-01 (asks about Q3):  Q4=4  Q3=4  Q2=4  Q1=4  CostDefs=4  Headcount=1 …
+lg-xls-02 (asks about Q1):  Q4=4  Q3=4  Q2=4  Q1=4  CostDefs=4  Headcount=1 …
+selection, both questions:  ['Cost Definitions', 'Q1 Revenue', 'Q2 Revenue', 'Incident Log']
+```
+
+The two questions produce a **byte-identical selection**. `lg-xls-02` is
+"correct" only because `Q1 Revenue` happens to sort first among the ties. The
+quarter — the entire discriminating term — is invisible to the retriever.
+
 ## Baseline: keyword overlap
 
-**Headline, meaningful fixtures only: 11/17 = 64.7%**
+**Headline, meaningful fixtures: `any` 11/17, `ranked` 10/17.**
+Use **10/17** as the number to beat.
 
-| Fixture | Retrieval | |
+| Fixture | any | ranked |
 |---|---|---|
-| `sample_large_report.pdf` | 9/12 | **75.0%** |
-| `sample_large_sales.xlsx` | 2/5 | **40.0%** |
-| `sample_report.pdf` | 2/2 | 100% *(trivial, no signal)* |
-| `sample_scanned.pdf` | 2/2 | 100% *(trivial, no signal)* |
-| `sample_sales.xlsx` | 2/2 | 100% *(trivial, no signal)* |
+| `sample_large_report.pdf` | 9/12 | **9/12** |
+| `sample_large_sales.xlsx` | 2/5 | **1/5** |
+| `sample_report.pdf` | 2/2 | 2/2 *(trivial, no signal)* |
+| `sample_scanned.pdf` | 2/2 | 2/2 *(trivial, no signal)* |
+| `sample_sales.xlsx` | 2/2 | 2/2 *(trivial, no signal)* |
 
 ### By category (meaningful fixtures only)
 
-| Category | Retrieval | |
+| Category | any | ranked |
 |---|---|---|
-| `direct` | 4/4 | **100.0%** |
-| `vocab_overlap` | 5/6 | **83.3%** |
-| `cross_boundary` | 2/3 | **66.7%** |
-| `synonym` | 0/4 | **0.0%** |
+| `direct` | 4/4 | **4/4** |
+| `vocab_overlap` | 5/6 | **4/6** |
+| `cross_boundary` | 2/3 | **2/3** |
+| `synonym` | 0/4 | **0/4** |
+
+**Incidental hits: `lg-xls-02`** (the only one).
 
 ### What the numbers say
 
-- **Synonym phrasing fails completely — 0 of 4.** This is the expected weakness
-  and the clearest target for embeddings. Asking "How much time were lorries
-  unavailable for work?" selects pages 9, 13, 18, 1 and 20; the answering page
-  17 ("off-road hours") is never considered, because the question and the page
-  share no content word at all.
-- **The Excel workbook is much worse than the PDF (40% vs 75%)**, and the reason
-  is instructive: the `Cost Definitions` sheet repeats the phrase
-  "revenue per consignment" for every quarter and region while holding no
-  figures, so it outranks the sheet that actually answers. It appears in the
-  selected set for **every single** workbook question. Surface-word counting
-  rewards a glossary over data.
-- **Direct questions are already perfect.** Embeddings have nothing to gain
-  here, so an improvement in the headline must come from the other three
-  categories.
-- **`cross_boundary` at 66.7%** is mostly luck: adjacent pages share vocabulary,
-  so selecting one tends to drag in its neighbour.
+- **Synonym phrasing fails completely — 0/4.** Asking "How much time were
+  lorries unavailable for work?" selects pages 9, 13, 18, 1, 20; page 17
+  ("off-road hours") is never considered, because question and page share no
+  content word. This is the clearest target for embeddings.
+- **The workbook is far worse than the PDF — 1/5 ranked against 9/12** — and for
+  two compounding reasons: the `Cost Definitions` glossary appears in the
+  selection for *every* workbook question, and the quarter identifiers are
+  invisible to the tokenizer, so the four revenue sheets are indistinguishable.
+- **`direct` is already 4/4.** Embeddings have nothing to gain there, so any
+  headline improvement must come from the other three categories.
+- **`cross_boundary` at 2/3 is partly luck**: adjacent pages share vocabulary, so
+  selecting one tends to drag in its neighbour.
 
-Any replacement must beat **64.7%** headline, and specifically must move
-`synonym` off zero, to be worth the added dependency.
+To justify the added dependency, a replacement must beat **10/17 ranked** and
+specifically move `synonym` off `0/4`.
