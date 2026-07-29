@@ -542,9 +542,20 @@ class LLMClient:
             )
             return None
 
-        attempts = max(self.max_total_retries, len(live))
+        # Budget: one sweep across every usable key, plus a few genuine retries
+        # after backing off. The sweep costs no wall-clock time because untried
+        # keys are tried immediately (see the 429 handler), so this is bounded
+        # request count, not bounded delay.
+        attempts = len(live) + self.max_total_retries
         rate_hits = 0
         transient_hits = 0
+
+        # Keys already refused with a SHORT 429 during this call. Each key has
+        # its own per-minute budget, so being throttled on one says nothing
+        # about the next: sleeping before an untried key is pure dead time.
+        # Sleep only once every usable key has actually been tried.
+        throttled: set = set()
+        pending_waits: List[float] = []
 
         for attempt in range(attempts):
             live = self._live_key_idxs()
@@ -604,14 +615,38 @@ class LLMClient:
                     _rotate()
                     continue
 
+                # Short 429: a brief per-minute throttle on THIS key only.
                 delay = wait if wait is not None else self._backoff_seconds(attempt)
+                throttled.add(idx)
+                pending_waits.append(delay)
+                _rotate()
+
+                untried = [i for i in self._live_key_idxs() if i not in throttled]
+                if untried:
+                    # Another key has not been tried yet and carries its own
+                    # per-minute budget. Sleeping here would be dead time: it
+                    # was costing one full retry-after per key, so eight keys at
+                    # 7.5s each burned ~60s before the first untried key was
+                    # even attempted.
+                    logger.warning(
+                        f"{what}: rate limit on {key_label} ({detail}, hit #{rate_hits}); "
+                        f"trying {len(untried)} untried key(s) before backing off "
+                        f"[attempt {attempt + 1}/{attempts}]"
+                    )
+                    continue
+
+                # Every usable key has now been tried and throttled. Only now is
+                # waiting justified — and the shortest window is the first to
+                # reopen, so wait for that rather than the longest.
+                sleep_for = min(pending_waits) if pending_waits else delay
                 logger.warning(
-                    f"{what}: rate limit on {key_label} ({detail}, hit #{rate_hits}); "
-                    f"rotating and retrying in {delay:.1f}s "
+                    f"{what}: all {len(throttled)} usable key(s) rate-limited "
+                    f"({detail}, hit #{rate_hits}); backing off {sleep_for:.1f}s "
                     f"[attempt {attempt + 1}/{attempts}]"
                 )
-                _rotate()
-                time.sleep(delay)
+                time.sleep(sleep_for)
+                throttled.clear()
+                pending_waits.clear()
 
             except openai.APIStatusError as exc:
                 if exc.status_code == 401:

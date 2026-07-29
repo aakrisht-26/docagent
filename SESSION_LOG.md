@@ -1110,3 +1110,49 @@ resetting across stages, 401 retirement shared, unrelated key lists staying
 isolated, reset clearing state, rotation pointer shared.
 
 **Verification:** `pytest tests/ -q` → **71 passed**; live `pdf` stage exit 0.
+
+---
+
+### Task 19 — 59-second classify call ✅
+
+**Committed:** see `perf(llm): sweep all usable keys before backing off`
+
+**Cause confirmed before changing anything, and your hypothesis needed one
+correction.** The code *did* already rotate before sleeping — `_rotate()` is
+called before `time.sleep(delay)`. The real defect was that it **slept before
+trying the next, untried key**.
+
+Each key carries its own per-minute budget, so a TPM refusal on one says nothing
+about the next. Sleeping in between was pure dead time. Reproduced
+deterministically with sleeps recorded rather than performed:
+
+| Scenario | Sleeps before | Total |
+|---|---|---|
+| 8 keys, 7.5s retry-after | `[7.5] × 8` | **60.0s** |
+| 8 keys, 2.5s retry-after | `[2.5] × 8` | 20.0s |
+
+60.0s against the observed **59,063 ms** — the mechanism, and the reason the same
+call took 953 ms on the scanned PDF (fewer keys throttled at that moment).
+
+The 429 handler now tracks which keys have been throttled *during this call*,
+rotates to any untried key immediately, and only sleeps once every usable key has
+actually been tried. When it does sleep it waits the **shortest** pending window,
+since that is the first to reopen. The attempt budget became
+`len(live) + max_total_retries`, so a full sweep costs requests but no wall-clock
+time, leaving the retry budget intact.
+
+| Scenario | After | Change |
+|---|---|---|
+| 8 keys, 7.5s | **7.5s** | 8× faster |
+| 8 keys, 2.5s | **2.5s** | 8× faster |
+| 4 keys, 14s | 28.0s | 2× faster (two sweeps) |
+
+**Live confirmation:** the audio stage's classify call now completes in **765 ms**,
+against the 59,063 ms reported. Parking also descended monotonically 7 → 6 → 5 → 4
+across that run, confirming Task 18 holds under the new path.
+
+4 new tests (75 total): no sleep when a later key succeeds, one sleep per sweep
+rather than per key, every usable key tried before the first backoff, and the
+backoff using the shortest window rather than the longest.
+
+**Verification:** `pytest tests/ -q` → **75 passed**; live `audio` stage exit 0.

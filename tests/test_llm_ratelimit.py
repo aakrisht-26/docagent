@@ -16,6 +16,7 @@ import unittest
 import httpx
 import openai
 
+import utils.llm_client as llm_mod
 from utils.llm_client import (
     LLMClient,
     parse_duration_seconds,
@@ -224,6 +225,97 @@ class TestDerivedDailyHeadroom(unittest.TestCase):
         client._run_with_rotation(op, what="test")
         self.assertEqual(client.daily_limit_report(), {},
                          "a per-minute refusal must not populate daily figures")
+
+
+class TestSweepBeforeBackoff(unittest.TestCase):
+    """Short 429s must not cost one retry-after sleep per key.
+
+    Each key has its own per-minute budget, so being throttled on one says
+    nothing about the next. Sleeping before an untried key was pure dead time:
+    eight keys at 7.5s each burned ~60s before the first untried key was even
+    attempted, which is where a 59s classify call came from.
+    """
+
+    def setUp(self):
+        LLMClient.reset_shared_state()
+        self._slept: list = []
+        self._real_sleep = llm_mod.time.sleep
+        llm_mod.time.sleep = self._slept.append
+
+    def tearDown(self):
+        llm_mod.time.sleep = self._real_sleep
+
+    def _client(self, keys=8):
+        c = LLMClient(model="m", api_keys=[f"gsk_sweep{i}" for i in range(keys)],
+                      cache_enabled=False)
+        c._client_for = lambda idx: idx
+        return c
+
+    def test_no_sleep_when_a_later_key_succeeds(self):
+        client = self._client()
+        tried = []
+
+        def op(idx):
+            tried.append(idx)
+            if idx == 0:
+                raise rate_limit_error(TPM_BODY)   # 2.5s, a short throttle
+            return "ok"
+
+        self.assertEqual(client._run_with_rotation(op, what="t"), "ok")
+        self.assertEqual(tried, [0, 1], "should move straight to the next key")
+        self.assertEqual(self._slept, [], "must not sleep before trying an untried key")
+
+    def test_one_sleep_per_full_sweep_not_one_per_key(self):
+        client = self._client(keys=8)
+
+        def op(idx):
+            raise rate_limit_error(TPM_BODY)       # every key throttled
+
+        client._run_with_rotation(op, what="t")
+        # Old behaviour: 8 sleeps of 2.5s = 20s. New: one sleep per exhausted sweep.
+        self.assertLessEqual(len(self._slept), 2,
+                             f"expected at most one sleep per sweep, got {self._slept}")
+        self.assertLess(sum(self._slept), 20.0,
+                        "total delay must be far below the per-key-sleep behaviour")
+
+    def test_all_keys_are_tried_before_any_backoff(self):
+        client = self._client(keys=8)
+        order: list = []
+
+        def op(idx):
+            order.append(("try", idx))
+            raise rate_limit_error(TPM_BODY)
+
+        original = llm_mod.time.sleep
+
+        def spy(seconds):
+            order.append(("sleep", seconds))
+            original(seconds)
+
+        llm_mod.time.sleep = spy
+        try:
+            client._run_with_rotation(op, what="t")
+        finally:
+            llm_mod.time.sleep = original
+
+        first_sleep = next((i for i, e in enumerate(order) if e[0] == "sleep"), None)
+        self.assertIsNotNone(first_sleep, "expected at least one backoff")
+        tried_before_sleep = {e[1] for e in order[:first_sleep] if e[0] == "try"}
+        self.assertEqual(len(tried_before_sleep), 8,
+                         "every usable key must be tried before the first sleep")
+
+    def test_backoff_uses_the_shortest_window(self):
+        """The first window to reopen is the shortest, so wait for that one."""
+        client = self._client(keys=2)
+        waits = iter(["9s", "2s"])
+
+        def op(idx):
+            raise rate_limit_error(TPM_BODY, retry_after=next(waits, "2s"))
+
+        client._run_with_rotation(op, what="t")
+        self.assertTrue(self._slept, "expected a backoff")
+        self.assertAlmostEqual(self._slept[0], 2.0, places=1,
+                               msg=f"should wait the shortest window, got {self._slept}")
 
 
 class TestSharedStateAcrossInstances(unittest.TestCase):
