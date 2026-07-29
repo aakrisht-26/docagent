@@ -669,3 +669,103 @@ reset, then 15 more → reports 15, not 1515. All 6 stages report distinct costs
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 app boots clean (health 200, empty stderr).
+
+**Correction (later):** cost estimation disabled at the maintainer's request —
+this project runs on free-tier keys where rate limits, not dollars, are the
+constraint. `groq.pricing` rates are zeroed, so the cost line reads
+"not calculated". **Token counts are retained.** No Whisper cost estimate was
+added.
+
+---
+
+### Task 13b — Rate-limit scope diagnostic, header headroom, and 429 parking ✅
+
+**Committed:** see `feat(llm): rate-limit headroom logging and window-aware 429 parking`
+
+#### Part 1 — the diagnostic (run before any code was written)
+
+**Question: are Groq limits per key or per organisation?**
+**Answer: per key. Rotation genuinely works.**
+
+I did *not* drive a key to 429 as the primary method. Groq returns
+`x-ratelimit-*` headers on every response, so counters can be read directly —
+non-destructive, immediate, and unambiguous, where an induced 429 would burn a
+real chunk of daily quota and still leave the result suggestive rather than
+conclusive.
+
+Evidence:
+
+1. **RPD counters diverge per key**, with independent reset windows:
+   986 / 947 / 947 / 999×5, resetting in 20m, 1h16m, and 1m26s respectively. A
+   shared pool would report one number.
+2. **Decisive:** during a live run, key 1 was refused at **TPD 99,654/100,000**
+   and key 2 at **98,412/100,000** — *different* consumption figures in the same
+   run. Pooled quota would show identical values. A ~1500-token request on the
+   least-used key also succeeded while key 1 was refused.
+
+The 429 body names an organisation (`org_01kp6ehgn9fbzt3jfsskjgpxzf`), which is
+what prompted the question. That identifies *whose* limit it is, not that it is
+pooled across keys.
+
+**Not established:** whether all 8 keys belong to that one organisation — only
+key 1's refusal exposed an org ID. Rotation demonstrably works either way, so no
+further quota was spent closing this.
+
+**The bigger find: a fourth limit that appears in no header.** Headers expose
+only RPD (1000/day) and TPM (12,000/min). **TPD — tokens per day, 100,000 — is
+invisible until it refuses you**, and it is the limit actually being hit. Any
+headroom display based purely on headers looks healthy right up to the moment
+TPD stops the run.
+
+Diagnostics kept in the repo: `tests/e2e/ratelimit_probe.py` (header counters,
+interleave, token-pool test) and `tests/e2e/ratelimit_scope_check.py` (per-key
+accept/refuse, `--large` for the decisive oversized request).
+
+#### Part 2 — header headroom logging
+
+`_record_headroom()` reads the `x-ratelimit-*` headers from every response via
+`with_raw_response`, logging per-key headroom at DEBUG and **warning at INFO when
+a key drops below 10%** of either budget. The asymmetric naming is labelled
+explicitly rather than assumed symmetric:
+
+```
+key 1/8 headroom: requests/day 988/1000 (resets 17m16.8s), tokens/min 11453/12000 (resets 2.735s)
+```
+
+`tests/e2e/e2e.py` now honours `DOCAGENT_LOG_LEVEL` so this can be surfaced
+without editing the file.
+
+#### Part 3 — window-aware 429 handling
+
+A 429 can be RPM, RPD, TPM or TPD, and they need opposite responses. The handler
+now parses the `retry-after` header (preferred) and the message body (fallback):
+
+- **Short wait** (≤ `groq.park_threshold_seconds`, default 15s — typical of
+  per-minute TPM/RPM): back off and retry, as before.
+- **Long wait** (per-day TPD/RPD, quoted in minutes or hours): the key is
+  exhausted for the window, so **park it and rotate immediately** rather than
+  burning retry attempts on a guaranteed refusal.
+
+**Parking expires**, unlike 401 retirement — daily windows do reset, and a parked
+key rejoins the rotation automatically once its deadline passes.
+
+A parsing bug was caught by testing: the regex character class also matched the
+sentence-ending period, yielding `"28m3.936s."`, which failed to parse and would
+have **silently disabled parking entirely**. Fixed in both the client and the
+diagnostic.
+
+#### Verification
+
+`tests/test_llm_ratelimit.py` — **14 tests**, using real `openai` exception types
+carrying real `httpx` responses and headers. Covers duration parsing (compound
+`1h16m19.2s`, `185ms`, bare seconds, unparseable), TPD/TPM body parsing, long-429
+parking, parked keys skipped on later calls, park expiry, short-429 retry without
+parking, `retry-after` header taking precedence over the body, all-keys-parked,
+and 401 still retiring permanently rather than being downgraded to a park.
+
+**Proven against the live API, not just in tests:** during the full run keys 1
+and 2 were repeatedly refused on TPD, parked with their real retry windows
+(5–51 minutes), and every stage still completed through the remaining keys.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **55
+passed** (41 existing + 14 new).

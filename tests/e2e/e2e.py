@@ -50,7 +50,11 @@ for _noisy in ("httpx", "httpcore", "urllib3", "openai", "PIL", "pdfminer"):
 # propagate=False, so it is unaffected by what third-party imports do to root.
 from utils.logger import setup_logging  # noqa: E402
 
-setup_logging(level="INFO", log_file=None, use_rich=False)
+# Honour DOCAGENT_LOG_LEVEL so per-key rate-limit headroom (logged at DEBUG)
+# can be surfaced without editing this file:
+#     DOCAGENT_LOG_LEVEL=DEBUG python tests/e2e/e2e.py pdf
+setup_logging(level=os.environ.get("DOCAGENT_LOG_LEVEL", "INFO"),
+              log_file=None, use_rich=False)
 
 from agents.document_agent import DocumentAgent  # noqa: E402
 from core.models import SkillInput  # noqa: E402

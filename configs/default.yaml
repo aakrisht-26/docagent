@@ -24,13 +24,20 @@ groq:
   model: "llama-3.3-70b-versatile"
   timeout_seconds: 180
   temperature: 0.15
-  # Rates used only to ESTIMATE spend in the per-run cost line. These are not
-  # billed figures — verify against https://groq.com/pricing before relying on
-  # them, and update if the model changes. Set both to 0 to disable the estimate.
-  # Defaults below are for llama-3.3-70b-versatile.
+  # A 429 whose retry window exceeds this many seconds means the key is
+  # exhausted for that window rather than briefly throttled, so it is parked and
+  # the next key is used immediately. Per-minute limits (TPM/RPM) clear in
+  # seconds and fall below this; per-day limits (TPD/RPD) quote minutes or hours
+  # and land above it. Parking expires automatically when the window elapses.
+  park_threshold_seconds: 15
+  # Cost estimation is DISABLED (both rates zero) because this project runs on
+  # free-tier Groq keys, where dollar cost is not the constraint — rate limits
+  # are. Token counts are still logged per run; only the dollar line is
+  # suppressed. To enable an estimate on a paid plan, set these to the current
+  # per-million rates from https://groq.com/pricing for the model in use.
   pricing:
-    input_usd_per_million: 0.59
-    output_usd_per_million: 0.79
+    input_usd_per_million: 0.0
+    output_usd_per_million: 0.0
 
 # -- PDF Parsing Settings ---------------------------------------
 pdf:

@@ -14,9 +14,10 @@ Usage:
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 from utils.logger import get_logger
 
@@ -91,7 +92,93 @@ _BACKOFF_BASE_SECONDS = 0.5
 _BACKOFF_FACTOR = 2.0
 _BACKOFF_MAX_SECONDS = 8.0
 
+# A 429 whose retry window is longer than this means the key is exhausted for
+# the window rather than briefly throttled. Retrying it is pointless, so it is
+# parked and the next key is used immediately.
+_DEFAULT_PARK_THRESHOLD_SECONDS = 15.0
+
 T = TypeVar("T")
+
+# Groq durations look like "28m3.936s", "1h16m19.2s", "1m26.4s", "185ms", "2.5s".
+_DURATION_RE = re.compile(
+    r"(?:(?P<h>[\d.]+)h)?(?:(?P<m>[\d.]+)m(?!s))?(?:(?P<s>[\d.]+)s)?(?:(?P<ms>[\d.]+)ms)?$"
+)
+
+
+def parse_duration_seconds(text: Optional[str]) -> Optional[float]:
+    """
+    Parse a Groq duration string into seconds.
+
+    Handles the compound forms Groq uses in both the `retry-after` header and
+    the 429 message body: "28m3.936s", "1h16m19.2s", "1m26.4s", "185ms", "7.5s",
+    and a bare number of seconds such as "60".
+    """
+    if not text:
+        return None
+    text = text.strip()
+
+    # Bare seconds, as the retry-after header usually gives.
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    # Milliseconds-only, which the compound regex would otherwise read as minutes.
+    ms_only = re.fullmatch(r"([\d.]+)ms", text)
+    if ms_only:
+        return float(ms_only.group(1)) / 1000.0
+
+    match = _DURATION_RE.fullmatch(text)
+    if not match or not any(match.groupdict().values()):
+        return None
+    parts = match.groupdict()
+    total = 0.0
+    if parts.get("h"):
+        total += float(parts["h"]) * 3600
+    if parts.get("m"):
+        total += float(parts["m"]) * 60
+    if parts.get("s"):
+        total += float(parts["s"])
+    if parts.get("ms"):
+        total += float(parts["ms"]) / 1000.0
+    return total
+
+
+def parse_rate_limit_error(message: str) -> Dict[str, Any]:
+    """
+    Extract the structured facts from a Groq 429 message.
+
+    Groq names the exact limit that tripped, which matters because the four
+    limits behave very differently:
+
+        RPM / TPM  — per-minute windows; a short wait clears them.
+        RPD / TPD  — per-day windows; the key is done until the day rolls over.
+
+    Note that TPD is NOT reported in any `x-ratelimit-*` header — it is only
+    visible here, in the body of a refusal.
+    """
+    info: Dict[str, Any] = {}
+    org = re.search(r"in organization `([^`]+)`", message)
+    if org:
+        info["organization"] = org.group(1)
+    kind = re.search(r"on (tokens|requests) per (day|minute) \((RPD|TPD|RPM|TPM)\)", message)
+    if kind:
+        info["limit_type"] = kind.group(3)
+        info["window"] = kind.group(2)
+    nums = re.search(r"Limit (\d+), Used (\d+), Requested (\d+)", message)
+    if nums:
+        info["limit"] = int(nums.group(1))
+        info["used"] = int(nums.group(2))
+        info["requested"] = int(nums.group(3))
+    retry = re.search(r"try again in ([\dhms.]+)", message)
+    if retry:
+        # The character class also swallows the sentence-ending period, which
+        # would otherwise make the duration unparseable and silently disable
+        # parking. Strip trailing dots before parsing.
+        text = retry.group(1).rstrip(".")
+        info["retry_after_text"] = text
+        info["retry_after_seconds"] = parse_duration_seconds(text)
+    return info
 
 
 class LLMClient:
@@ -109,7 +196,9 @@ class LLMClient:
         max_total_retries: int = 4,
         cache_enabled: bool = True,
         cache_max_size: int = 128,
+        park_threshold_seconds: float = _DEFAULT_PARK_THRESHOLD_SECONDS,
     ) -> None:
+        self.park_threshold    = float(park_threshold_seconds)
         self.model             = model
         self.api_keys          = [api_keys] if isinstance(api_keys, str) else api_keys
         self.base_url          = base_url
@@ -124,6 +213,12 @@ class LLMClient:
         #: these are skipped on every later call instead of being retried and
         #: burning a round-trip each time.
         self._dead_key_idxs: set = set()
+        #: Key index -> monotonic deadline until which the key is rate-limited.
+        #: Unlike 401 this expires: daily and per-minute windows do reset, so a
+        #: parked key returns to the rotation once its window has passed.
+        self._parked_until: Dict[int, float] = {}
+        #: Last seen rate-limit headroom per key, for diagnostics.
+        self._headroom: Dict[int, Dict[str, Any]] = {}
 
         if cache_enabled:
             from utils.llm_cache import LLMCache
@@ -157,6 +252,8 @@ class LLMClient:
         max_total_retries  = int(groq_cfg.get("max_total_retries", 4))
         cache_enabled      = bool(groq_cfg.get("cache_enabled", True))
         cache_max_size     = int(groq_cfg.get("cache_max_size", 128))
+        park_threshold     = float(groq_cfg.get("park_threshold_seconds",
+                                                _DEFAULT_PARK_THRESHOLD_SECONDS))
 
         return cls(
             model=model,
@@ -167,6 +264,7 @@ class LLMClient:
             max_total_retries=max_total_retries,
             cache_enabled=cache_enabled,
             cache_max_size=cache_max_size,
+            park_threshold_seconds=park_threshold,
         )
 
     @property
@@ -196,10 +294,98 @@ class LLMClient:
         return self._clients[idx]
 
     def _live_key_idxs(self) -> List[int]:
-        """Key indices not yet known to be invalid, starting at the current one."""
+        """
+        Usable key indices, ordered from the rotation pointer.
+
+        Excludes keys retired by a 401 (permanent) and keys parked by a
+        long 429 whose window has not yet elapsed (temporary).
+        """
+        now = time.monotonic()
         n = len(self.api_keys)
         order = [(self._current_key_idx + i) % n for i in range(n)]
-        return [i for i in order if i not in self._dead_key_idxs]
+        live = []
+        for i in order:
+            if i in self._dead_key_idxs:
+                continue
+            parked_until = self._parked_until.get(i)
+            if parked_until is not None:
+                if now < parked_until:
+                    continue
+                # Window elapsed — bring the key back into rotation.
+                del self._parked_until[i]
+                logger.info(f"key {i + 1}/{n}: rate-limit window elapsed; back in rotation.")
+            live.append(i)
+        return live
+
+    def _park_key(self, idx: int, seconds: float, reason: str) -> None:
+        """Take a key out of rotation until its rate-limit window elapses."""
+        self._parked_until[idx] = time.monotonic() + seconds
+        logger.warning(
+            f"key {idx + 1}/{len(self.api_keys)}: parked for {seconds:.0f}s ({reason}). "
+            f"{len(self._live_key_idxs())} key(s) still usable."
+        )
+
+    def _record_headroom(self, idx: int, headers: Any) -> None:
+        """
+        Log remaining rate-limit headroom from the `x-ratelimit-*` response
+        headers, which Groq returns on every response, not just refusals.
+
+        The header names are asymmetric and easy to misread:
+            x-ratelimit-limit-requests -> requests per DAY    (RPD)
+            x-ratelimit-limit-tokens   -> tokens  per MINUTE  (TPM)
+        so they are labelled explicitly below rather than shown as a pair.
+
+        Note there is a fourth limit, tokens per day (TPD), which appears in NO
+        header. It is only visible in the body of a 429, so headroom against it
+        cannot be reported here — see parse_rate_limit_error().
+        """
+        if headers is None:
+            return
+        try:
+            get = headers.get
+        except AttributeError:
+            return
+
+        snapshot = {
+            "requests_remaining": get("x-ratelimit-remaining-requests"),
+            "requests_limit": get("x-ratelimit-limit-requests"),
+            "requests_reset": get("x-ratelimit-reset-requests"),
+            "tokens_remaining": get("x-ratelimit-remaining-tokens"),
+            "tokens_limit": get("x-ratelimit-limit-tokens"),
+            "tokens_reset": get("x-ratelimit-reset-tokens"),
+        }
+        if not any(snapshot.values()):
+            return
+        self._headroom[idx] = snapshot
+
+        logger.debug(
+            f"key {idx + 1}/{len(self.api_keys)} headroom: "
+            f"requests/day {snapshot['requests_remaining']}/{snapshot['requests_limit']} "
+            f"(resets {snapshot['requests_reset']}), "
+            f"tokens/min {snapshot['tokens_remaining']}/{snapshot['tokens_limit']} "
+            f"(resets {snapshot['tokens_reset']})"
+        )
+
+        # Warn when a key is running low, so exhaustion is visible before it bites.
+        for label, remaining, limit, reset in (
+            ("requests/day", snapshot["requests_remaining"], snapshot["requests_limit"],
+             snapshot["requests_reset"]),
+            ("tokens/min", snapshot["tokens_remaining"], snapshot["tokens_limit"],
+             snapshot["tokens_reset"]),
+        ):
+            try:
+                rem, lim = int(remaining), int(limit)
+            except (TypeError, ValueError):
+                continue
+            if lim and rem / lim < 0.10:
+                logger.warning(
+                    f"key {idx + 1}/{len(self.api_keys)}: {label} headroom low — "
+                    f"{rem}/{lim} left, resets in {reset}"
+                )
+
+    def headroom_report(self) -> Dict[int, Dict[str, Any]]:
+        """Last observed rate-limit headroom per key index."""
+        return dict(self._headroom)
 
     @staticmethod
     def _backoff_seconds(attempt: int) -> float:
@@ -263,11 +449,36 @@ class LLMClient:
             try:
                 return operation(self._client_for(idx))
 
-            except openai.RateLimitError:
+            except openai.RateLimitError as exc:
                 rate_hits += 1
-                delay = self._backoff_seconds(attempt)
+                info = parse_rate_limit_error(str(exc))
+                limit_type = info.get("limit_type", "unknown")
+
+                # Prefer the retry-after header; fall back to the wait quoted in
+                # the message body. A 429 can be RPM, RPD, TPM or TPD, and those
+                # need very different responses.
+                wait = parse_duration_seconds(
+                    getattr(getattr(exc, "response", None), "headers", {}).get("retry-after")
+                    if getattr(exc, "response", None) is not None else None
+                )
+                if wait is None:
+                    wait = info.get("retry_after_seconds")
+
+                detail = (
+                    f"{limit_type} {info.get('used', '?')}/{info.get('limit', '?')}"
+                    if "limit" in info else limit_type
+                )
+
+                if wait is not None and wait > self.park_threshold:
+                    # Exhausted for this window, not briefly throttled. Retrying
+                    # this key would burn attempts on a guaranteed refusal.
+                    self._park_key(idx, wait, f"429 {detail}, retry in {info.get('retry_after_text', f'{wait:.0f}s')}")
+                    _rotate()
+                    continue
+
+                delay = wait if wait is not None else self._backoff_seconds(attempt)
                 logger.warning(
-                    f"{what}: rate limit on {key_label} (hit #{rate_hits}); "
+                    f"{what}: rate limit on {key_label} ({detail}, hit #{rate_hits}); "
                     f"rotating and retrying in {delay:.1f}s "
                     f"[attempt {attempt + 1}/{attempts}]"
                 )
@@ -341,12 +552,17 @@ class LLMClient:
                 return cached
 
         def _do(client) -> Optional[str]:
-            response = client.chat.completions.create(
+            # with_raw_response exposes the x-ratelimit-* headers, which Groq
+            # sends on every response and not just refusals. .parse() then
+            # yields the same ChatCompletion the plain call would have returned.
+            raw = client.chat.completions.with_raw_response.create(
                 model=self.model,
                 messages=messages,
                 temperature=temp,
                 max_tokens=max_tokens,
             )
+            self._record_headroom(self._current_key_idx, getattr(raw, "headers", None))
+            response = raw.parse()
 
             # Record usage before inspecting choices: the tokens were spent
             # whether or not the response turned out to be usable.
