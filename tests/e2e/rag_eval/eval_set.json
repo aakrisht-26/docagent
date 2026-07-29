@@ -1,0 +1,168 @@
+{
+  "_about": {
+    "purpose": "Measure chunk retrieval quality for DocumentChatSkill, separately from answer quality.",
+    "match": "'any' = a hit if any expected source is selected. 'all' = every expected source must be selected (cross-boundary answers).",
+    "categories": {
+      "direct": "The answering chunk shares obvious wording with the question.",
+      "vocab_overlap": "A distractor chunk shares more surface words with the question than the chunk that actually answers it.",
+      "cross_boundary": "The answer needs two chunks; neither is sufficient alone.",
+      "synonym": "The question shares no content word with the answering chunk."
+    },
+    "trivial_fixtures": [
+      "sample_report.pdf",
+      "sample_scanned.pdf",
+      "sample_sales.xlsx"
+    ],
+    "trivial_note": "These three fixtures have only 2 chunks each and the selector returns top-3 plus first/last anchors, so it returns the whole document for any query. Retrieval accuracy on them is 100% by construction and carries no signal. They are kept to prove the eval harness agrees with reality, and are reported separately."
+  },
+
+  "cases": [
+    {
+      "id": "lg-pdf-01", "fixture": "sample_large_report.pdf", "category": "direct",
+      "question": "How many rigid trucks are in the fleet?",
+      "expected_sources": [3], "match": "any",
+      "expected_answer_contains": ["154"]
+    },
+    {
+      "id": "lg-pdf-02", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "question": "What was the average maintenance cost per vehicle at the Southern depot?",
+      "expected_sources": [6], "match": "any",
+      "expected_answer_contains": ["10,178"],
+      "note": "Page 4 repeats 'average maintenance cost per vehicle' and every depot name more often than page 6, but holds no figure."
+    },
+    {
+      "id": "lg-pdf-03", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "question": "What was the average maintenance cost per vehicle at the Eastern depot?",
+      "expected_sources": [7], "match": "any",
+      "expected_answer_contains": ["7,887"]
+    },
+    {
+      "id": "lg-pdf-04", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "question": "How many workshop visits did the Northern depot complete?",
+      "expected_sources": [5], "match": "any",
+      "expected_answer_contains": ["1,284"]
+    },
+    {
+      "id": "lg-pdf-05", "fixture": "sample_large_report.pdf", "category": "cross_boundary",
+      "question": "How many Tier 1 incidents were recorded, and what was the mean time to closure?",
+      "expected_sources": [12, 13], "match": "all",
+      "expected_answer_contains": ["19", "23.4"],
+      "note": "Counts are on page 12, closure timings on page 13."
+    },
+    {
+      "id": "lg-pdf-06", "fixture": "sample_large_report.pdf", "category": "cross_boundary",
+      "question": "Which depot had the most Tier 1 incidents, and how long did the longest case stay open?",
+      "expected_sources": [12, 13], "match": "all",
+      "expected_answer_contains": ["96"]
+    },
+    {
+      "id": "lg-pdf-07", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "question": "How much time were lorries unavailable for work?",
+      "expected_sources": [17], "match": "any",
+      "expected_answer_contains": ["41,300"],
+      "note": "Page 17 says 'off-road hours'; the question shares no content word with it."
+    },
+    {
+      "id": "lg-pdf-08", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "question": "What percentage of lorry crew resigned?",
+      "expected_sources": [10], "match": "any",
+      "expected_answer_contains": ["14.2"],
+      "note": "Page 10 says 'attrition' and 'voluntary departures'."
+    },
+    {
+      "id": "lg-pdf-09", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "question": "How long must the business wait after ordering a prime mover?",
+      "expected_sources": [18], "match": "any",
+      "expected_answer_contains": ["94"],
+      "note": "Page 18 says 'lead time from requisition to delivery' for 'tractor units'."
+    },
+    {
+      "id": "lg-pdf-10", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "question": "What was the pick accuracy at the Riverside warehouse?",
+      "expected_sources": [14], "match": "any",
+      "expected_answer_contains": ["99.31"],
+      "note": "Page 15 (Kingsford) is near-identical in vocabulary."
+    },
+    {
+      "id": "lg-pdf-11", "fixture": "sample_large_report.pdf", "category": "direct",
+      "question": "How many pallet movements did the Kingsford warehouse handle?",
+      "expected_sources": [15], "match": "any",
+      "expected_answer_contains": ["287,000"]
+    },
+    {
+      "id": "lg-pdf-12", "fixture": "sample_large_report.pdf", "category": "direct",
+      "question": "What is the principal risk for the coming year?",
+      "expected_sources": [20], "match": "any",
+      "expected_answer_contains": ["refrigeration"]
+    },
+    {
+      "id": "lg-xls-01", "fixture": "sample_large_sales.xlsx", "category": "vocab_overlap",
+      "question": "What was the revenue per consignment for North in Q3?",
+      "expected_sources": ["Q3 Revenue"], "match": "any",
+      "expected_answer_contains": ["1163", "1,163"],
+      "note": "The 'Cost Definitions' sheet repeats the exact phrase for every quarter and region but holds no figure."
+    },
+    {
+      "id": "lg-xls-02", "fixture": "sample_large_sales.xlsx", "category": "vocab_overlap",
+      "question": "What was the revenue per consignment for West in Q1?",
+      "expected_sources": ["Q1 Revenue"], "match": "any",
+      "expected_answer_contains": ["1050", "1,050"]
+    },
+    {
+      "id": "lg-xls-03", "fixture": "sample_large_sales.xlsx", "category": "cross_boundary",
+      "question": "What was the combined North revenue across Q3 and Q4?",
+      "expected_sources": ["Q3 Revenue", "Q4 Revenue"], "match": "all",
+      "expected_answer_contains": ["21,500,000", "21.5"]
+    },
+    {
+      "id": "lg-xls-04", "fixture": "sample_large_sales.xlsx", "category": "synonym",
+      "question": "How much was spent on diesel bought under contract?",
+      "expected_sources": ["Energy Spend"], "match": "any",
+      "expected_answer_contains": ["9,880,360", "9880360"],
+      "note": "The sheet says 'Propulsion, contracted', never 'diesel' or 'fuel'."
+    },
+    {
+      "id": "lg-xls-05", "fixture": "sample_large_sales.xlsx", "category": "direct",
+      "question": "How many drivers are in the East division?",
+      "expected_sources": ["Headcount"], "match": "any",
+      "expected_answer_contains": ["265"]
+    },
+
+    {
+      "id": "sm-pdf-01", "fixture": "sample_report.pdf", "category": "direct",
+      "question": "What was the MTBF improvement between Q2 and Q3?",
+      "expected_sources": [1], "match": "any",
+      "expected_answer_contains": ["690"]
+    },
+    {
+      "id": "sm-pdf-02", "fixture": "sample_report.pdf", "category": "direct",
+      "question": "What is the principal risk for Q4?",
+      "expected_sources": [2], "match": "any",
+      "expected_answer_contains": ["LIDAR"]
+    },
+    {
+      "id": "sm-scan-01", "fixture": "sample_scanned.pdf", "category": "direct",
+      "question": "How much did engineering headcount grow?",
+      "expected_sources": [1], "match": "any",
+      "expected_answer_contains": ["51"]
+    },
+    {
+      "id": "sm-scan-02", "fixture": "sample_scanned.pdf", "category": "direct",
+      "question": "How long is the buffer stock held for?",
+      "expected_sources": [2], "match": "any",
+      "expected_answer_contains": ["6-week", "6 week", "six"]
+    },
+    {
+      "id": "sm-xls-01", "fixture": "sample_sales.xlsx", "category": "direct",
+      "question": "What was the EMEA revenue for Orion Controller?",
+      "expected_sources": ["Q3 Sales"], "match": "any",
+      "expected_answer_contains": ["483800", "483,800"]
+    },
+    {
+      "id": "sm-xls-02", "fixture": "sample_sales.xlsx", "category": "direct",
+      "question": "How many open roles does Engineering have?",
+      "expected_sources": ["Headcount"], "match": "any",
+      "expected_answer_contains": ["6"]
+    }
+  ]
+}

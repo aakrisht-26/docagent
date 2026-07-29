@@ -211,8 +211,64 @@ def build_scanned_pdf() -> Path:
     return out
 
 
+# ── Large fixtures for RAG retrieval evaluation ───────────────────────────────
+
+def build_large_pdf() -> Path:
+    """A 20-page PDF where retrieval is a genuine decision.
+
+    Page-level chunking yields 20 candidates against a top-3 selection, so
+    unlike the small fixtures the selector must actually choose. The page
+    content is designed to be hard — see tests/e2e/rag_eval/fixture_content.py
+    for the three difficulties it builds in.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
+                                    Spacer)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "rag_eval"))
+    from fixture_content import LARGE_PDF_PAGES, LARGE_PDF_TITLE
+
+    out = SAMPLES / "sample_large_report.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(out), pagesize=LETTER)
+
+    story = []
+    for index, (heading, body) in enumerate(LARGE_PDF_PAGES):
+        if index == 0:
+            story.append(Paragraph(LARGE_PDF_TITLE, styles["Title"]))
+            story.append(Spacer(1, 12))
+        story.append(Paragraph(heading, styles["Heading1"]))
+        story.append(Paragraph(body, styles["BodyText"]))
+        if index != len(LARGE_PDF_PAGES) - 1:
+            story.append(PageBreak())   # one section per page, so page == chunk
+
+    doc.build(story)
+    return out
+
+
+def build_large_excel() -> Path:
+    """An 8-sheet workbook where sheet-level chunking makes retrieval matter."""
+    from openpyxl import Workbook
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "rag_eval"))
+    from fixture_content import LARGE_XLSX_SHEETS
+
+    out = SAMPLES / "sample_large_sales.xlsx"
+    wb = Workbook()
+    wb.remove(wb.active)
+    for sheet_name, (header, rows) in LARGE_XLSX_SHEETS.items():
+        ws = wb.create_sheet(sheet_name)
+        ws.append(list(header))
+        for row in rows:
+            ws.append(list(row))
+    wb.save(out)
+    return out
+
+
 if __name__ == "__main__":
-    for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf()):
+    for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf(),
+                 build_large_pdf(), build_large_excel()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")
