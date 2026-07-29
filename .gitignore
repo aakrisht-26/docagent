@@ -165,6 +165,11 @@ examples/
 !README.md
 !TECH_STACK.md
 
+# e2e fixtures are committed on purpose so a fresh clone can run the full
+# verification (python tests/e2e/e2e.py all). The blanket *.pdf / *.csv / *.xlsx
+# rules above still apply everywhere else, so user documents stay untracked.
+!tests/e2e/samples/*
+
 # OS specific
 .DS_Store
 Thumbs.db
