@@ -562,3 +562,61 @@ streamlit/pandas one reinforces the DEPENDENCIES.md note about the unbounded
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed
 (warnings still 2); app boots clean (health 200, empty stderr).
+
+---
+
+## Phase B — reliability
+
+### Task 12 — One shared wrapper for every LLM call ✅
+
+**Committed:** see `feat(llm): shared retry, backoff and 401-aware key rotation`
+
+Surveyed the call sites first: **6 of 7 skills plus `results_view.py` already
+routed through `LLMClient`**. Only `AudioReaderSkill._transcribe_audio()` built
+its own `openai.OpenAI` — the exact gap flagged in Task 4. So this was hardening
+one wrapper and pulling audio into it, not rewriting seven call sites.
+
+**`LLMClient._run_with_rotation()`** is now the single place API failure handling
+lives. Policy:
+
+| Failure | Handling |
+|---|---|
+| **401** | Key is permanently invalid. Recorded in `_dead_key_idxs`, skipped for the rest of the process, rotate immediately — no backoff, since it will never start working |
+| **429** | Transient. Rotate to next live key, exponential backoff with jitter |
+| **5xx / connection / timeout** | Transient. Rotate and retry with backoff |
+| **anything else** | Not retryable — give up, return `None` |
+
+Backoff is `0.5s × 2^attempt`, capped at 8s, jittered to 50–100% to avoid
+synchronised retries. Clients are cached per key index rather than rebuilt.
+
+`chat()` and the new `transcribe()` both go through it, so the retry policy
+cannot drift between skills.
+
+**`AudioReaderSkill` now uses `LLMClient.transcribe()`.** Previously it resolved
+keys itself (bypassing the placeholder filter from Task 4), used only the *first*
+key, and had no retry whatsoever — a single 429 killed the whole transcription.
+The transcription model stays an explicit call-site choice
+(`self._transcription_model`), not a default hidden in the shared client. The
+orphaned `import os` left by this change was removed. **This closes the residual
+gap documented in Task 4.**
+
+`transcribe()` reopens the file handle per attempt — a retry on a consumed handle
+would upload zero bytes.
+
+**A real defect was caught by testing rather than reading.** The first
+implementation selected keys with `live[attempt % len(live)]`, which conflates
+attempt number with key position. Because the live list shrinks as keys are
+retired, it **skipped keys**: the 401 test tried `[0, 2]` instead of `[0, 1]`,
+and the all-401 test tried `[0, 2, 1]`. It still found a working key, but burned
+the attempt budget in arbitrary order. Replaced with a rotation pointer advanced
+explicitly on each rotation, giving strict round-robin.
+
+Verified against **real `openai` exception types** (constructed with genuine
+`httpx` responses, not mocks of my own invention) — **9/9 checks pass**:
+success-first-try; 401→rotate; **retired key skipped entirely on the next call**
+(`[1]`, not `[0, 1]`); 429→backoff→rotate; 500→retry; timeout→retry; all-keys-401
+→ `None` with all retired; non-retryable → immediate `None`.
+
+**Verification:** all 6 e2e stages PASS (exit 0), transcription confirmed working
+through the new path for both local audio (59 words) and YouTube (37 words);
+`pytest tests/ -q` → 41 passed.
