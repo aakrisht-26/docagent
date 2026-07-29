@@ -411,3 +411,40 @@ Verified `setup.py` still parses and produces valid metadata
 leftover CLI claims — none remain.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.
+
+---
+
+### Task 10 — Make the upload limits agree, and reject before upload ✅
+
+**Committed:** see `fix(ui): align Streamlit upload limit with app config`
+
+Before: Streamlit's dropzone advertised **200 MB** (its `server.maxUploadSize`
+default) while `validate_file` rejected anything over **50 MB** — *after* the
+whole file had already been transferred. A 180 MB upload would complete, then be
+thrown away.
+
+- `.streamlit/config.toml` now sets `server.maxUploadSize = 50`, matching
+  `app.max_file_size_mb`. Streamlit enforces this **in the browser**, so the file
+  is refused before transfer rather than after. This is the "reject before
+  upload" half, and it only became possible because Task 2 started committing
+  `.streamlit/config.toml`.
+- The uploader help text now derives from `_cfg.max_file_size_mb` instead of a
+  hardcoded "max 50 MB".
+- Added a startup drift check: `ui/app.py` compares
+  `st.get_option("server.maxUploadSize")` against `_cfg.max_file_size_mb` and
+  raises a sidebar configuration issue if they differ. The two values live in
+  different files and `DOCAGENT_MAX_FILE_MB` can move one without the other, so
+  the mismatch is now surfaced instead of being discovered by a slow upload.
+
+`validate_file` is intentionally left in place as the server-side backstop.
+
+**Both directions verified in the running app**, not just read:
+
+- Default (`config.toml` = 50): dropzone renders "Limit 50MB per file", no
+  configuration issue shown.
+- Forced mismatch (`--server.maxUploadSize=200`): dropzone renders "Limit 200MB
+  per file" and the sidebar shows *"Upload limit mismatch: Streamlit accepts 200
+  MB … Set maxUploadSize in .streamlit/config.toml to 50."*
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+app boots clean (health 200, empty stderr).

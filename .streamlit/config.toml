@@ -1,3 +1,10 @@
+[server]
+# Must match app.max_file_size_mb in configs/default.yaml. Streamlit enforces
+# this in the browser, so an oversized file is rejected before it is uploaded
+# rather than after the transfer completes. ui/app.py warns at startup if the
+# two ever drift apart.
+maxUploadSize = 50
+
 [theme]
 base = "dark"
 font = "sans serif"

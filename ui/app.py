@@ -270,8 +270,27 @@ def _render_sidebar() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
         st.divider()
 
-        # ── Config health check ────────────────────────────────────────
+        # ── Upload limit agreement ─────────────────────────────────────
+        # Streamlit enforces server.maxUploadSize in the browser; validate_file
+        # enforces app.max_file_size_mb after the bytes have already arrived. If
+        # they disagree the user can sit through a long upload only to be told
+        # the file is too big, so surface any drift rather than letting it be
+        # discovered the slow way.
         cfg_issues = _cfg.validate()
+        try:
+            st_limit = int(st.get_option("server.maxUploadSize"))
+            if st_limit != _cfg.max_file_size_mb:
+                cfg_issues = cfg_issues + [
+                    f"Upload limit mismatch: Streamlit accepts {st_limit} MB "
+                    f"(server.maxUploadSize) but files over "
+                    f"{_cfg.max_file_size_mb} MB are rejected after upload "
+                    f"(app.max_file_size_mb). Set maxUploadSize in "
+                    f".streamlit/config.toml to {_cfg.max_file_size_mb}."
+                ]
+        except Exception as exc:  # option unavailable in this Streamlit build
+            logger.warning("Could not read server.maxUploadSize: %s", exc)
+
+        # ── Config health check ────────────────────────────────────────
         if cfg_issues:
             st.divider()
             st.markdown("**⚠️ Configuration issues**")
@@ -356,7 +375,10 @@ def _render_upload() -> tuple[list, dict]:
                 type=["pdf", "xlsx", "xls", "csv", "mp3", "m4a", "wav", "flac", "ogg", "webm"],
                 accept_multiple_files=True,
                 label_visibility="visible",
-                help="PDF, Excel (.xlsx / .xls), CSV, or Audio (MP3, WAV, M4A, FLAC, OGG, WebM) · max 50 MB per file",
+                help=(
+                    "PDF, Excel (.xlsx / .xls), CSV, or Audio "
+                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {_cfg.max_file_size_mb} MB per file"
+                ),
             )
         else:
             youtube_url = st.text_input(
