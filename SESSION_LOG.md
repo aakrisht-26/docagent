@@ -448,3 +448,46 @@ thrown away.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 app boots clean (health 200, empty stderr).
+
+---
+
+### Task 11 — Skip the paddle import when the GPU is unusable ✅
+
+**Committed:** see `perf(structure): skip paddle import when GPU is unusable`
+
+`StructureRecognitionSkill._detect_gpu()` imported paddle purely to discover
+there was no usable GPU, costing **2237 ms** — 19.7% of PDF wall clock, per the
+Task 6 breakdown.
+
+**The obvious check turned out to be the wrong one.** A CUDA-driver probe
+(`ctypes.CDLL("nvcuda.dll")`) returns **True** here: this machine has a real
+**NVIDIA RTX 3050 Laptop GPU**, driver 592.82. The driver was never the problem.
+The blocker is that the installed wheel is the **CPU-only `paddlepaddle` 3.0.0**;
+`paddlepaddle-gpu` is not installed, so paddle cannot use the GPU that is
+physically present. Had I stopped at the driver check, this task would have
+"passed" while changing nothing.
+
+Two cheap short-circuits now run before the expensive probe:
+
+1. **No CUDA driver library** → no CUDA device exists at all. Universally
+   correct.
+2. **Driver present but only the CPU-only wheel installed** → paddle cannot use
+   CUDA regardless of hardware. This is the case that actually applies here, and
+   is the common one on a gaming laptop.
+
+Distribution detection uses two *direct* `importlib.metadata.version()` lookups.
+The first implementation scanned `md.distributions()` and cost ~560 ms in this
+Anaconda environment — better than 2237 ms but still wasteful; direct lookups
+cut it to ~13 ms.
+
+Rule 2 is escapable via `pdf.force_gpu_probe: true` for unusual builds shipping
+CUDA under the plain `paddlepaddle` name. **Verified both paths return the same
+answer**: default → `False` in 13 ms without importing paddle;
+`force_gpu_probe=true` → `False` in 1974 ms with paddle imported.
+
+Results: stage 3.5 drops from **2125 ms (19.7%) to 0 ms**, paddle is never
+imported during a run, and unit-test warnings fall from 4 to 2 (paddle's ccache
+warning is gone). A side benefit is that the root-logger mutation documented in
+Task 6 no longer happens at all in normal operation.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.

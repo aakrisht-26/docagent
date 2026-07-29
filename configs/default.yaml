@@ -37,6 +37,11 @@ pdf:
   # CUDA GPU is detected. Set the following to true ONLY if you accept very slow
   # CPU processing and still want PP-Structure table parsing.
   allow_cpu_structure: false
+  # GPU detection short-circuits before importing paddle (~2s) when the CUDA
+  # driver is missing, or when only the CPU-only `paddlepaddle` wheel is
+  # installed. Set true to always run the authoritative paddle probe instead —
+  # only needed for unusual builds shipping CUDA under the plain name.
+  force_gpu_probe: false
 
 # -- Excel Parsing Settings -------------------------------------
 excel:
