@@ -820,3 +820,50 @@ retries.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **60
 passed**.
+
+---
+
+## Phase C — UI
+
+### Task 14 — Per-stage progress in Streamlit ✅
+
+**Committed:** see `fix(ui): position-based progress with per-stage timings`
+
+**The `_log_step` monkeypatching at `app.py` was not touched** — the walk-back
+over `__wrapped_orig__`, the assignment and the restore in `finally` are all
+byte-identical. Only the body of the callback and the surrounding display
+changed, per the constraint.
+
+Two real defects in the old display:
+
+1. **The denominator was wrong.** `total = len(STEP_LABELS)` counted **7**, but
+   one of those keys was `"done"` — never a skill name, so never a callback.
+2. **Progress was counted, not positioned.** The planner routinely skips stages
+   (question extraction unless questionnaire, structure recognition unless
+   table-heavy), so dividing callback count by a fixed total drifted out of step
+   with the label. `structured_extraction` had no label at all and rendered as
+   "Structured Extraction…".
+
+Concretely, the audio run just verified executes **4** stages. Old behaviour:
+4/7 = 57% while displaying "Generating summary…", then a jump to 100%. New
+behaviour: summarize is stage 4 of 6 → 67%, correctly positioned.
+
+Progress is now derived from `STAGE_POSITIONS`, the canonical stage numbers from
+the frozen pipeline, so a skipped stage no longer shifts the bar out of step.
+Added the missing `structured_extraction` label. Failed stages render `✗ … FAILED`
+instead of silently reading as progress. Each stage appends a `✓ name — 2.6s`
+entry, the last four shown live and the full list on completion.
+
+**Verified by driving the real UI**, not by reasoning about it: started the app,
+selected YouTube input, submitted a URL and clicked Analyze through the browser.
+Result:
+
+```
+Complete · 4 stage(s) in 10.9s
+✓ Parsing document — 7.4s · ✓ Normalising text — 0.1s
+✓ Classifying document — 0.6s · ✓ Generating summary — 2.6s
+```
+
+Results, tabs, stats and download buttons all rendered; app stderr clean.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 60 passed.

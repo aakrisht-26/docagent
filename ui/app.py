@@ -437,8 +437,25 @@ STEP_LABELS = {
     "structure_recognition": "Recognising structure…",
     "summarize":             "Generating summary…",
     "extract_questions":     "Extracting questions…",
-    "done":                  "Analysis complete",
+    "structured_extraction": "Extracting entities…",
 }
+
+# Progress is driven by the stage's POSITION in the frozen pipeline, not by how
+# many callbacks have fired. The planner skips stages routinely (question
+# extraction only runs for questionnaires, structure recognition only for
+# table-heavy domains), so counting callbacks and dividing by a fixed total made
+# the bar advance at the wrong rate and pair a percentage with the wrong label.
+# These are the canonical stage numbers from CLAUDE.md, out of 6.
+STAGE_POSITIONS = {
+    "parse":                 1.0,
+    "clean":                 2.0,
+    "classify":              3.0,
+    "structure_recognition": 3.5,
+    "summarize":             4.0,
+    "extract_questions":     5.0,
+    "structured_extraction": 5.5,
+}
+TOTAL_STAGES = 6.0
 
 
 def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
@@ -479,8 +496,8 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         )
 
         progress_placeholder = st.empty()
+        detail_placeholder   = st.empty()
         status_placeholder   = st.empty()
-        total = len(STEP_LABELS)
 
         with progress_placeholder.container():
             bar = st.progress(0, text="Starting…")
@@ -493,14 +510,32 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         while hasattr(_orig_log, "__wrapped_orig__"):
             _orig_log = _orig_log.__wrapped_orig__  # type: ignore[attr-defined]
 
-        step_counter = [0]
+        completed: list = []
+        bar_state = {"pct": 0.0}
 
         def _progress_log_step(skill_name, success, duration_ms, error=None):
             _orig_log(skill_name, success, duration_ms, error)
-            step_counter[0] += 1
-            pct = min(step_counter[0] / total, 0.95)
+
+            # Position-based, so a planner-skipped stage does not shift the bar
+            # out of step with its label. Unknown names fall back to the current
+            # position rather than jumping the bar somewhere arbitrary.
+            position = STAGE_POSITIONS.get(skill_name)
+            pct = min(position / TOTAL_STAGES, 0.98) if position else bar_state["pct"]
+            bar_state["pct"] = pct
+
             label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
-            bar.progress(pct, text=label)
+            stage_no = f"{position:g}" if position else "?"
+            elapsed_s = time.monotonic() - start_ts
+
+            if success:
+                bar.progress(pct, text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
+                completed.append(f"✓ {label.rstrip('…')} — {duration_ms / 1000:.1f}s")
+            else:
+                # A failed stage must not read as progress.
+                bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
+                completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
+
+            detail_placeholder.caption("  ·  ".join(completed[-4:]))
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
@@ -515,8 +550,10 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # Always restore the original method so the cached agent stays clean
             agent._log_step = _orig_log  # type: ignore[method-assign]
 
-        bar.progress(1.0, text="Complete")
         elapsed = time.monotonic() - start_ts
+        bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
+        if completed:
+            detail_placeholder.caption("  ·  ".join(completed))
 
         with status_placeholder.container():
             if result.success:
