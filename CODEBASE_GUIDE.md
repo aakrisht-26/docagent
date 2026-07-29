@@ -1792,15 +1792,49 @@ The `__wrapped_orig__` chain-unwrapping is also load-bearing. If you add another
 
 `SkillRegistry` is a module-level singleton. One test that monkey-patches a skill will corrupt subsequent tests. Always call `SkillRegistry().reset()` in `setUp()` for test classes that modify the registry.
 
-### Empty API Key in Config
+### Placeholder API Keys in Config
 
-`configs/default.yaml` contains `api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"`. The `LLMClient` code filters this out:
+`configs/default.yaml` ships with `api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"` and
+`api_keys: "PASTE_MULTIPLE_GROQ_API_KEYS_HERE"`.
+
+> **Corrected.** This section previously claimed `LLMClient` filtered the
+> placeholder out, and showed a line of code to that effect. That code did not
+> exist anywhere in the codebase. The placeholder *was* returned as a live key —
+> verifiably position 2 of 9 on a machine with 8 real keys configured — and was
+> sent to the Groq API, guaranteeing a 401 and consuming a rotation slot on
+> every rate-limit failover.
+
+Filtering now happens in `resolve_groq_api_keys()` in `utils/config.py`, which is
+the single resolution point every caller uses (`DocumentAgent.__init__`,
+`LLMClient.from_config`, and `AppConfig.validate`). A candidate is rejected when
+it:
+
+- contains a placeholder marker (`PASTE`, `REPLACE_ME`, `YOUR_`, `_HERE`,
+  `CHANGE_ME`, `DUMMY`, matched case-insensitively), or
+- is shorter than 20 characters (a real Groq key is 56), or
+- contains whitespace.
+
+Rejections are logged at WARNING with the reason and the character count, but
+never the value — a rejected candidate may still be a real secret.
+
+**Known residual gap.** `AudioReaderSkill._transcribe_audio()` does *not* route
+through `resolve_groq_api_keys()`. It resolves keys itself:
 
 ```python
-api_keys = [k.strip() for k in raw.split(",") if k.strip() and "PASTE" not in k]
+raw_keys = (os.environ.get("GROQ_API_KEYS") or os.environ.get("GROQ_API_KEY")
+            or self._groq_cfg.get("api_keys", "") or self._groq_cfg.get("api_key", ""))
 ```
 
-If `available` returns `False` unexpectedly, check that `GROQ_API_KEY` is set correctly and doesn't contain the placeholder string.
+In the production path this is safe: `DocumentAgent.__init__` builds the skill's
+config from `resolve_groq_api_keys()`, so the keys it receives are already
+filtered. The placeholder can only reach it if the skill is instantiated
+directly with the raw YAML config *and* neither env var is set — e.g. in a test
+or script on a machine with no `.env`. Consolidating every LLM call site onto one
+shared client is tracked separately; until then, prefer building skills through
+`DocumentAgent` rather than instantiating them with raw config.
+
+If `available` returns `False` unexpectedly, check the logs for
+"Ignoring Groq API key candidate" — that names the reason.
 
 ### The Full-Width Layout Rule
 

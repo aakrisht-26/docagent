@@ -152,3 +152,46 @@ PNG → JPEG, cutting the fixture from 4.1 MB to 296 KB.
 
 **Verification:** `python tests/e2e/e2e.py all` → exit 0, all **6** stages PASS.
 `pytest tests/ -q` → 41 passed.
+
+---
+
+### Task 4 — Filter placeholder and malformed API keys ✅
+
+**Committed:** see `fix(config): filter placeholder and malformed Groq keys`
+
+Reproduced first: on this machine `resolve_groq_api_keys()` returned **9** keys,
+with `PASTE_YOUR_GROQ_API_KEY_HERE` sitting at **position 2**. It was being sent
+to the Groq API, guaranteeing a 401 and consuming a rotation slot on every
+rate-limit failover.
+
+Filtering added in `resolve_groq_api_keys()` (`utils/config.py`) — the single
+resolution point used by `DocumentAgent.__init__`, `LLMClient.from_config` and
+`AppConfig.validate`. A candidate is rejected when it contains a placeholder
+marker (`PASTE`, `REPLACE_ME`, `YOUR_`, `_HERE`, `CHANGE_ME`, `DUMMY`,
+case-insensitive), is under 20 chars, or contains whitespace. Markers were
+chosen conservatively — each contains an underscore or is a full word — so they
+cannot collide with a real Groq key, which is `gsk_` plus alphanumerics.
+
+Rejections log at WARNING with the reason and character count but **never the
+value**, since a rejected candidate may still be a real secret.
+
+Result: 9 keys → 8, placeholder gone. Verified against a table of cases
+including both shipped YAML placeholders, the `.env.example` samples, the README
+stand-in, a too-short value, and a whitespace-containing value — all rejected;
+a realistic 56-char key accepted.
+
+**`CODEBASE_GUIDE.md`** — the section claimed `LLMClient` already filtered this
+and showed a line of code doing so. **That code did not exist anywhere in the
+repo.** Replaced with an accurate description of where filtering actually
+happens and what the rules are, marked as a correction.
+
+While correcting it I checked whether `AudioReaderSkill._transcribe_audio()` was
+also affected — it resolves keys itself rather than calling
+`resolve_groq_api_keys()`. It is safe in the production path, because
+`DocumentAgent` passes it already-filtered keys, but the placeholder could still
+reach it if the skill were instantiated directly with raw YAML config on a
+machine with no `.env`. Documented as a known residual gap rather than
+overclaimed; it is Task 12's job to consolidate the call sites, so fixing it
+here would have been duplicated work.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.

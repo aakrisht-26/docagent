@@ -9,6 +9,7 @@ Environment Variable Overrides (all optional):
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,8 +19,46 @@ from typing import Any, Dict, Optional
 import yaml
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 # Load .env file if it exists
 load_dotenv()
+
+# Substrings that mark a value as an unedited placeholder rather than a real
+# key. Matched case-insensitively. These cover the shipped defaults in
+# configs/default.yaml ("PASTE_YOUR_GROQ_API_KEY_HERE",
+# "PASTE_MULTIPLE_GROQ_API_KEYS_HERE"), the samples in .env.example
+# ("gsk_replace_me_key_one"), and the usual hand-written stand-ins.
+# Deliberately conservative: every marker contains an underscore or is a full
+# word, so it cannot collide with a real Groq key, which is `gsk_` followed by
+# alphanumerics only.
+_PLACEHOLDER_MARKERS = (
+    "PASTE",
+    "REPLACE_ME",
+    "REPLACEME",
+    "YOUR_",
+    "_HERE",
+    "CHANGE_ME",
+    "CHANGEME",
+    "DUMMY",
+)
+
+# Shortest plausible real key. Groq keys are 56 chars; anything under this is a
+# truncated paste or a stub.
+_MIN_KEY_LENGTH = 20
+
+
+def _reject_reason(key: str) -> Optional[str]:
+    """Return why `key` is unusable, or None if it looks like a real key."""
+    upper = key.upper()
+    for marker in _PLACEHOLDER_MARKERS:
+        if marker in upper:
+            return f"looks like an unedited placeholder (contains {marker!r})"
+    if len(key) < _MIN_KEY_LENGTH:
+        return f"too short ({len(key)} chars, expected at least {_MIN_KEY_LENGTH})"
+    if any(ch.isspace() for ch in key):
+        return "contains whitespace"
+    return None
 
 # Matches lines of the form KEY=value or KEY = value (used to detect new entries)
 _KEY_VALUE_LINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\s*=')
@@ -277,6 +316,12 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
     Returns a deduplicated list of non-empty stripped key strings.
     All sources are combined so that setting GROQ_API_KEY=key1 does NOT
     prevent multiple keys configured in api_keys from being used.
+
+    Placeholders and malformed values are filtered out here, at resolution
+    time, so no caller ever receives them. configs/default.yaml ships with
+    `api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"`, and without this filter that
+    string was returned as a live key and handed to the API — guaranteeing a
+    401 and burning a key-rotation slot on every rate-limit failover.
     """
     groq_cfg = groq_cfg or {}
 
@@ -289,6 +334,18 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
 
     seen: set = set()
     keys: list = []
+    rejected: list = []
+
+    def _consider(candidate: str) -> None:
+        if candidate in seen:
+            return
+        seen.add(candidate)
+        reason = _reject_reason(candidate)
+        if reason:
+            rejected.append((candidate, reason))
+        else:
+            keys.append(candidate)
+
     for src in (
         os.environ.get("GROQ_API_KEYS", ""),
         groq_cfg.get("api_keys", ""),
@@ -296,16 +353,20 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
         groq_cfg.get("api_key", ""),
     ):
         for k in _split(src):
-            if k not in seen:
-                seen.add(k)
-                keys.append(k)
+            _consider(k)
 
     # Supplement with raw .env file parse — handles unquoted multiline values
     # that python-dotenv truncates to the first physical line.
     for k in _read_multiline_env_keys():
-        if k not in seen:
-            seen.add(k)
-            keys.append(k)
+        _consider(k)
+
+    for candidate, reason in rejected:
+        # Never log the value itself; a rejected candidate can still be a real
+        # (if malformed) secret.
+        logger.warning(
+            "Ignoring Groq API key candidate: %s. [redacted, %d chars]",
+            reason, len(candidate),
+        )
 
     return keys
 
