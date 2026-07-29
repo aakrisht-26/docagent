@@ -618,7 +618,7 @@ def _dict_to_pipeline_result(d: dict):
         summary_method=d.get("summary_method", "unknown"),
         questions=d.get("questions", []),
         question_extraction_method=d.get("question_extraction_method", "unknown"),
-        raw_text="",  # Not persisted — chat/edit unavailable for history results
+        raw_text=d.get("raw_text", ""),  # restored from the store's own column
         word_count=d.get("word_count", 0),
         page_count=d.get("page_count", 0),
         metadata=d.get("metadata", {}),
@@ -645,6 +645,15 @@ def main() -> None:
         file_name = result.file_name
         # Store under the normal state key so the render loop picks it up.
         st.session_state[f"doc_result_{file_name}"] = result
+
+        # Seed the chat context from the stored chunks. Without this the chat
+        # tab falls back to slicing raw_text, and for older entries that have no
+        # stored content it would query an empty document without saying so.
+        stored_chunks = cached_dict.get("content_chunks") or []
+        if stored_chunks:
+            st.session_state[f"chat_chunks_{file_name}"] = stored_chunks
+        elif not result.raw_text:
+            st.session_state[f"history_no_content_{file_name}"] = True
         # Set _file_data so the file appears as "processed" in the render loop.
         # (No "bytes" needed — _run_pipeline exits early via the state-key check.)
         st.session_state["_file_data"] = [{"name": file_name}]
@@ -665,9 +674,24 @@ def main() -> None:
                 file_data_list.append({"name": item.name, "bytes": item.getvalue()})
         st.session_state["_file_data"] = file_data_list
     elif st.session_state.get("_input_mode") == "Upload Files":
-        # Uploader is in file mode but returned nothing — user cleared it.
-        # Wipe stale _file_data so old results don't linger.
-        st.session_state.pop("_file_data", None)
+        # Uploader is in file mode but returned nothing — user cleared it, so
+        # stale upload results should not linger.
+        #
+        # Only uploader-backed entries are dropped. An entry restored from the
+        # history sidebar carries no "bytes", and wiping it here meant that
+        # clicking a history item while the uploader was empty — the default
+        # state — silently bounced straight back to the empty screen. The
+        # restore ran, then this line undid it on the same rerun.
+        surviving = [
+            fd for fd in st.session_state.get("_file_data", []) if "bytes" in fd
+        ]
+        remaining = [
+            fd for fd in st.session_state.get("_file_data", []) if "bytes" not in fd
+        ]
+        if remaining:
+            st.session_state["_file_data"] = remaining
+        elif surviving or "_file_data" in st.session_state:
+            st.session_state.pop("_file_data", None)
 
     # Track current input mode so we can detect when the uploader is cleared.
     st.session_state["_input_mode"] = st.session_state.get("input_mode_radio", "Upload Files")

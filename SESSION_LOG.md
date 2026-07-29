@@ -867,3 +867,64 @@ Complete · 4 stage(s) in 10.9s
 Results, tabs, stats and download buttons all rendered; app stderr clean.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 60 passed.
+
+---
+
+### Task 15 — Persist document and chat state ✅
+
+**Committed:** see `fix(ui): persist document content and repair history reload`
+
+Within-session rerun persistence already worked (`doc_result_*`, `chat_history_*`
+and `chat_chunks_*` are all keyed by filename in `session_state`). Driving the
+real UI surfaced **two genuine defects instead**, both pre-existing.
+
+**Defect 1 — history reload silently bounced back to the empty screen.**
+`_render_upload()` runs *after* the history-restore block. When the input mode is
+"Upload Files" (the default) and the uploader is empty, the `elif` at
+`ui/app.py` popped `_file_data` — undoing the restore on the very same rerun.
+Clicking any history item therefore did nothing visible. This was only masked
+earlier because I had switched the app to "YouTube URL" mode, where the branch
+never fires.
+
+Fixed by dropping only *uploader-backed* entries: an entry restored from history
+carries no `"bytes"` key and now survives the clear.
+
+**Defect 2 — history results had no document content at all.**
+`PipelineResult.to_dict()` — what `DocumentStore` persists — excludes `raw_text`
+and chunks. A reloaded document showed `0 CHARACTERS`, and the Chat and Edit tabs
+queried an *empty* document while looking perfectly normal, producing confident
+"not in the document" answers.
+
+`DocumentStore` now stores `content_text` and `content_chunks_json` in their own
+columns, added by migration so existing databases keep working. They are
+deliberately **not** added to `to_dict()`, because that feeds the user-facing
+"Download JSON" export and stuffing the whole document into it would change what
+that download contains. `load()` merges them back as `raw_text` and
+`content_chunks`; `app.py` restores the chunks into the chat state. A guard in
+the chat tab reports "No document content available" for pre-migration entries
+rather than answering from nothing.
+
+**A third bug found while testing:** `DocumentStore._connect()` returned a bare
+`sqlite3.Connection`, and every call site used `with self._connect() as conn:`.
+That reads as if it closes, but sqlite3's context manager only commits or rolls
+back — it **never closes**. Every operation leaked a connection until garbage
+collection, holding a Windows file lock and accumulating handles in a long-lived
+Streamlit session. It surfaced as `PermissionError` deleting a temp DB in the new
+tests. `_connect` is now a `@contextmanager` that closes; call sites unchanged.
+
+**Verified in the running app, after a server restart:** clicking the
+`sample_report.pdf` history entry now renders (`1.4k CHARACTERS`, previously `0`)
+and chat answers correctly from persisted chunks —
+
+> "MTBF improved from 410 hours in Q2 to 690 hours in Q3, which represents a
+> +68% change. (Page 1) — Sources: 1, 2"
+
+citing the table and both chunks. Migration was also checked against the real
+`~/.docagent/history.db`: 2 existing rows preserved, columns added, old entries
+correctly reporting no content.
+
+5 new tests (65 total): content round-trip, export unchanged, result without a
+parsed document, migration preserving legacy rows, migration idempotent.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **65
+passed**.

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -87,6 +88,17 @@ class DocumentStore:
                     ON history (created_at DESC);
             """)
 
+            # Document content is stored outside result_json on purpose:
+            # PipelineResult.to_dict() feeds the user-facing "Download JSON"
+            # export, and stuffing the full document text into that export would
+            # change what the download contains. These columns are added
+            # separately so history reload gains content without altering the
+            # export. Added via migration so existing databases keep working.
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(history)")}
+            for column in ("content_text", "content_chunks_json"):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE history ADD COLUMN {column} TEXT")
+
     # ── Write ──────────────────────────────────────────────────────────────────
 
     def save(self, result: Any, raw_bytes: Optional[bytes] = None) -> int:
@@ -113,13 +125,26 @@ class DocumentStore:
         result_dict = result.to_dict()
         result_json = json.dumps(result_dict, default=str, ensure_ascii=False)
 
+        # Document content, stored separately from result_json so the
+        # "Download JSON" export is unchanged. Without this, a result reloaded
+        # from history has no text at all, and the Chat and Edit tabs silently
+        # operate on an empty document.
+        content_text = getattr(result, "raw_text", "") or ""
+        parsed_doc = getattr(result, "parsed_document", None)
+        chunks = getattr(parsed_doc, "chunks", None) if parsed_doc else None
+        content_chunks_json = json.dumps(
+            [{"text": c.text, "page_or_sheet": c.page_or_sheet} for c in chunks],
+            ensure_ascii=False,
+        ) if chunks else None
+
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO history
                     (file_name, file_hash, file_type, doc_type, domain,
-                     word_count, question_count, processing_time_ms, result_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     word_count, question_count, processing_time_ms, result_json,
+                     content_text, content_chunks_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.file_name,
@@ -131,6 +156,8 @@ class DocumentStore:
                     len(result.questions),
                     result.processing_time_ms,
                     result_json,
+                    content_text,
+                    content_chunks_json,
                 ),
             )
             entry_id = cursor.lastrowid
@@ -180,21 +207,38 @@ class DocumentStore:
         """
         Load a full result dict by entry ID.
 
-        Returns the raw dict (as stored by PipelineResult.to_dict()), or None.
+        Returns the dict stored by PipelineResult.to_dict(), with two extra keys
+        merged in from their own columns:
+
+            raw_text       — the document text
+            content_chunks — [{"text", "page_or_sheet"}, ...]
+
+        Without these a reloaded result carries no document content, and the
+        Chat and Edit tabs operate on an empty document without saying so.
+        Entries written before these columns existed simply return empty values.
         """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT result_json FROM history WHERE id = ?",
+                "SELECT result_json, content_text, content_chunks_json "
+                "FROM history WHERE id = ?",
                 (entry_id,),
             ).fetchone()
 
         if row is None:
             return None
         try:
-            return json.loads(row[0])
+            data = json.loads(row[0])
         except json.JSONDecodeError as exc:
             logger.error(f"DocumentStore: corrupt entry #{entry_id}: {exc}")
             return None
+
+        data["raw_text"] = row[1] or ""
+        try:
+            data["content_chunks"] = json.loads(row[2]) if row[2] else []
+        except json.JSONDecodeError:
+            logger.warning(f"DocumentStore: unreadable chunks for entry #{entry_id}")
+            data["content_chunks"] = []
+        return data
 
     def find_by_hash(self, file_hash: str) -> Optional[Dict[str, Any]]:
         """Return the most recent result for a given file hash (cache lookup)."""
@@ -238,7 +282,25 @@ class DocumentStore:
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """
+        Yield a connection and always close it.
+
+        Previously this returned a bare sqlite3.Connection, and every call site
+        used `with self._connect() as conn:`. That reads like it closes the
+        connection, but sqlite3's context manager only commits or rolls back the
+        transaction — it never closes. Every operation therefore leaked a
+        connection until garbage collection: on Windows that keeps a lock on the
+        database file, and in a long-lived Streamlit session the open handles
+        accumulate.
+
+        Call sites are unchanged; `with` now closes as it appears to.
+        """
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:          # preserves the original commit/rollback semantics
+                yield conn
+        finally:
+            conn.close()
