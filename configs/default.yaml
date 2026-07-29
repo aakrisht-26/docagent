@@ -30,6 +30,14 @@ groq:
   # seconds and fall below this; per-day limits (TPD/RPD) quote minutes or hours
   # and land above it. Parking expires automatically when the window elapses.
   park_threshold_seconds: 15
+  # Groq's TPD limit is a ROLLING window, not a daily bucket — verified from two
+  # refusals on the same key 32m50s apart where `Used` fell from 99,588 to
+  # 98,426 while that key was only being refused. The quoted retry-after answers
+  # only for the request that was refused, so parking for it keeps a key out far
+  # longer than a smaller call needs. Day-window parks are instead scaled to the
+  # time required to free this many tokens. Lower = keys return sooner but may
+  # be refused once more; higher = closer to the old behaviour.
+  park_min_request_tokens: 500
   # Cost estimation is DISABLED (both rates zero) because this project runs on
   # free-tier Groq keys, where dollar cost is not the constraint — rate limits
   # are. Token counts are still logged per run; only the dollar line is

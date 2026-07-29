@@ -1156,3 +1156,63 @@ rather than per key, every usable key tried before the first backoff, and the
 backoff using the shortest window rather than the longest.
 
 **Verification:** `pytest tests/ -q` → **75 passed**; live `audio` stage exit 0.
+
+---
+
+### Task 20 — TPD is a rolling window; park expiry made proportional ✅
+
+**Committed:** see `fix(llm): scale day-window parks to the rolling TPD budget`
+
+**Confirmed from data already on disk — no quota spent.** Two TPD refusals on
+key 1, 32m50s apart, recorded in `logs/docagent.log`:
+
+```
+19:02:49  key1  used=99,588  retry=41m21.408s
+19:35:39  key1  used=98,426  retry= 5m46.464s
+```
+
+Three findings:
+
+1. **`Used` fell by 1,162 tokens** across that interval while the key was only
+   ever being *refused*. A daily bucket cannot decrease before it resets, so the
+   window is **rolling**. This independently reproduces your 99,996 → 99,876
+   observation.
+2. **A single decay rate (~0.590 tokens/s) explains both quoted retry-after
+   values**, implying request sizes of 1,876 and 1,778 tokens — within 5% of each
+   other. Consumption therefore ages out roughly linearly, and the model is
+   sound rather than a coincidence of one data point.
+3. **The cost of the old behaviour:** at 19:02:49 the key was parked **41.4
+   minutes**, when a 500-token call would have fitted after **2.5**.
+
+`retry-after` answers a narrow question — when enough budget frees for *the
+request that was just refused*. Day-window parks are now scaled to the time
+needed to free `groq.park_min_request_tokens` (default 500) instead:
+
+```
+headroom = limit - used;  deficit = requested - headroom
+park     = wait * (target - headroom) / deficit
+```
+
+Bounded to `[0, wait]`, so it can never exceed Groq's own answer. Falls back to
+the full wait when any figure is missing, and returns 0 when a small request
+already fits. **Per-minute windows are deliberately not scaled** — only TPD/RPD
+decay this way. Waking a key slightly early costs one refused request; waking it
+40 minutes late costs the run.
+
+**Live confirmation:**
+
+```
+key 1/8: parked for 66s  (429 TPD 99587/100000, retry in 1m5.664s)
+key 2/8: parked for 0s   (429 TPD 99317/100000, retry in 20m4.416s;
+                          parking 0.0m instead — enough for a 500-token call)
+```
+
+Key 2's **20-minute park became zero** — it held 683 tokens of headroom, so it
+never left rotation.
+
+6 new tests (81 total): scaling against the real observed figures, zero when a
+small request fits, never exceeding the quoted wait, fallback on missing figures,
+per-minute parks left unscaled, and the end-to-end park being shortened.
+
+**Verification:** `pytest tests/ -q` → **81 passed**; live `pdf` stage exit 0 in
+7.1s.

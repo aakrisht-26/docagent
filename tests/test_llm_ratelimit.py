@@ -227,6 +227,70 @@ class TestDerivedDailyHeadroom(unittest.TestCase):
                          "a per-minute refusal must not populate daily figures")
 
 
+class TestProportionalParking(unittest.TestCase):
+    """TPD is a rolling window, so park only as long as a small call needs.
+
+    Established from two refusals on one key 32m50s apart where `Used` fell from
+    99,588 to 98,426 while that key was only being refused — a daily bucket
+    cannot decrease before it resets.
+    """
+
+    def setUp(self):
+        LLMClient.reset_shared_state()
+
+    def _client(self, min_tokens=500):
+        c = LLMClient(model="m", api_keys=["gsk_p1", "gsk_p2"], cache_enabled=False,
+                      park_min_request_tokens=min_tokens)
+        c._client_for = lambda idx: idx
+        c._backoff_seconds = staticmethod(lambda attempt: 0.0)
+        return c
+
+    def test_scales_park_to_a_small_request(self):
+        client = self._client(min_tokens=500)
+        # The real observation: headroom 412, ~1,876-token request, 2481s wait.
+        info = {"limit": 100000, "used": 99588, "requested": 1876, "window": "day"}
+        parked = client._proportional_park_seconds(info, 2481.4)
+        self.assertLess(parked, 2481.4, "must be shorter than the full retry-after")
+        self.assertAlmostEqual(parked / 60, 2.5, delta=0.6,
+                               msg=f"expected ~2.5 min, got {parked/60:.1f} min")
+
+    def test_zero_when_a_small_request_already_fits(self):
+        client = self._client(min_tokens=500)
+        info = {"limit": 100000, "used": 98426, "requested": 1778, "window": "day"}
+        self.assertEqual(client._proportional_park_seconds(info, 346.5), 0.0)
+
+    def test_never_longer_than_groq_says(self):
+        client = self._client(min_tokens=100000)   # absurdly large target
+        info = {"limit": 100000, "used": 99588, "requested": 1876, "window": "day"}
+        self.assertLessEqual(client._proportional_park_seconds(info, 2481.4), 2481.4)
+
+    def test_falls_back_when_figures_missing(self):
+        client = self._client()
+        self.assertEqual(client._proportional_park_seconds({"window": "day"}, 900.0), 900.0)
+        self.assertIsNone(client._proportional_park_seconds({}, None))
+
+    def test_minute_window_park_is_not_scaled(self):
+        """Only day windows decay this way; a TPM park keeps its full wait."""
+        client = self._client()
+
+        def op(idx):
+            raise rate_limit_error(TPM_BODY, retry_after="600")   # long, so it parks
+        client._run_with_rotation(op, what="t")
+        parked_for = client._parked_until[0] - time.monotonic()
+        self.assertGreater(parked_for, 500,
+                           "a per-minute refusal must not be scaled down")
+
+    def test_end_to_end_park_is_shortened(self):
+        client = self._client(min_tokens=500)
+
+        def op(idx):
+            raise rate_limit_error(TPD_BODY)     # 28m3.936s, headroom 318, req 2267
+        client._run_with_rotation(op, what="t")
+        parked_for = client._parked_until[0] - time.monotonic()
+        self.assertLess(parked_for, 1683.9,
+                        "day-window park should be scaled below the quoted wait")
+
+
 class TestSweepBeforeBackoff(unittest.TestCase):
     """Short 429s must not cost one retry-after sleep per key.
 

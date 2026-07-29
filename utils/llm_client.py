@@ -98,6 +98,12 @@ _BACKOFF_MAX_SECONDS = 8.0
 # parked and the next key is used immediately.
 _DEFAULT_PARK_THRESHOLD_SECONDS = 15.0
 
+# Smallest request worth un-parking a key for, in tokens. Day-window parks are
+# scaled to the time needed to free this much budget rather than the full
+# retry-after, which answers only for the (often much larger) request that was
+# refused. See LLMClient._proportional_park_seconds.
+_DEFAULT_PARK_MIN_REQUEST_TOKENS = 500
+
 T = TypeVar("T")
 
 # ── Process-wide rate-limit state, shared across LLMClient instances ──────────
@@ -226,8 +232,10 @@ class LLMClient:
         cache_enabled: bool = True,
         cache_max_size: int = 128,
         park_threshold_seconds: float = _DEFAULT_PARK_THRESHOLD_SECONDS,
+        park_min_request_tokens: int = _DEFAULT_PARK_MIN_REQUEST_TOKENS,
     ) -> None:
         self.park_threshold    = float(park_threshold_seconds)
+        self._park_min_request = int(park_min_request_tokens)
         self.model             = model
         self.api_keys          = [api_keys] if isinstance(api_keys, str) else api_keys
         self.base_url          = base_url
@@ -332,6 +340,8 @@ class LLMClient:
         cache_max_size     = int(groq_cfg.get("cache_max_size", 128))
         park_threshold     = float(groq_cfg.get("park_threshold_seconds",
                                                 _DEFAULT_PARK_THRESHOLD_SECONDS))
+        park_min_tokens    = int(groq_cfg.get("park_min_request_tokens",
+                                              _DEFAULT_PARK_MIN_REQUEST_TOKENS))
 
         return cls(
             model=model,
@@ -343,6 +353,7 @@ class LLMClient:
             cache_enabled=cache_enabled,
             cache_max_size=cache_max_size,
             park_threshold_seconds=park_threshold,
+            park_min_request_tokens=park_min_tokens,
         )
 
     @property
@@ -394,6 +405,55 @@ class LLMClient:
                 logger.info(f"key {i + 1}/{n}: rate-limit window elapsed; back in rotation.")
             live.append(i)
         return live
+
+    def _proportional_park_seconds(
+        self, info: Dict[str, Any], wait: Optional[float]
+    ) -> Optional[float]:
+        """
+        Scale a day-window park to the smallest request worth waking up for.
+
+        Groq's TPD limit is a ROLLING window, not a daily bucket — established
+        from two refusals on the same key 32m50s apart, where `Used` *fell* from
+        99,588 to 98,426 while that key was only ever being refused. A bucket
+        cannot decrease before it resets. A single decay rate (~0.59 tokens/s)
+        also reproduced both quoted retry-after values to within 5%, so
+        consumption ages out roughly linearly.
+
+        `retry-after` therefore answers a narrow question: when will enough
+        budget have decayed for *the request that was just refused*. Parking for
+        that full window keeps the key out far longer than a smaller request
+        needs. In the observed case it meant a 41.4-minute park when a
+        500-token call would have fitted after 2.5 minutes.
+
+        Given `limit`, `used` and `requested` from the refusal body:
+
+            headroom        = limit - used            (available right now)
+            deficit         = requested - headroom    (must decay for THAT call)
+            target_deficit  = target - headroom       (must decay for a small one)
+            park            = wait * target_deficit / deficit
+
+        Returns `wait` unchanged when the figures are missing or the arithmetic
+        does not apply, and 0.0 when a small request already fits. Waking a key
+        slightly early costs one refused request; waking it 40 minutes late
+        costs the whole run.
+        """
+        limit = info.get("limit")
+        used = info.get("used")
+        requested = info.get("requested")
+        if wait is None or None in (limit, used, requested):
+            return wait
+
+        headroom = limit - used
+        deficit = requested - headroom
+        if deficit <= 0:
+            return wait                      # refusal not explained by this call's size
+
+        target_deficit = self._park_min_request - headroom
+        if target_deficit <= 0:
+            return 0.0                       # a small request fits already
+
+        scaled = wait * (target_deficit / deficit)
+        return max(0.0, min(scaled, wait))   # never longer than Groq's own answer
 
     def _park_key(self, idx: int, seconds: float, reason: str) -> None:
         """Take a key out of rotation until its rate-limit window elapses."""
@@ -611,7 +671,23 @@ class LLMClient:
                 if wait is not None and wait > self.park_threshold:
                     # Exhausted for this window, not briefly throttled. Retrying
                     # this key would burn attempts on a guaranteed refusal.
-                    self._park_key(idx, wait, f"429 {detail}, retry in {info.get('retry_after_text', f'{wait:.0f}s')}")
+                    #
+                    # For a day window the quoted retry-after answers only for
+                    # the request that was refused. TPD decays continuously, so
+                    # scale the park to the smallest request worth waking for.
+                    park_for = wait
+                    if info.get("window") == "day":
+                        park_for = self._proportional_park_seconds(info, wait) or 0.0
+                    reason = (
+                        f"429 {detail}, retry in "
+                        f"{info.get('retry_after_text', f'{wait:.0f}s')}"
+                    )
+                    if park_for < wait:
+                        reason += (
+                            f"; parking {park_for / 60:.1f}m instead — enough for a "
+                            f"{self._park_min_request}-token call as the window decays"
+                        )
+                    self._park_key(idx, park_for, reason)
                     _rotate()
                     continue
 
