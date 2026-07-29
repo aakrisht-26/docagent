@@ -9,7 +9,100 @@ Branch: `overnight-hardening` · Baseline tag: `working-baseline` (`c842d84`)
 
 ## End of Session Report
 
-_Pending — filled in when the task queue completes._
+### 1. Done and committed
+
+| Commit | Task | One line |
+|---|---|---|
+| `0b3f7a1` | 1 | e2e harness + fixtures moved into `tests/e2e/`; fresh-clone reproduction proven |
+| `a2d9a3f` | 2 | `.env.example`, committed theme config, README fresh-clone steps |
+| `6392a6e` | 3 | Scanned-PDF fixture and 6th e2e stage; OCR tier exercised for the first time |
+| `590f26a` | 4 | Placeholder keys filtered at resolution; false claim in CODEBASE_GUIDE corrected |
+| `9d6cff0` | 5 | `.env` parser agrees with dotenv; quote-stripping, spaced `=`, UTF-8 BOM |
+| `275b44e` | 6 | Stage numbering, cumulative timing, skip visibility, per-run breakdown |
+| `e0bf3ae` | 7 | UI logs full tracebacks, surfaces error type, `DOCAGENT_DEBUG` re-raises |
+| `769dad6` | 8 | `DEPENDENCIES.md` (documentation only, no pip run) |
+| `d3f6c2e` | 9 | Non-functional `docagent` console script dropped |
+| `d69a55b` | 10 | Upload limit 200 MB → 50 MB, rejected before upload, drift check |
+| `1d3031d` | 11 | Paddle import skipped when GPU unusable — 2125 ms → 0 ms |
+| `615550c` | 11a | Three OpenCV installs collapsed onto pinned headless; OCR byte-identical |
+| `c7b29b5` | 12 | Shared retry/backoff/401-aware rotation; audio routed through it |
+| `c0d9f5d` | 13 | Per-run token usage (cost estimate later disabled for free tier) |
+| `21c0c4f` | 13b | Rate-limit headroom logging and window-aware 429 parking |
+| `d988a7c` | 13c | TPD headroom derived from refusals; Groq limits documented |
+| `c01d83f` | 14 | Position-based progress with per-stage timings |
+| `e8d2feb` | 15 | Document content persisted; history reload repaired; connection leak fixed |
+| `43a0e75` | 16 | `.DS_Store` + stale 3.13 bytecode cleanup (local only — nothing was tracked) |
+
+### 2. Attempted and abandoned
+
+- **Nothing was abandoned.** Every queued task completed.
+- **Three approaches were discarded mid-task after being disproved:** a
+  CUDA-driver check for Task 11 (returns true here — the machine has an RTX 3050;
+  the blocker is the CPU-only wheel), and two wrong hypotheses for the missing
+  logs in Task 6 (paddleocr's import, then `logging.disable()` — the real cause
+  was `import paddle` resetting the root logger level).
+- **Deliberately not done:** `AudioReaderSkill`'s key-resolution gap was left for
+  Task 12 rather than fixed twice; TPD-headroom visibility was left imperfect
+  rather than adding machinery to force it into view; `cpython-310` bytecode was
+  left because Task 16 did not name it.
+
+### 3. Open questions
+
+1. **`cpython-310` bytecode** — 10 files, as stale as the 3.13 ones. Delete?
+2. **`pandas>=2.0.0` is unbounded** across a major version, and `pip check`
+   reports `streamlit 1.37.1 requires pandas<3` against the installed 3.0.3.
+   Documented only, per your instruction.
+3. **`python-dotenv` 0.21.0** violates its own `>=1.0.0` pin in
+   `requirements.txt`.
+4. **Whether all 8 Groq keys belong to one organisation** — never established.
+   Rotation demonstrably works either way, so no quota was spent closing it.
+5. **`~/.docagent/history.db` was written to** during Task 15 — migration plus
+   one new row. All pre-existing rows verified preserved; no backup was taken.
+
+### 4. Commands
+
+```bash
+# run the app
+cd E:\DocAnalyzer\doc-agent && streamlit run ui/app.py
+
+# full end-to-end verification (6 stages, live API)
+cd E:\DocAnalyzer\doc-agent && python tests/e2e/e2e.py all
+
+# a single stage
+cd E:\DocAnalyzer\doc-agent && python tests/e2e/e2e.py scanned
+
+# unit tests (no API key or network needed)
+cd E:\DocAnalyzer\doc-agent && pytest tests/ -q
+
+# per-key rate-limit headroom
+cd E:\DocAnalyzer\doc-agent && set DOCAGENT_LOG_LEVEL=DEBUG && python tests/e2e/e2e.py pdf
+
+# which keys are currently accepting requests
+cd E:\DocAnalyzer\doc-agent && python tests/e2e/ratelimit_scope_check.py
+```
+
+### 5. Files to review closely before merging
+
+1. **`utils/llm_client.py`** — the largest change by far (+602 lines). All API
+   failure handling now lives in `_run_with_rotation`. Check the 429 branch:
+   `park_threshold_seconds` decides retry-versus-park, and getting it wrong
+   either burns attempts on exhausted keys or parks keys that would have
+   recovered in seconds.
+2. **`utils/document_store.py`** — schema migration on your real database, plus
+   the `_connect` contextmanager change. The migration is `ALTER TABLE` guarded
+   by `PRAGMA table_info`; verify you are happy with it before it runs on
+   anything you care about.
+3. **`ui/app.py`** — the `_file_data` clearing logic. Restoring history entries
+   while dropping stale uploads is subtle, and getting it wrong silently returns
+   users to the empty screen (exactly the bug that was fixed).
+4. **`utils/config.py`** — `_reject_reason` placeholder markers. A marker that is
+   too broad would silently discard a real key.
+5. **`configs/default.yaml`** — three new knobs: `debug`, `force_gpu_probe`,
+   `park_threshold_seconds`, plus zeroed `pricing`.
+
+### 6. PR
+
+See below — opened from `overnight-hardening` into `main`, left unmerged.
 
 ---
 
