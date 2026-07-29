@@ -1,0 +1,14 @@
+# core.autocrlf is enabled on Windows checkouts, and without these rules Git
+# guesses at content type. It guessed "text" for the e2e PDF fixture, which
+# would rewrite line endings inside the binary and corrupt it on clone.
+# Mark the binary fixture formats explicitly so they round-trip byte-for-byte.
+
+*.pdf   binary
+*.xlsx  binary
+*.xls   binary
+*.wav   binary
+*.mp3   binary
+*.m4a   binary
+*.flac  binary
+*.ogg   binary
+*.webm  binary

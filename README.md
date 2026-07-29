@@ -27,66 +27,186 @@ DocAgent is a high-performance, modular AI agent for intelligent document unders
 
 ## Getting Started
 
-### Prerequisites
+Follow these five steps in order on a fresh clone. Step 3 is the one people skip,
+and it is the one that breaks audio and YouTube.
 
-- **Python 3.10+**
-- **Groq API Key** — [Groq Cloud Console](https://console.groq.com/)
-- **ffmpeg** (required for audio and YouTube processing)
+### 1. Clone and install Python dependencies
+
+Requires **Python 3.10+**.
 
 ```bash
+git clone https://github.com/aakrisht-26/docagent.git
+cd docagent
+pip install -r requirements.txt
+```
+
+### 2. Add your Groq API key
+
+Get one from the [Groq Cloud Console](https://console.groq.com/keys), then:
+
+```bash
+cp .env.example .env
+```
+
+On Windows use `copy .env.example .env` (cmd) or `Copy-Item .env.example .env`
+(PowerShell). Open `.env` and replace the placeholder keys with real ones.
+
+`.env.example` documents every supported variable. Only the API key is required;
+everything else has a working default in `configs/default.yaml`.
+
+> **Multiple keys must be quoted if split across lines.** DocAgent rotates
+> round-robin across keys and fails over on rate limits (429) and invalid keys
+> (401). If you write the value unquoted across several lines, python-dotenv
+> stops at the first newline, silently loads only the first key, and logs
+> `Python-dotenv could not parse statement starting at line N`.
+
+**Without a key:** the app still runs. Classification falls back to heuristics
+and summarisation to extractive mode; chat, question extraction, and audio
+transcription are unavailable.
+
+### 3. Install the system binaries
+
+These are **external programs, not pip packages**. `pip install ffmpeg-python`
+does *not* give you ffmpeg.
+
+| Binary | Needed for | Without it |
+|---|---|---|
+| **ffmpeg** + **ffprobe** | Audio and YouTube | YouTube downloads the stream, then fails in postprocessing with `ffprobe and ffmpeg not found`. Local audio files fail to convert. PDF, Excel and CSV are unaffected. |
+| **tesseract** | OCR fallback for scanned PDFs | Scanned or photographed PDFs with no text layer produce an empty document. PDFs with a text layer are unaffected, since pdfplumber and PyMuPDF handle those first. |
+
+```bash
+# Windows (winget) — ffmpeg ships ffprobe alongside it
+winget install --id Gyan.FFmpeg -e
+winget install --id UB-Mannheim.TesseractOCR -e
+
 # macOS
-brew install ffmpeg
+brew install ffmpeg tesseract
 
 # Ubuntu / Debian
-sudo apt-get install ffmpeg
-
-# Windows
-choco install ffmpeg
+sudo apt-get install ffmpeg tesseract-ocr
 ```
 
-- **Tesseract OCR** (optional — only needed for scanned/image PDFs)
-
-### Installation
+Verify all three are visible before continuing. On Windows you may need a new
+terminal after installing, since PATH changes do not reach already-running
+processes:
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/DocAgent.git
-cd DocAgent
-
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Or install as a CLI package
-pip install -e .
+ffmpeg -version && ffprobe -version && tesseract --version
 ```
 
-### Configuration
+### 4. Verify the install end to end
 
-Create a `.env` file in the project root. Multiple keys are supported for automatic rotation:
+This runs the real pipeline against committed fixtures and the live Groq API —
+a text-layer PDF, a scanned image-only PDF (which forces the Tesseract OCR
+tier), an Excel workbook, an audio file, a YouTube video, and a two-turn RAG
+exchange:
 
 ```bash
-# .env
-GROQ_API_KEYS="gsk_key1,gsk_key2,gsk_key3"
+python tests/e2e/e2e.py all
 ```
 
-DocAgent rotates through these keys automatically if any one hits a rate limit.
+Exit code 0 with six `PASS` rows means the install is good. Run a single stage
+with `python tests/e2e/e2e.py pdf` (or `scanned`, `excel`, `audio`, `youtube`,
+`rag`).
 
-All settings can also be overridden via environment variables:
+The `scanned` stage is the one that proves Tesseract is wired up correctly: it
+asserts the OCR engine actually ran, so it fails loudly rather than silently
+falling back if `tesseract` is missing from PATH.
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `GROQ_API_KEY` / `GROQ_API_KEYS` | Groq API key(s) | — |
-| `DOCAGENT_MAX_FILE_MB` | Max upload size | 50 |
-| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
-| `DOCAGENT_LOG_LEVEL` | Logging verbosity | INFO |
+Unit tests, which need no API key or network:
 
-### Run the App
+```bash
+pytest tests/ -v
+```
+
+### 5. Run the app
 
 ```bash
 streamlit run ui/app.py
 ```
 
 Open `http://localhost:8501` in your browser.
+
+### Groq rate limits — read this before you debug a stalled run
+
+Groq enforces **four** separate limits. Two are reported in response headers,
+two are not, and **the one that will actually stop this pipeline is invisible**.
+
+| Limit | Meaning | Free-tier value | Visible in headers? |
+|---|---|---|---|
+| **RPM** | requests per minute | — | no |
+| **RPD** | requests per **day** | 1,000 | yes — `x-ratelimit-*-requests` |
+| **TPM** | tokens per **minute** | 12,000 | yes — `x-ratelimit-*-tokens` |
+| **TPD** | tokens per **day** | **100,000** | **no** |
+
+**The header names are asymmetric. Do not assume they pair up:**
+
+```
+x-ratelimit-limit-requests  ->  requests per DAY      (RPD)
+x-ratelimit-limit-tokens    ->  tokens   per MINUTE   (TPM)
+```
+
+They look symmetric and describe different windows. The `reset` fields follow
+their own metric, so `reset-requests` may read `1h12m` while `reset-tokens`
+reads `3.6s` on the same response.
+
+**TPD is the binding constraint for this pipeline.** A single document run costs
+roughly 2,000–3,000 tokens across classification, summarisation and structured
+extraction, so **100,000 tokens/day is on the order of 30–50 documents**. Whisper
+transcription is billed per second of audio and does not draw on TPD.
+
+The trap: TPD appears in no header, so a key can report healthy headroom
+(`requests/day 988/1000`, `tokens/min 11453/12000`) and still be refused on the
+very next call. The limit is only ever stated in the body of a 429:
+
+```
+Rate limit reached for model `llama-3.3-70b-versatile` in organization
+`org_...` service tier `on_demand` on tokens per day (TPD):
+Limit 100000, Used 99682, Requested 2267. Please try again in 28m3.936s.
+```
+
+**Limits are enforced per API key, not pooled across an organisation** — verified
+by observing two keys refused in the same run at different consumption levels
+(99,654/100,000 and 98,412/100,000). Configuring several keys in `GROQ_API_KEYS`
+therefore multiplies your daily budget, and `LLMClient` rotates automatically.
+
+How the client responds:
+
+- A **short** 429 (per-minute limits, seconds) → back off and retry.
+- A **long** 429 (per-day limits, minutes or hours) → **park that key** until its
+  window elapses and switch to the next key immediately. Parking expires by
+  itself; it is not the permanent retirement applied to a 401.
+- TPD figures scraped from a refusal are cached per key and reported as
+  **derived from the last refusal, not live**. A key that has never been refused
+  reports `unknown` rather than a guess — no request is ever sent purely to
+  discover a limit.
+
+To see per-key headroom:
+
+```bash
+DOCAGENT_LOG_LEVEL=DEBUG python tests/e2e/e2e.py pdf
+```
+
+To inspect limits directly, `tests/e2e/ratelimit_probe.py` reads the header
+counters and `tests/e2e/ratelimit_scope_check.py` reports which keys are
+currently accepting requests.
+
+### Environment variable reference
+
+All settings can be overridden by environment variable; see `.env.example` for
+the full annotated list.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `GROQ_API_KEYS` / `GROQ_API_KEY` | Groq API key(s), comma-separated | — |
+| `DOCAGENT_MAX_FILE_MB` | Max upload size in MB | 50 |
+| `DOCAGENT_LOG_LEVEL` | Logging verbosity | INFO |
+| `DOCAGENT_LOG_FILE` | Log file path | logs/docagent.log |
+| `DOCAGENT_DEBUG` | Re-raise pipeline errors instead of catching them | false |
+| `DOCAGENT_GROQ_ENABLED` | Set false to disable all LLM calls | true |
+| `DOCAGENT_GROQ_URL` | OpenAI-compatible endpoint | https://api.groq.com/openai/v1 |
+| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
+| `DOCAGENT_GROQ_TIMEOUT` | Per-request timeout in seconds | 180 |
 
 ---
 
@@ -197,9 +317,12 @@ pytest tests/ -v
 # Run a specific test class
 pytest tests/test_skills.py::TestDocumentClassifierSkill -v
 
-# Development install (enables `docagent` CLI entry point)
+# Editable install of the library packages (agents, core, skills, utils)
 pip install -e .
 ```
+
+There is no `docagent` console command. The app is started with
+`streamlit run ui/app.py` — see [Run the app](#5-run-the-app).
 
 ### Adding a New Skill
 

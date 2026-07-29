@@ -13,6 +13,18 @@ Usage:
     setup_logging(level="INFO", log_file="logs/docagent.log")
     logger = get_logger(__name__)
     logger.info("Ready.")
+
+Why setup_logging() matters, and why propagate=False is load-bearing:
+
+    `import paddle` — pulled in by StructureRecognitionSkill's GPU probe —
+    resets the ROOT logger level from INFO to WARNING as an import side effect.
+    Any entry point that configures logging only via `logging.basicConfig()`
+    will therefore lose every DocAgent INFO record emitted after the first
+    paddle import, silently, with no error.
+
+    setup_logging() gives the "docagent" logger its own handlers and sets
+    propagate=False, which isolates it from third-party meddling with root.
+    Call it once from every entry point (ui/app.py, tests/e2e/e2e.py, any CLI).
 """
 
 from __future__ import annotations

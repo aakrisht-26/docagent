@@ -9,6 +9,7 @@ Environment Variable Overrides (all optional):
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,11 +19,53 @@ from typing import Any, Dict, Optional
 import yaml
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 # Load .env file if it exists
 load_dotenv()
 
+# Substrings that mark a value as an unedited placeholder rather than a real
+# key. Matched case-insensitively. These cover the shipped defaults in
+# configs/default.yaml ("PASTE_YOUR_GROQ_API_KEY_HERE",
+# "PASTE_MULTIPLE_GROQ_API_KEYS_HERE"), the samples in .env.example
+# ("gsk_replace_me_key_one"), and the usual hand-written stand-ins.
+# Deliberately conservative: every marker contains an underscore or is a full
+# word, so it cannot collide with a real Groq key, which is `gsk_` followed by
+# alphanumerics only.
+_PLACEHOLDER_MARKERS = (
+    "PASTE",
+    "REPLACE_ME",
+    "REPLACEME",
+    "YOUR_",
+    "_HERE",
+    "CHANGE_ME",
+    "CHANGEME",
+    "DUMMY",
+)
+
+# Shortest plausible real key. Groq keys are 56 chars; anything under this is a
+# truncated paste or a stub.
+_MIN_KEY_LENGTH = 20
+
+
+def _reject_reason(key: str) -> Optional[str]:
+    """Return why `key` is unusable, or None if it looks like a real key."""
+    upper = key.upper()
+    for marker in _PLACEHOLDER_MARKERS:
+        if marker in upper:
+            return f"looks like an unedited placeholder (contains {marker!r})"
+    if len(key) < _MIN_KEY_LENGTH:
+        return f"too short ({len(key)} chars, expected at least {_MIN_KEY_LENGTH})"
+    if any(ch.isspace() for ch in key):
+        return "contains whitespace"
+    return None
+
 # Matches lines of the form KEY=value or KEY = value (used to detect new entries)
 _KEY_VALUE_LINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\s*=')
+
+# Start of the GROQ_API_KEYS assignment. Tolerates whitespace around `=`, which
+# dotenv also accepts, so both parsers agree on where the value begins.
+_GROQ_KEYS_HEADER_RE = re.compile(r'^GROQ_API_KEYS\s*=\s*', re.IGNORECASE)
 
 
 def _read_multiline_env_keys() -> list:
@@ -35,6 +78,11 @@ def _read_multiline_env_keys() -> list:
     function reads the raw .env file and stitches together any continuation
     lines (lines that don't look like a new KEY=VALUE pair) so all keys are
     captured regardless of how the user formatted the file.
+
+    Handles both the unquoted and the quoted multiline forms. Surrounding
+    quotes are stripped: when the value IS quoted, dotenv parses it correctly
+    and this function must produce the identical key list, not the same keys
+    with a stray quote welded onto the first and last one.
     """
     env_path = Path(__file__).parent.parent / ".env"
     if not env_path.exists():
@@ -44,12 +92,17 @@ def _read_multiline_env_keys() -> list:
     raw_parts: list = []
 
     try:
-        with open(env_path, "r", encoding="utf-8") as fh:
+        # utf-8-sig transparently strips a UTF-8 BOM if present. Notepad and
+        # PowerShell's Set-Content both write one by default, and a leading BOM
+        # would otherwise stop the header regex matching, silently yielding
+        # zero keys. Files without a BOM decode identically.
+        with open(env_path, "r", encoding="utf-8-sig") as fh:
             for line in fh:
                 stripped = line.strip()
-                if stripped.upper().startswith("GROQ_API_KEYS="):
+                header = _GROQ_KEYS_HEADER_RE.match(stripped)
+                if header:
                     collecting = True
-                    raw_parts.append(stripped[len("GROQ_API_KEYS="):])
+                    raw_parts.append(stripped[header.end():])
                 elif collecting:
                     # Stop on blank line, comment, or a new KEY=VALUE pair
                     if not stripped or stripped.startswith("#") or _KEY_VALUE_LINE_RE.match(stripped):
@@ -61,8 +114,16 @@ def _read_multiline_env_keys() -> list:
     if not raw_parts:
         return []
 
-    raw_value = ",".join(raw_parts)
-    return [k.strip() for k in raw_value.split(",") if k.strip()]
+    raw_value = ",".join(raw_parts).strip()
+
+    # Drop a matched pair of surrounding quotes from the whole value, then any
+    # stray quote left on an individual key. Without this the quoted multiline
+    # form yields a first key prefixed with `"` and a last key suffixed with
+    # `"` — two silently invalid keys that each cost a 401 during rotation.
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "\"'":
+        raw_value = raw_value[1:-1]
+
+    return [k.strip().strip('"').strip("'") for k in raw_value.split(",") if k.strip().strip('"').strip("'")]
 
 _CONFIG_PATH = Path(__file__).parent.parent / "configs" / "default.yaml"
 _CONFIG_CACHE: Optional[AppConfig] = None
@@ -78,6 +139,8 @@ class GroqConfig:
     model: str = "llama-3.3-70b-versatile"
     timeout_seconds: int = 180
     temperature: float = 0.15
+    #: Rates for the per-run cost ESTIMATE only; not billed figures.
+    pricing: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -128,6 +191,9 @@ class AppConfig:
     max_file_size_mb: int = 50
     log_level: str = "INFO"
     log_file: str = "logs/docagent.log"
+    #: When true, the UI re-raises pipeline exceptions instead of rendering them
+    #: as an error message, so the full traceback reaches the console/debugger.
+    debug: bool = False
 
     groq: GroqConfig = field(default_factory=GroqConfig)
     pdf: PDFConfig = field(default_factory=PDFConfig)
@@ -174,6 +240,7 @@ class AppConfig:
                 "model": self.groq.model,
                 "timeout_seconds": self.groq.timeout_seconds,
                 "temperature": self.groq.temperature,
+                "pricing": self.groq.pricing,
             },
             "pdf": {
                 "use_ocr_fallback": self.pdf.use_ocr_fallback,
@@ -238,6 +305,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         max_file_size_mb= int(os.getenv("DOCAGENT_MAX_FILE_MB", app_r.get("max_file_size_mb", 50))),
         log_level       = os.getenv("DOCAGENT_LOG_LEVEL", app_r.get("log_level", "INFO")),
         log_file        = os.getenv("DOCAGENT_LOG_FILE", app_r.get("log_file", "logs/docagent.log")),
+        debug           = _env_bool("DOCAGENT_DEBUG", app_r.get("debug", False)),
         groq=GroqConfig(
             enabled        = _env_bool("DOCAGENT_GROQ_ENABLED", gro_r.get("enabled", True)),
             api_keys       = os.getenv("GROQ_API_KEYS", gro_r.get("api_keys", "")),
@@ -246,6 +314,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             model          = os.getenv("DOCAGENT_GROQ_MODEL", gro_r.get("model", "llama-3.3-70b-versatile")),
             timeout_seconds= int(os.getenv("DOCAGENT_GROQ_TIMEOUT", gro_r.get("timeout_seconds", 180))),
             temperature    = float(gro_r.get("temperature", 0.15)),
+            pricing        = dict(gro_r.get("pricing") or {}),
         ),
         pdf  = PDFConfig(**{k: v for k, v in pdf_r.items() if k in PDFConfig.__dataclass_fields__}) if pdf_r else PDFConfig(),
         excel= ExcelConfig(**{k: v for k, v in xls_r.items() if k in ExcelConfig.__dataclass_fields__}) if xls_r else ExcelConfig(),
@@ -277,6 +346,12 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
     Returns a deduplicated list of non-empty stripped key strings.
     All sources are combined so that setting GROQ_API_KEY=key1 does NOT
     prevent multiple keys configured in api_keys from being used.
+
+    Placeholders and malformed values are filtered out here, at resolution
+    time, so no caller ever receives them. configs/default.yaml ships with
+    `api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"`, and without this filter that
+    string was returned as a live key and handed to the API — guaranteeing a
+    401 and burning a key-rotation slot on every rate-limit failover.
     """
     groq_cfg = groq_cfg or {}
 
@@ -289,6 +364,18 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
 
     seen: set = set()
     keys: list = []
+    rejected: list = []
+
+    def _consider(candidate: str) -> None:
+        if candidate in seen:
+            return
+        seen.add(candidate)
+        reason = _reject_reason(candidate)
+        if reason:
+            rejected.append((candidate, reason))
+        else:
+            keys.append(candidate)
+
     for src in (
         os.environ.get("GROQ_API_KEYS", ""),
         groq_cfg.get("api_keys", ""),
@@ -296,16 +383,20 @@ def resolve_groq_api_keys(groq_cfg: Optional[Dict[str, Any]] = None) -> list:
         groq_cfg.get("api_key", ""),
     ):
         for k in _split(src):
-            if k not in seen:
-                seen.add(k)
-                keys.append(k)
+            _consider(k)
 
     # Supplement with raw .env file parse — handles unquoted multiline values
     # that python-dotenv truncates to the first physical line.
     for k in _read_multiline_env_keys():
-        if k not in seen:
-            seen.add(k)
-            keys.append(k)
+        _consider(k)
+
+    for candidate, reason in rejected:
+        # Never log the value itself; a rejected candidate can still be a real
+        # (if malformed) secret.
+        logger.warning(
+            "Ignoring Groq API key candidate: %s. [redacted, %d chars]",
+            reason, len(candidate),
+        )
 
     return keys
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import time
 import os
+import traceback
 from pathlib import Path
 
 # ── Path fixup so app can be run from repo root ────────────────────────────────
@@ -269,8 +270,27 @@ def _render_sidebar() -> None:
             st.markdown("</div>", unsafe_allow_html=True)
         st.divider()
 
-        # ── Config health check ────────────────────────────────────────
+        # ── Upload limit agreement ─────────────────────────────────────
+        # Streamlit enforces server.maxUploadSize in the browser; validate_file
+        # enforces app.max_file_size_mb after the bytes have already arrived. If
+        # they disagree the user can sit through a long upload only to be told
+        # the file is too big, so surface any drift rather than letting it be
+        # discovered the slow way.
         cfg_issues = _cfg.validate()
+        try:
+            st_limit = int(st.get_option("server.maxUploadSize"))
+            if st_limit != _cfg.max_file_size_mb:
+                cfg_issues = cfg_issues + [
+                    f"Upload limit mismatch: Streamlit accepts {st_limit} MB "
+                    f"(server.maxUploadSize) but files over "
+                    f"{_cfg.max_file_size_mb} MB are rejected after upload "
+                    f"(app.max_file_size_mb). Set maxUploadSize in "
+                    f".streamlit/config.toml to {_cfg.max_file_size_mb}."
+                ]
+        except Exception as exc:  # option unavailable in this Streamlit build
+            logger.warning("Could not read server.maxUploadSize: %s", exc)
+
+        # ── Config health check ────────────────────────────────────────
         if cfg_issues:
             st.divider()
             st.markdown("**⚠️ Configuration issues**")
@@ -355,7 +375,10 @@ def _render_upload() -> tuple[list, dict]:
                 type=["pdf", "xlsx", "xls", "csv", "mp3", "m4a", "wav", "flac", "ogg", "webm"],
                 accept_multiple_files=True,
                 label_visibility="visible",
-                help="PDF, Excel (.xlsx / .xls), CSV, or Audio (MP3, WAV, M4A, FLAC, OGG, WebM) · max 50 MB per file",
+                help=(
+                    "PDF, Excel (.xlsx / .xls), CSV, or Audio "
+                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {_cfg.max_file_size_mb} MB per file"
+                ),
             )
         else:
             youtube_url = st.text_input(
@@ -414,8 +437,25 @@ STEP_LABELS = {
     "structure_recognition": "Recognising structure…",
     "summarize":             "Generating summary…",
     "extract_questions":     "Extracting questions…",
-    "done":                  "Analysis complete",
+    "structured_extraction": "Extracting entities…",
 }
+
+# Progress is driven by the stage's POSITION in the frozen pipeline, not by how
+# many callbacks have fired. The planner skips stages routinely (question
+# extraction only runs for questionnaires, structure recognition only for
+# table-heavy domains), so counting callbacks and dividing by a fixed total made
+# the bar advance at the wrong rate and pair a percentage with the wrong label.
+# These are the canonical stage numbers from CLAUDE.md, out of 6.
+STAGE_POSITIONS = {
+    "parse":                 1.0,
+    "clean":                 2.0,
+    "classify":              3.0,
+    "structure_recognition": 3.5,
+    "summarize":             4.0,
+    "extract_questions":     5.0,
+    "structured_extraction": 5.5,
+}
+TOTAL_STAGES = 6.0
 
 
 def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
@@ -456,8 +496,8 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         )
 
         progress_placeholder = st.empty()
+        detail_placeholder   = st.empty()
         status_placeholder   = st.empty()
-        total = len(STEP_LABELS)
 
         with progress_placeholder.container():
             bar = st.progress(0, text="Starting…")
@@ -470,14 +510,32 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         while hasattr(_orig_log, "__wrapped_orig__"):
             _orig_log = _orig_log.__wrapped_orig__  # type: ignore[attr-defined]
 
-        step_counter = [0]
+        completed: list = []
+        bar_state = {"pct": 0.0}
 
         def _progress_log_step(skill_name, success, duration_ms, error=None):
             _orig_log(skill_name, success, duration_ms, error)
-            step_counter[0] += 1
-            pct = min(step_counter[0] / total, 0.95)
+
+            # Position-based, so a planner-skipped stage does not shift the bar
+            # out of step with its label. Unknown names fall back to the current
+            # position rather than jumping the bar somewhere arbitrary.
+            position = STAGE_POSITIONS.get(skill_name)
+            pct = min(position / TOTAL_STAGES, 0.98) if position else bar_state["pct"]
+            bar_state["pct"] = pct
+
             label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
-            bar.progress(pct, text=label)
+            stage_no = f"{position:g}" if position else "?"
+            elapsed_s = time.monotonic() - start_ts
+
+            if success:
+                bar.progress(pct, text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
+                completed.append(f"✓ {label.rstrip('…')} — {duration_ms / 1000:.1f}s")
+            else:
+                # A failed stage must not read as progress.
+                bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
+                completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
+
+            detail_placeholder.caption("  ·  ".join(completed[-4:]))
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
@@ -492,8 +550,10 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # Always restore the original method so the cached agent stays clean
             agent._log_step = _orig_log  # type: ignore[method-assign]
 
-        bar.progress(1.0, text="Complete")
         elapsed = time.monotonic() - start_ts
+        bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
+        if completed:
+            detail_placeholder.caption("  ·  ".join(completed))
 
         with status_placeholder.container():
             if result.success:
@@ -515,8 +575,29 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         render_results(result, export_cfg=_cfg.export)
 
     except Exception as exc:
-        st.error(f"Processing failed: {str(exc)}")
-        logger.error(f"Pipeline error: {exc}", exc_info=True)
+        # Log the full traceback before doing anything else, so the failure is
+        # recoverable from logs/docagent.log even if the UI render below fails.
+        logger.exception("Pipeline error while processing %r", name)
+
+        # In debug mode, don't absorb the exception — let it propagate so
+        # Streamlit shows its own traceback and debuggers can break on it.
+        # Enable with DOCAGENT_DEBUG=true, or app.debug in configs/default.yaml.
+        if _cfg.debug:
+            raise
+
+        # Surface the exception TYPE as well as the message. A bare str(exc) is
+        # frequently empty (e.g. KeyError('x') renders as "'x'", IndexError as
+        # ""), which produced a "Processing failed:" message with nothing after
+        # it and no way to tell what went wrong.
+        detail = str(exc).strip() or "(no message)"
+        st.error(f"Processing failed — {type(exc).__name__}: {detail}")
+        st.caption(
+            "Full traceback written to the log. Set `DOCAGENT_DEBUG=true` to "
+            "re-raise instead of catching."
+        )
+        with st.expander("Show traceback"):
+            st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    language="text")
     finally:
         cleanup_temp_dir(tmp_dir)
 
@@ -537,7 +618,7 @@ def _dict_to_pipeline_result(d: dict):
         summary_method=d.get("summary_method", "unknown"),
         questions=d.get("questions", []),
         question_extraction_method=d.get("question_extraction_method", "unknown"),
-        raw_text="",  # Not persisted — chat/edit unavailable for history results
+        raw_text=d.get("raw_text", ""),  # restored from the store's own column
         word_count=d.get("word_count", 0),
         page_count=d.get("page_count", 0),
         metadata=d.get("metadata", {}),
@@ -564,6 +645,15 @@ def main() -> None:
         file_name = result.file_name
         # Store under the normal state key so the render loop picks it up.
         st.session_state[f"doc_result_{file_name}"] = result
+
+        # Seed the chat context from the stored chunks. Without this the chat
+        # tab falls back to slicing raw_text, and for older entries that have no
+        # stored content it would query an empty document without saying so.
+        stored_chunks = cached_dict.get("content_chunks") or []
+        if stored_chunks:
+            st.session_state[f"chat_chunks_{file_name}"] = stored_chunks
+        elif not result.raw_text:
+            st.session_state[f"history_no_content_{file_name}"] = True
         # Set _file_data so the file appears as "processed" in the render loop.
         # (No "bytes" needed — _run_pipeline exits early via the state-key check.)
         st.session_state["_file_data"] = [{"name": file_name}]
@@ -584,9 +674,24 @@ def main() -> None:
                 file_data_list.append({"name": item.name, "bytes": item.getvalue()})
         st.session_state["_file_data"] = file_data_list
     elif st.session_state.get("_input_mode") == "Upload Files":
-        # Uploader is in file mode but returned nothing — user cleared it.
-        # Wipe stale _file_data so old results don't linger.
-        st.session_state.pop("_file_data", None)
+        # Uploader is in file mode but returned nothing — user cleared it, so
+        # stale upload results should not linger.
+        #
+        # Only uploader-backed entries are dropped. An entry restored from the
+        # history sidebar carries no "bytes", and wiping it here meant that
+        # clicking a history item while the uploader was empty — the default
+        # state — silently bounced straight back to the empty screen. The
+        # restore ran, then this line undid it on the same rerun.
+        surviving = [
+            fd for fd in st.session_state.get("_file_data", []) if "bytes" in fd
+        ]
+        remaining = [
+            fd for fd in st.session_state.get("_file_data", []) if "bytes" not in fd
+        ]
+        if remaining:
+            st.session_state["_file_data"] = remaining
+        elif surviving or "_file_data" in st.session_state:
+            st.session_state.pop("_file_data", None)
 
     # Track current input mode so we can detect when the uploader is cleared.
     st.session_state["_input_mode"] = st.session_state.get("input_mode_radio", "Upload Files")

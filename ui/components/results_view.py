@@ -1130,6 +1130,17 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
                 for i in range(0, max(len(raw), 1), 1000)
             ]
 
+    # A history entry saved before document content was persisted yields chunks
+    # that are all empty. Answering from that produces confident "not in the
+    # document" replies, which is worse than saying nothing is loaded.
+    if not any((c.get("text") or "").strip() for c in st.session_state[chunks_key]):
+        _html(
+            '<div class="empty-state"><h3>No document content available</h3>'
+            '<p>This result was loaded from history and was saved before document '
+            'text was stored. Re-run the analysis to chat about it.</p></div>'
+        )
+        return
+
     st.markdown("### Ask questions about this document")
     st.caption("Conversation is kept in memory while the page is open.")
 

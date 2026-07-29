@@ -11,7 +11,6 @@ Output:
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import time
@@ -47,6 +46,9 @@ class AudioReaderSkill(BaseSkill):
         self._groq_cfg = self.get_config("groq", {})
         self._max_duration_seconds = self.get_config("max_duration_seconds", 3600)
         self._temp_dir: Optional[Path] = None
+        # Transcription model stays an explicit choice here rather than a
+        # default buried in the shared client.
+        self._transcription_model = self.get_config("transcription_model", "whisper-large-v3")
 
     # ── Skill entry point ─────────────────────────────────────────────
 
@@ -359,63 +361,33 @@ class AudioReaderSkill(BaseSkill):
         """
         Transcribe audio file using Groq's Whisper API.
 
+        Routed through LLMClient so transcription shares the one implementation
+        of timeout, retry/backoff and 401-aware key rotation with every other
+        API call. This previously built its own `openai.OpenAI` client, used
+        only the first key with no retry at all, and resolved keys itself —
+        bypassing the placeholder filtering in resolve_groq_api_keys().
+
         Returns transcript on success, None on failure.
         """
-        try:
-            import openai
-        except ImportError:
-            self.logger.error("OpenAI package not installed")
-            return None
+        from utils.llm_client import LLMClient
 
-        # Resolve API key — env vars take precedence (matches LLMClient pattern)
-        raw_keys = (
-            os.environ.get("GROQ_API_KEYS")
-            or os.environ.get("GROQ_API_KEY")
-            or self._groq_cfg.get("api_keys", "")
-            or self._groq_cfg.get("api_key", "")
-        )
-        if isinstance(raw_keys, str):
-            api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
-        else:
-            api_keys = [k.strip() for k in (raw_keys or []) if k.strip()]
-
-        if not api_keys:
-            self.logger.error("No Groq API key configured. Set GROQ_API_KEYS or GROQ_API_KEY env var")
-            return None
-
-        try:
-            # Create OpenAI client pointing to Groq
-            client = openai.OpenAI(
-                api_key=api_keys[0],
-                base_url=self._groq_cfg.get("base_url", "https://api.groq.com/openai/v1"),
-                timeout=float(self._groq_cfg.get("timeout_seconds", 180)),
+        llm = LLMClient.from_config({"groq": self._groq_cfg})
+        if not llm.available:
+            self.logger.error(
+                "No usable Groq API key configured. Set GROQ_API_KEYS or GROQ_API_KEY."
             )
-
-            self.logger.info(f"Transcribing {source} audio: {audio_file.name}")
-
-            with open(audio_file, "rb") as audio_f:
-                response = client.audio.transcriptions.create(
-                    model="whisper-large-v3",
-                    file=audio_f,
-                    response_format="text",
-                )
-
-            transcript = response.strip() if isinstance(response, str) else response
-
-            if not transcript:
-                self.logger.warning("Transcription returned empty result")
-                return None
-
-            word_count = len(transcript.split())
-            self.logger.info(f"Transcription complete: {word_count} words")
-            return transcript
-
-        except openai.RateLimitError as exc:
-            self.logger.error(f"Groq API rate limit: {exc}")
             return None
-        except Exception as exc:
-            self.logger.error(f"Transcription failed: {exc}", exc_info=True)
+
+        self.logger.info(f"Transcribing {source} audio: {audio_file.name}")
+
+        transcript = llm.transcribe(audio_file, model=self._transcription_model)
+
+        if not transcript:
+            self.logger.warning("Transcription returned empty result")
             return None
+
+        self.logger.info(f"Transcription complete: {len(transcript.split())} words")
+        return transcript
 
     # ── Helpers ───────────────────────────────────────────────────────
 

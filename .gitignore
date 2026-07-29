@@ -150,7 +150,11 @@ dmypy.json
 cython_debug/
 
 # Streamlit
-.streamlit/
+# .streamlit/config.toml holds the theme only (colours, font) — no secrets, no
+# credentials — and the UI renders in Streamlit's default light theme without
+# it. It is committed so a fresh clone looks the same as the dev machine.
+# If you ever add secrets.toml here, ignore that file specifically:
+.streamlit/secrets.toml
 
 # DocAgent Specific
 logs/
@@ -164,6 +168,11 @@ examples/
 !tests/data/
 !README.md
 !TECH_STACK.md
+
+# e2e fixtures are committed on purpose so a fresh clone can run the full
+# verification (python tests/e2e/e2e.py all). The blanket *.pdf / *.csv / *.xlsx
+# rules above still apply everywhere else, so user documents stay untracked.
+!tests/e2e/samples/*
 
 # OS specific
 .DS_Store

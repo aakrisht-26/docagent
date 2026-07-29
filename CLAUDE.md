@@ -11,7 +11,8 @@ streamlit run ui/app.py
 # Install dependencies
 pip install -r requirements.txt
 
-# Development install (enables `docagent` CLI entry point)
+# Editable install of the library packages (agents, core, skills, utils).
+# There is no `docagent` console command — use `streamlit run ui/app.py`.
 pip install -e .
 
 # Run all tests

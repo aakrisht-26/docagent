@@ -9,6 +9,10 @@ app:
   max_file_size_mb: 50
   log_level: "INFO"
   log_file: "logs/docagent.log"
+  # When true, the UI re-raises pipeline exceptions instead of catching them and
+  # rendering an error message. Use while debugging so Streamlit shows its own
+  # traceback. Override with DOCAGENT_DEBUG=true.
+  debug: false
 
 # -- Groq Cloud API Settings ------------------------------------
 # REQUIRED: Set GROQ_API_KEY as an environment variable.
@@ -20,6 +24,28 @@ groq:
   model: "llama-3.3-70b-versatile"
   timeout_seconds: 180
   temperature: 0.15
+  # A 429 whose retry window exceeds this many seconds means the key is
+  # exhausted for that window rather than briefly throttled, so it is parked and
+  # the next key is used immediately. Per-minute limits (TPM/RPM) clear in
+  # seconds and fall below this; per-day limits (TPD/RPD) quote minutes or hours
+  # and land above it. Parking expires automatically when the window elapses.
+  park_threshold_seconds: 15
+  # Groq's TPD limit is a ROLLING window, not a daily bucket — verified from two
+  # refusals on the same key 32m50s apart where `Used` fell from 99,588 to
+  # 98,426 while that key was only being refused. The quoted retry-after answers
+  # only for the request that was refused, so parking for it keeps a key out far
+  # longer than a smaller call needs. Day-window parks are instead scaled to the
+  # time required to free this many tokens. Lower = keys return sooner but may
+  # be refused once more; higher = closer to the old behaviour.
+  park_min_request_tokens: 500
+  # Cost estimation is DISABLED (both rates zero) because this project runs on
+  # free-tier Groq keys, where dollar cost is not the constraint — rate limits
+  # are. Token counts are still logged per run; only the dollar line is
+  # suppressed. To enable an estimate on a paid plan, set these to the current
+  # per-million rates from https://groq.com/pricing for the model in use.
+  pricing:
+    input_usd_per_million: 0.0
+    output_usd_per_million: 0.0
 
 # -- PDF Parsing Settings ---------------------------------------
 pdf:
@@ -33,6 +59,11 @@ pdf:
   # CUDA GPU is detected. Set the following to true ONLY if you accept very slow
   # CPU processing and still want PP-Structure table parsing.
   allow_cpu_structure: false
+  # GPU detection short-circuits before importing paddle (~2s) when the CUDA
+  # driver is missing, or when only the CPU-only `paddlepaddle` wheel is
+  # installed. Set true to always run the authoritative paddle probe instead —
+  # only needed for unusual builds shipping CUDA under the plain name.
+  force_gpu_probe: false
 
 # -- Excel Parsing Settings -------------------------------------
 excel:

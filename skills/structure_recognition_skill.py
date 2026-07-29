@@ -36,10 +36,91 @@ class StructureRecognitionSkill(BaseSkill):
         # Load the engine lazily to save VRAM when not in use
         self._engine = None
 
+    @staticmethod
+    def _cuda_driver_present() -> bool:
+        """
+        Cheap pre-check: can the CUDA *driver* library be loaded at all?
+
+        This costs about a millisecond and needs no heavy imports. If the driver
+        is absent there is no CUDA device on this machine, so PaddlePaddle
+        cannot possibly use a GPU and there is no reason to import it.
+
+        Returns False when the driver cannot be loaded. A True result is not a
+        guarantee of a usable GPU — it only means the expensive, authoritative
+        check via paddle is worth running.
+        """
+        import ctypes
+        import sys
+
+        candidates = (
+            ("nvcuda.dll",) if sys.platform == "win32"
+            else ("libcuda.dylib",) if sys.platform == "darwin"
+            else ("libcuda.so.1", "libcuda.so")
+        )
+        for lib in candidates:
+            try:
+                ctypes.CDLL(lib)
+                return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
+    def _paddle_gpu_build_installed() -> Optional[bool]:
+        """
+        Which PaddlePaddle wheel is installed, read from distribution metadata.
+
+        Costs about a millisecond and does not import paddle.
+
+        Returns:
+            True  — `paddlepaddle-gpu` is installed (a CUDA build).
+            False — only the CPU-only `paddlepaddle` wheel is installed.
+            None  — paddle is absent, or the picture is ambiguous; caller should
+                    fall back to the authoritative (expensive) probe.
+        """
+        import importlib.metadata as md
+
+        def _installed(dist_name: str) -> bool:
+            # Direct lookup, not a scan of every installed distribution — the
+            # latter takes ~0.5 s in a large environment such as Anaconda.
+            try:
+                md.version(dist_name)
+                return True
+            except md.PackageNotFoundError:
+                return False
+            except Exception:
+                raise
+
+        try:
+            if _installed("paddlepaddle-gpu"):
+                return True
+            if _installed("paddlepaddle"):
+                return False
+        except Exception:
+            return None
+        return None
+
     def _detect_gpu(self) -> bool:
         """
         Return True only if PaddlePaddle is CUDA-compiled AND at least one GPU
         is visible to it.
+
+        Two cheap short-circuits run before the expensive probe, so a machine
+        that cannot use a GPU never pays for `import paddle`. That import costs
+        1.4-2.1 s — up to ~20% of total pipeline wall clock on a PDF — purely to
+        conclude there is no GPU. It also resets the root logger level from INFO
+        to WARNING as a side effect (see utils/logger.py), so avoiding it keeps
+        logging intact as well.
+
+            1. No CUDA driver library on the system → no CUDA device exists.
+            2. Driver present, but only the CPU-only `paddlepaddle` wheel is
+               installed → paddle cannot use CUDA no matter what hardware is
+               fitted. This is the common case on a gaming laptop: a real GPU
+               and driver are present, and paddle still cannot use them.
+
+        Set `pdf.force_gpu_probe: true` to bypass check 2 and always run the
+        authoritative probe, for unusual builds that ship CUDA support under the
+        plain `paddlepaddle` name.
 
         NOTE: the CPU-only `paddlepaddle` wheel returns False here even when the
         machine physically has a GPU. The GPU build (`paddlepaddle-gpu`, matching
@@ -47,6 +128,24 @@ class StructureRecognitionSkill(BaseSkill):
         This is the usual reason PP-Structure runs on CPU (15-25 min/page) despite
         the laptop having a GPU.
         """
+        if not self._cuda_driver_present():
+            self.logger.debug(
+                "No CUDA driver library found; skipping the paddle import entirely."
+            )
+            return False
+
+        if not bool(self.get_config("force_gpu_probe", False)):
+            if self._paddle_gpu_build_installed() is False:
+                self.logger.info(
+                    "CUDA driver is present, but the installed PaddlePaddle wheel is "
+                    "the CPU-only build (`paddlepaddle`), so PP-Structure cannot use "
+                    "the GPU. Skipping the paddle import entirely (saves ~2 s per run). "
+                    "Install `paddlepaddle-gpu` matching your CUDA version to enable "
+                    "GPU table extraction, or set `pdf.force_gpu_probe: true` to probe "
+                    "anyway."
+                )
+                return False
+
         try:
             import paddle
             if not paddle.device.is_compiled_with_cuda():
