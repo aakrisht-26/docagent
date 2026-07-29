@@ -113,3 +113,42 @@ produce an empty document, text-layer PDFs unaffected). Added the missing
 command, and an env-var reference table expanded from 4 rows to all 9.
 
 **Verification:** `python tests/e2e/e2e.py all` → exit 0, all 5 stages PASS.
+
+---
+
+### Task 3 — Exercise the OCR fallback tier ✅
+
+**Committed:** see `test(e2e): add scanned-PDF stage exercising the OCR tier`
+
+**The OCR tier was not broken — it had simply never been given an input that
+reached it.** Every PDF tested previously had a text layer, so pdfplumber
+returned text and `doc.is_empty` was never true. No code fix was needed.
+
+Added `build_scanned_pdf()` to `make_samples.py`: rasterises `sample_report.pdf`
+to an image-only PDF with no text layer, applying deterministic (fixed-seed)
+scan artefacts so the OCR preprocessing is genuinely exercised — 150 DPI, a 1.2°
+skew inside the 0.5–15° window the deskew step handles, a left-edge brightness
+gradient for the adaptive thresholding to work against, and light sensor noise.
+JPEG-encoded, as a real scanner would produce.
+
+Confirmed the fixture has no text layer: pdfplumber 0 chars, PyMuPDF 0 chars.
+
+Confirmed the tier fires: `engine='ocr_tesseract'`, `ocr=True`, 178 words across
+2 pages, resolving `C:\Program Files\Tesseract-OCR\tesseract.exe` through the
+existing Windows path discovery in `PDFReaderSkill.__init__`.
+
+Added `scanned` as the 6th e2e stage. It does **not** just check `success` — it
+asserts `engine == "ocr_tesseract"` and a minimum word count, so the stage fails
+loudly if the fixture is ever regenerated with a text layer or if Tesseract goes
+missing from PATH. Without that assertion the stage would pass while testing
+nothing.
+
+One fixture correction during the task: the first version used heavier noise
+(σ=4.0, 0.82 gradient), and Tesseract misread "14 customer sites" as "414",
+which propagated into the LLM summary. A fixture that bakes in a factual error
+is a poor regression baseline, so the noise was reduced to σ=2.0 / 0.88 — still
+representative of a real scan, and the figure now reads correctly. Also switched
+PNG → JPEG, cutting the fixture from 4.1 MB to 296 KB.
+
+**Verification:** `python tests/e2e/e2e.py all` → exit 0, all **6** stages PASS.
+`pytest tests/ -q` → 41 passed.

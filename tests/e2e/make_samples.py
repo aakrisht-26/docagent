@@ -146,8 +146,73 @@ def build_audio() -> Path | None:
     return out
 
 
+# ── Scanned PDF (image-only, no text layer) ───────────────────────────────────
+
+def build_scanned_pdf() -> Path:
+    """Rasterise sample_report.pdf into an image-only PDF with no text layer.
+
+    This is the fixture that forces the OCR tier: pdfplumber and PyMuPDF both
+    return empty text for it, so PDFReaderSkill escalates to Tesseract.
+
+    Mild, deterministic scan artefacts are applied so the OCR preprocessing is
+    actually exercised rather than handed a pristine render:
+      - 150 DPI, the typical output of a consumer scanner
+      - a 1.2 degree skew, inside the 0.5-15 degree window the deskew step handles
+      - a brightness gradient, which is what adaptive thresholding exists for
+      - light Gaussian noise
+    """
+    import cv2
+    import fitz
+    import numpy as np
+
+    source = SAMPLES / "sample_report.pdf"
+    if not source.exists():
+        build_pdf()
+
+    out = SAMPLES / "sample_scanned.pdf"
+    rng = np.random.default_rng(20260729)  # fixed seed keeps the fixture stable
+
+    src = fitz.open(str(source))
+    dst = fitz.open()
+
+    for page in src:
+        pix = page.get_pixmap(dpi=150)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if pix.n == 3 else img[:, :, 0]
+
+        # Skew, filling with white so the page edges stay paper-coloured
+        h, w = gray.shape[:2]
+        matrix = cv2.getRotationMatrix2D((w // 2, h // 2), 1.2, 1.0)
+        gray = cv2.warpAffine(gray, matrix, (w, h), flags=cv2.INTER_CUBIC,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+
+        # Uneven illumination: darker down the left edge, like a book scan
+        gradient = np.linspace(0.88, 1.0, w, dtype=np.float32)[None, :]
+        gray = np.clip(gray.astype(np.float32) * gradient, 0, 255)
+
+        # Light sensor noise. Kept low on purpose: this fixture is a regression
+        # baseline, so it should look like a real scanner rather than an
+        # adversarial one. Heavier noise made Tesseract misread "14 customer
+        # sites" as "414", which then propagated into the summary and made the
+        # stage useless for spotting genuine regressions.
+        gray = np.clip(gray + rng.normal(0, 2.0, gray.shape), 0, 255).astype(np.uint8)
+
+        # JPEG, as a real scanner would produce, and ~13x smaller than PNG here
+        ok, buf = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        if not ok:
+            raise RuntimeError("failed to encode scanned page")
+
+        new_page = dst.new_page(width=page.rect.width, height=page.rect.height)
+        new_page.insert_image(new_page.rect, stream=buf.tobytes())
+
+    dst.save(str(out))
+    dst.close()
+    src.close()
+    return out
+
+
 if __name__ == "__main__":
-    for path in (build_pdf(), build_excel(), build_audio()):
+    for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")

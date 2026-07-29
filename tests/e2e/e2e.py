@@ -42,7 +42,7 @@ from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402
 from utils.config import load_config  # noqa: E402
 
-STAGES = ("pdf", "excel", "audio", "youtube", "rag")
+STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag")
 
 
 def _agent_config() -> dict:
@@ -100,6 +100,27 @@ def run_stage(stage: str) -> int:
         result = agent.run(_require(SAMPLES / sample))
         show(result)
         ok = result.success
+
+    elif stage == "scanned":
+        # Image-only PDF with no text layer: pdfplumber and PyMuPDF both come
+        # back empty, so PDFReaderSkill must escalate to the Tesseract tier.
+        result = agent.run(_require(SAMPLES / "sample_scanned.pdf"))
+        show(result)
+        engine = result.metadata.get("engine")
+        ocr_flag = result.metadata.get("ocr")
+        print(f"  OCR CHECK   : engine={engine!r} ocr={ocr_flag!r} words={result.word_count}")
+
+        # Assert the OCR tier genuinely ran. Without this the stage would still
+        # pass if the fixture were ever regenerated with a text layer, which
+        # would silently stop testing OCR at all.
+        ok = result.success
+        if engine != "ocr_tesseract" or not ocr_flag:
+            print(f"  FAIL: expected the OCR tier to run, got engine={engine!r}. "
+                  f"Is tesseract on PATH? Does sample_scanned.pdf still lack a text layer?")
+            ok = False
+        elif result.word_count < 100:
+            print(f"  FAIL: OCR returned only {result.word_count} words; expected >= 100.")
+            ok = False
 
     elif stage == "youtube":
         result = agent.run_youtube(YT_URL)

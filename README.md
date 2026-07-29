@@ -97,15 +97,21 @@ ffmpeg -version && ffprobe -version && tesseract --version
 ### 4. Verify the install end to end
 
 This runs the real pipeline against committed fixtures and the live Groq API —
-one PDF, one Excel workbook, one audio file, one YouTube video, and a two-turn
-RAG exchange:
+a text-layer PDF, a scanned image-only PDF (which forces the Tesseract OCR
+tier), an Excel workbook, an audio file, a YouTube video, and a two-turn RAG
+exchange:
 
 ```bash
 python tests/e2e/e2e.py all
 ```
 
-Exit code 0 with five `PASS` rows means the install is good. Run a single stage
-with `python tests/e2e/e2e.py pdf` (or `excel`, `audio`, `youtube`, `rag`).
+Exit code 0 with six `PASS` rows means the install is good. Run a single stage
+with `python tests/e2e/e2e.py pdf` (or `scanned`, `excel`, `audio`, `youtube`,
+`rag`).
+
+The `scanned` stage is the one that proves Tesseract is wired up correctly: it
+asserts the OCR engine actually ran, so it fails loudly rather than silently
+falling back if `tesseract` is missing from PATH.
 
 Unit tests, which need no API key or network:
 
