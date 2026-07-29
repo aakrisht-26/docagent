@@ -240,3 +240,55 @@ BOM, trailing comment) — all 8 parse correctly. The real `.env` was restored i
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 no dotenv warning anywhere in the run.
+
+---
+
+### Task 6 — Per-stage timing logging at pipeline boundaries ✅
+
+**Committed:** see `feat(logging): stage numbering, cumulative timing, skip visibility`
+
+Logging was already stdlib (`logging`, with an optional Rich handler) and
+`_log_step` already timed each skill, so this was additive rather than a rewrite.
+
+Added to `BaseAgent`: `_begin_pipeline()`, `_elapsed_ms()`, `_stage_prefix()`,
+`_log_stage_skipped()` and `_log_pipeline_summary()`. `DocumentAgent` declares a
+`stage_numbers` map with the canonical numbers from the frozen pipeline
+(1 parse → 3.5 structure → 5.5 structured extraction). Output now carries the
+stage number, per-stage duration, cumulative elapsed, an explicit line for
+planner-skipped stages, and a closing breakdown with percentage shares.
+
+**`_log_step`'s signature was deliberately left untouched**, and no new call
+sites were added to it, because `ui/app.py` wraps that method positionally to
+drive the progress bar — every call advances it one step. Skipped stages go
+through the separate `_log_stage_skipped()` so the bar is not advanced for work
+that never ran. A comment at the definition records this constraint. Verified the
+signature still matches what `app.py` expects.
+
+**The real find was that these logs were invisible in the harness.** Stages 3.5,
+4 and 5.5 produced no output at all, including the pre-existing `_log_step`
+lines, while their timings still appeared in `skill_timings`.
+
+Root cause: **`import paddle` resets the root logger level from INFO to
+WARNING** as an import side effect — confirmed directly
+(`root.level BEFORE: INFO` → `root.level AFTER: WARNING`). paddle is pulled in by
+`StructureRecognitionSkill._detect_gpu()`, which runs at stage 3.5, precisely
+where the output stopped. The harness configured logging with `basicConfig()`
+only, so the `docagent` loggers had no handlers of their own, propagated to root,
+and inherited the new WARNING level. Every INFO record after that point was
+dropped silently.
+
+The app was never affected: `ui/app.py` calls `setup_logging()`, which gives
+`docagent` its own handlers and sets `propagate=False`. The fix is for the
+harness to do the same. Documented the trap in `utils/logger.py`'s module
+docstring so the next entry point does not repeat it.
+
+Two wrong hypotheses were checked and discarded first (that `paddleocr`'s import
+broke logging, and that something called `logging.disable()` — the disable level
+was 0 throughout).
+
+Incidentally surfaced by the new breakdown: `structure_recognition` consumes
+**19.7%** of PDF wall clock while doing nothing on a CUDA-less machine. That is
+Task 11.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+Streamlit boots clean (health 200, empty stderr).

@@ -37,6 +37,21 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)s: %(mess
 for _noisy in ("httpx", "httpcore", "urllib3", "openai", "PIL", "pdfminer"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+# Route DocAgent's own logs through the same setup the app uses.
+#
+# This is not cosmetic. `import paddle` (pulled in by StructureRecognitionSkill's
+# GPU probe) resets the ROOT logger level from INFO to WARNING as a side effect.
+# Relying on basicConfig alone means every docagent INFO record emitted after
+# that import is silently dropped, because the docagent loggers have no handlers
+# of their own and inherit the root level. That hid the stage timings for
+# structure_recognition, summarize and structured_extraction entirely.
+#
+# setup_logging() gives the "docagent" logger its own handlers and sets
+# propagate=False, so it is unaffected by what third-party imports do to root.
+from utils.logger import setup_logging  # noqa: E402
+
+setup_logging(level="INFO", log_file=None, use_rich=False)
+
 from agents.document_agent import DocumentAgent  # noqa: E402
 from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402

@@ -39,6 +39,19 @@ class DocumentAgent(BaseAgent):
     name = "document_agent"
     description = "Orchestrates the full document analysis pipeline."
 
+    # Canonical stage numbers from the frozen pipeline (see CLAUDE.md).
+    # Used only for logging; changing these does not change execution order.
+    stage_numbers = {
+        "parse":                 "1",
+        "clean":                 "2",
+        "classify":              "3",
+        "structure_recognition": "3.5",
+        "summarize":             "4",
+        "extract_questions":     "5",
+        "structured_extraction": "5.5",
+    }
+    total_stages = 6
+
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(config)
         from utils.config import resolve_groq_api_keys
@@ -107,7 +120,7 @@ class DocumentAgent(BaseAgent):
         pipeline_start = time.monotonic()
         skill_timings: Dict[str, float] = {}
 
-        self.logger.info(f"═══ Pipeline START: YouTube {video_id} ═══")
+        self._begin_pipeline(f"YouTube {video_id}")
 
         # ── Step 1: Parse (YouTube) ───────────────────────────────────
         parse_out = self._audio_reader.safe_execute(SkillInput(data={"youtube_url": youtube_url}))
@@ -136,7 +149,7 @@ class DocumentAgent(BaseAgent):
         file_path = Path(file_path)
         skill_timings: Dict[str, float] = {}
 
-        self.logger.info(f"═══ Pipeline START: {file_path.name} ═══")
+        self._begin_pipeline(file_path.name)
 
         # ── Step 0: Validate ──────────────────────────────────────────
         ext = file_path.suffix.lower()
@@ -245,6 +258,8 @@ class DocumentAgent(BaseAgent):
             elif struct_out.error:
                 warnings.append(f"Structure recognition failed ({struct_out.error}); tables may be missing.")
                 partial = True
+        else:
+            self._log_stage_skipped("structure_recognition", "not selected by planner")
 
         # ── Step 4: Summarize ─────────────────────────────────────────
         summary           = ""
@@ -270,6 +285,8 @@ class DocumentAgent(BaseAgent):
             if not summ_out.success:
                 warnings.append(f"Summarization failed ({summ_out.error}); summary unavailable.")
                 partial = True
+        else:
+            self._log_stage_skipped("summarize", "not selected by planner")
 
         # ── Step 5: Extract Questions ─────────────────────────────────
         questions: list = []
@@ -289,6 +306,8 @@ class DocumentAgent(BaseAgent):
             if not q_out.success:
                 warnings.append(f"Question extraction failed ({q_out.error}).")
                 partial = True
+        else:
+            self._log_stage_skipped("extract_questions", "doc_type is not questionnaire")
 
         # ── Step 5.5: Structured extraction (entities, KV pairs) ──────
         extracted_entities: dict = {}
@@ -303,9 +322,12 @@ class DocumentAgent(BaseAgent):
 
             if se_out.success and se_out.data:
                 extracted_entities = se_out.data.get("entities", {})
+        else:
+            self._log_stage_skipped("structured_extraction", "not selected by planner")
 
         # ── Step 6: Assemble ──────────────────────────────────────────
         total_ms = (time.monotonic() - pipeline_start) * 1000
+        self._log_pipeline_summary(file_name, skill_timings, total_ms)
         return PipelineResult(
             file_name=file_name,
             file_type=file_type,
