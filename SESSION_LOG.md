@@ -292,3 +292,40 @@ Task 11.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 Streamlit boots clean (health 200, empty stderr).
+
+---
+
+### Task 7 — Stop the UI swallowing pipeline errors ✅
+
+**Committed:** see `fix(ui): log tracebacks and surface error type; add debug flag`
+
+The handler at `ui/app.py` is kept (removing it would crash the whole Streamlit
+script on any per-file failure) but it no longer hides anything:
+
+- `logger.exception(...)` replaces `logger.error(..., exc_info=True)` and now runs
+  **first**, so the traceback reaches `logs/docagent.log` even if the subsequent
+  UI render itself fails.
+- The message now includes the exception **type**: `Processing failed —
+  KeyError: 'simulated_missing_key'`. This matters more than it looks — a bare
+  `str(exc)` is empty or cryptic for exactly the exceptions you most want to
+  identify (`IndexError` stringifies to `""`, `KeyError('x')` to `"'x'"`), so the
+  old message could read `Processing failed:` with nothing after it.
+- The full traceback is available in the UI behind a "Show traceback" expander.
+- A `DOCAGENT_DEBUG` flag re-raises instead of catching, so Streamlit shows its
+  own traceback and debuggers can break on the failure.
+
+New config: `AppConfig.debug`, from `DOCAGENT_DEBUG` env or `app.debug` in
+`configs/default.yaml`, defaulting to false. Documented in `.env.example` and the
+README env table.
+
+**Both branches were exercised, not just read.** A harness forced a `KeyError`
+inside the guarded block and ran it twice:
+
+- `DOCAGENT_DEBUG=false` → exception caught, traceback logged, `st.error` shows
+  `Processing failed — KeyError: 'simulated_missing_key'`, caption and a
+  391-char traceback rendered.
+- `DOCAGENT_DEBUG=true` → exception propagates out of `_run_pipeline`, after
+  still being logged.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+Streamlit boots clean (health 200, empty stderr).

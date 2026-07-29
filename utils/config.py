@@ -189,6 +189,9 @@ class AppConfig:
     max_file_size_mb: int = 50
     log_level: str = "INFO"
     log_file: str = "logs/docagent.log"
+    #: When true, the UI re-raises pipeline exceptions instead of rendering them
+    #: as an error message, so the full traceback reaches the console/debugger.
+    debug: bool = False
 
     groq: GroqConfig = field(default_factory=GroqConfig)
     pdf: PDFConfig = field(default_factory=PDFConfig)
@@ -299,6 +302,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         max_file_size_mb= int(os.getenv("DOCAGENT_MAX_FILE_MB", app_r.get("max_file_size_mb", 50))),
         log_level       = os.getenv("DOCAGENT_LOG_LEVEL", app_r.get("log_level", "INFO")),
         log_file        = os.getenv("DOCAGENT_LOG_FILE", app_r.get("log_file", "logs/docagent.log")),
+        debug           = _env_bool("DOCAGENT_DEBUG", app_r.get("debug", False)),
         groq=GroqConfig(
             enabled        = _env_bool("DOCAGENT_GROQ_ENABLED", gro_r.get("enabled", True)),
             api_keys       = os.getenv("GROQ_API_KEYS", gro_r.get("api_keys", "")),

@@ -138,6 +138,7 @@ the full annotated list.
 | `DOCAGENT_MAX_FILE_MB` | Max upload size in MB | 50 |
 | `DOCAGENT_LOG_LEVEL` | Logging verbosity | INFO |
 | `DOCAGENT_LOG_FILE` | Log file path | logs/docagent.log |
+| `DOCAGENT_DEBUG` | Re-raise pipeline errors instead of catching them | false |
 | `DOCAGENT_GROQ_ENABLED` | Set false to disable all LLM calls | true |
 | `DOCAGENT_GROQ_URL` | OpenAI-compatible endpoint | https://api.groq.com/openai/v1 |
 | `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |

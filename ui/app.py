@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import time
 import os
+import traceback
 from pathlib import Path
 
 # ── Path fixup so app can be run from repo root ────────────────────────────────
@@ -515,8 +516,29 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         render_results(result, export_cfg=_cfg.export)
 
     except Exception as exc:
-        st.error(f"Processing failed: {str(exc)}")
-        logger.error(f"Pipeline error: {exc}", exc_info=True)
+        # Log the full traceback before doing anything else, so the failure is
+        # recoverable from logs/docagent.log even if the UI render below fails.
+        logger.exception("Pipeline error while processing %r", name)
+
+        # In debug mode, don't absorb the exception — let it propagate so
+        # Streamlit shows its own traceback and debuggers can break on it.
+        # Enable with DOCAGENT_DEBUG=true, or app.debug in configs/default.yaml.
+        if _cfg.debug:
+            raise
+
+        # Surface the exception TYPE as well as the message. A bare str(exc) is
+        # frequently empty (e.g. KeyError('x') renders as "'x'", IndexError as
+        # ""), which produced a "Processing failed:" message with nothing after
+        # it and no way to tell what went wrong.
+        detail = str(exc).strip() or "(no message)"
+        st.error(f"Processing failed — {type(exc).__name__}: {detail}")
+        st.caption(
+            "Full traceback written to the log. Set `DOCAGENT_DEBUG=true` to "
+            "re-raise instead of catching."
+        )
+        with st.expander("Show traceback"):
+            st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    language="text")
     finally:
         cleanup_temp_dir(tmp_dir)
 

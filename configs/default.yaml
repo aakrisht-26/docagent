@@ -9,6 +9,10 @@ app:
   max_file_size_mb: 50
   log_level: "INFO"
   log_file: "logs/docagent.log"
+  # When true, the UI re-raises pipeline exceptions instead of catching them and
+  # rendering an error message. Use while debugging so Streamlit shows its own
+  # traceback. Override with DOCAGENT_DEBUG=true.
+  debug: false
 
 # -- Groq Cloud API Settings ------------------------------------
 # REQUIRED: Set GROQ_API_KEY as an environment variable.
