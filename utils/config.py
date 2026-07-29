@@ -63,6 +63,10 @@ def _reject_reason(key: str) -> Optional[str]:
 # Matches lines of the form KEY=value or KEY = value (used to detect new entries)
 _KEY_VALUE_LINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\s*=')
 
+# Start of the GROQ_API_KEYS assignment. Tolerates whitespace around `=`, which
+# dotenv also accepts, so both parsers agree on where the value begins.
+_GROQ_KEYS_HEADER_RE = re.compile(r'^GROQ_API_KEYS\s*=\s*', re.IGNORECASE)
+
 
 def _read_multiline_env_keys() -> list:
     """
@@ -74,6 +78,11 @@ def _read_multiline_env_keys() -> list:
     function reads the raw .env file and stitches together any continuation
     lines (lines that don't look like a new KEY=VALUE pair) so all keys are
     captured regardless of how the user formatted the file.
+
+    Handles both the unquoted and the quoted multiline forms. Surrounding
+    quotes are stripped: when the value IS quoted, dotenv parses it correctly
+    and this function must produce the identical key list, not the same keys
+    with a stray quote welded onto the first and last one.
     """
     env_path = Path(__file__).parent.parent / ".env"
     if not env_path.exists():
@@ -83,12 +92,17 @@ def _read_multiline_env_keys() -> list:
     raw_parts: list = []
 
     try:
-        with open(env_path, "r", encoding="utf-8") as fh:
+        # utf-8-sig transparently strips a UTF-8 BOM if present. Notepad and
+        # PowerShell's Set-Content both write one by default, and a leading BOM
+        # would otherwise stop the header regex matching, silently yielding
+        # zero keys. Files without a BOM decode identically.
+        with open(env_path, "r", encoding="utf-8-sig") as fh:
             for line in fh:
                 stripped = line.strip()
-                if stripped.upper().startswith("GROQ_API_KEYS="):
+                header = _GROQ_KEYS_HEADER_RE.match(stripped)
+                if header:
                     collecting = True
-                    raw_parts.append(stripped[len("GROQ_API_KEYS="):])
+                    raw_parts.append(stripped[header.end():])
                 elif collecting:
                     # Stop on blank line, comment, or a new KEY=VALUE pair
                     if not stripped or stripped.startswith("#") or _KEY_VALUE_LINE_RE.match(stripped):
@@ -100,8 +114,16 @@ def _read_multiline_env_keys() -> list:
     if not raw_parts:
         return []
 
-    raw_value = ",".join(raw_parts)
-    return [k.strip() for k in raw_value.split(",") if k.strip()]
+    raw_value = ",".join(raw_parts).strip()
+
+    # Drop a matched pair of surrounding quotes from the whole value, then any
+    # stray quote left on an individual key. Without this the quoted multiline
+    # form yields a first key prefixed with `"` and a last key suffixed with
+    # `"` — two silently invalid keys that each cost a 401 during rotation.
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "\"'":
+        raw_value = raw_value[1:-1]
+
+    return [k.strip().strip('"').strip("'") for k in raw_value.split(",") if k.strip().strip('"').strip("'")]
 
 _CONFIG_PATH = Path(__file__).parent.parent / "configs" / "default.yaml"
 _CONFIG_CACHE: Optional[AppConfig] = None

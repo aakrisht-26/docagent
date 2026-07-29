@@ -195,3 +195,48 @@ overclaimed; it is Task 12's job to consolidate the call sites, so fixing it
 here would have been duplicated work.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.
+
+---
+
+### Task 5 — Quote the multiline `GROQ_API_KEYS` in the local `.env` ✅
+
+**Committed:** see `fix(config): make the .env key parser agree with dotenv`
+(the `.env` edit itself is local only — that file is gitignored and was never
+committed)
+
+The `.env` was rewritten programmatically so key material was never printed, and
+the original was backed up outside the repo first. 8 keys, all 56 chars, now in
+the quoted multiline form that `.env.example` documents. The
+`Python-dotenv could not parse statement starting at line 7` warning is gone.
+
+**Quoting alone made things worse, which is exactly what the task asked me to
+check.** `_read_multiline_env_keys()` did not strip the surrounding quotes, so it
+returned the first key with a leading `"` and the last with a trailing `"`.
+Resolution went from 9 keys to **10** — the 8 good ones from dotenv plus 2
+quote-corrupted duplicates, each of which would cost a 401 during rotation. The
+two parsers disagreed more after quoting than before.
+
+Three fixes in `_read_multiline_env_keys()`:
+
+1. Strip a matched pair of surrounding quotes from the assembled value, then any
+   stray quote from individual keys.
+2. Match the header with a regex tolerating whitespace around `=`
+   (`GROQ_API_KEYS = "..."` previously did not match at all, since the old code
+   used `startswith("GROQ_API_KEYS=")`).
+3. Read with `utf-8-sig` instead of `utf-8`. Found accidentally: my first test
+   harness wrote the file with PowerShell's `Set-Content -Encoding utf8`, which
+   emits a BOM, and every format returned **zero keys** because the BOM blocked
+   the header match. Notepad does the same thing by default, so a user editing
+   `.env` on Windows could silently lose all keys.
+
+Result: dotenv and `_read_multiline_env_keys()` now return **identical lists —
+same 8 keys, same order**, all `gsk_`-prefixed and 56 chars.
+`resolve_groq_api_keys()` returns exactly 8.
+
+Verified against 8 `.env` layouts with fake keys (unquoted multiline, quoted
+multiline, single line, single line quoted, spaced equals, single quotes, UTF-8
+BOM, trailing comment) — all 8 parse correctly. The real `.env` was restored in a
+`finally` block and re-verified afterwards.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+no dotenv warning anywhere in the run.
