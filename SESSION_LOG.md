@@ -377,3 +377,37 @@ and the CPython 3.13 `.pyc` files under a 3.12.7 interpreter.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 dependency state confirmed untouched.
+
+---
+
+### Task 9 — Broken `docagent` console script ✅
+
+**Decision: drop the claim** (your call, asked and answered).
+
+**Committed:** see `fix(packaging): drop the non-functional docagent console script`
+
+Two independent reasons the command could never work, both verified:
+
+1. `find_packages(exclude=["tests*", "ui*"])` resolves to
+   `['agents', 'core', 'skills', 'utils']` — `ui` is not packaged, so a
+   non-editable `pip install .` produced a `docagent` command that raised
+   `ModuleNotFoundError: ui`. `pip install -e .` masked this, because the source
+   tree stays on `sys.path`, which is presumably why it went unnoticed.
+2. Even with `ui` packaged it still would not work. `ui/app.py` calls
+   `st.set_page_config` at import and needs the Streamlit runtime; calling
+   `main()` directly runs the script in bare mode and exits without serving.
+
+So "add `ui` to packages" was never the fix, which is what made this a real
+decision rather than a typo.
+
+Removed `entry_points` from `setup.py` and the "enables `docagent` CLI entry
+point" claim from `README.md` and `CLAUDE.md`, replacing each with the accurate
+statement that `pip install -e .` installs the library packages and the app is
+started with `streamlit run ui/app.py`. `setup.py`'s docstring records why the
+entry point was removed, so it does not get re-added.
+
+Verified `setup.py` still parses and produces valid metadata
+(`python setup.py --name --version` → `docagent` / `1.0.0`), and grepped for
+leftover CLI claims — none remain.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed.

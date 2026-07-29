@@ -253,9 +253,12 @@ pytest tests/ -v
 # Run a specific test class
 pytest tests/test_skills.py::TestDocumentClassifierSkill -v
 
-# Development install (enables `docagent` CLI entry point)
+# Editable install of the library packages (agents, core, skills, utils)
 pip install -e .
 ```
+
+There is no `docagent` console command. The app is started with
+`streamlit run ui/app.py` — see [Run the app](#5-run-the-app).
 
 ### Adding a New Skill
 
