@@ -127,6 +127,70 @@ streamlit run ui/app.py
 
 Open `http://localhost:8501` in your browser.
 
+### Groq rate limits — read this before you debug a stalled run
+
+Groq enforces **four** separate limits. Two are reported in response headers,
+two are not, and **the one that will actually stop this pipeline is invisible**.
+
+| Limit | Meaning | Free-tier value | Visible in headers? |
+|---|---|---|---|
+| **RPM** | requests per minute | — | no |
+| **RPD** | requests per **day** | 1,000 | yes — `x-ratelimit-*-requests` |
+| **TPM** | tokens per **minute** | 12,000 | yes — `x-ratelimit-*-tokens` |
+| **TPD** | tokens per **day** | **100,000** | **no** |
+
+**The header names are asymmetric. Do not assume they pair up:**
+
+```
+x-ratelimit-limit-requests  ->  requests per DAY      (RPD)
+x-ratelimit-limit-tokens    ->  tokens   per MINUTE   (TPM)
+```
+
+They look symmetric and describe different windows. The `reset` fields follow
+their own metric, so `reset-requests` may read `1h12m` while `reset-tokens`
+reads `3.6s` on the same response.
+
+**TPD is the binding constraint for this pipeline.** A single document run costs
+roughly 2,000–3,000 tokens across classification, summarisation and structured
+extraction, so **100,000 tokens/day is on the order of 30–50 documents**. Whisper
+transcription is billed per second of audio and does not draw on TPD.
+
+The trap: TPD appears in no header, so a key can report healthy headroom
+(`requests/day 988/1000`, `tokens/min 11453/12000`) and still be refused on the
+very next call. The limit is only ever stated in the body of a 429:
+
+```
+Rate limit reached for model `llama-3.3-70b-versatile` in organization
+`org_...` service tier `on_demand` on tokens per day (TPD):
+Limit 100000, Used 99682, Requested 2267. Please try again in 28m3.936s.
+```
+
+**Limits are enforced per API key, not pooled across an organisation** — verified
+by observing two keys refused in the same run at different consumption levels
+(99,654/100,000 and 98,412/100,000). Configuring several keys in `GROQ_API_KEYS`
+therefore multiplies your daily budget, and `LLMClient` rotates automatically.
+
+How the client responds:
+
+- A **short** 429 (per-minute limits, seconds) → back off and retry.
+- A **long** 429 (per-day limits, minutes or hours) → **park that key** until its
+  window elapses and switch to the next key immediately. Parking expires by
+  itself; it is not the permanent retirement applied to a 401.
+- TPD figures scraped from a refusal are cached per key and reported as
+  **derived from the last refusal, not live**. A key that has never been refused
+  reports `unknown` rather than a guess — no request is ever sent purely to
+  discover a limit.
+
+To see per-key headroom:
+
+```bash
+DOCAGENT_LOG_LEVEL=DEBUG python tests/e2e/e2e.py pdf
+```
+
+To inspect limits directly, `tests/e2e/ratelimit_probe.py` reads the header
+counters and `tests/e2e/ratelimit_scope_check.py` reports which keys are
+currently accepting requests.
+
 ### Environment variable reference
 
 All settings can be overridden by environment variable; see `.env.example` for

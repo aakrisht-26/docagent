@@ -769,3 +769,54 @@ and 2 were repeatedly refused on TPD, parked with their real retry windows
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **55
 passed** (41 existing + 14 new).
+
+---
+
+### Task 13c — Derived TPD headroom and rate-limit documentation ✅
+
+**Committed:** see `feat(llm): derive TPD headroom from refusals; document Groq limits`
+
+TPD is stated in exactly one place — the body of a 429 — so its figures are now
+cached per key (`limit`, `used`, `requested`, and a reset deadline computed from
+the retry window) at the moment of refusal, and surfaced alongside the RPD and
+TPM header figures:
+
+```
+key 3/8 headroom: requests/day 931/1000 (resets 1h39m21.6s),
+                  tokens/min 8406/12000 (resets 17.97s),
+                  daily: unknown (no refusal seen yet)
+```
+
+Three states, all honest about provenance:
+
+| State | Reported as |
+|---|---|
+| Never refused | `daily: unknown (no refusal seen yet)` |
+| Refused, window still open | `TPD: ~318/100,000 left [derived from refusal 4m ago, not live, resets in 28m]` |
+| Refusal window elapsed | `TPD: window has since reset (was 318/100,000 left); unknown until next refusal` |
+
+No number is ever invented, and **no request is sent purely to discover a limit**.
+Per-minute refusals are explicitly not cached as daily figures.
+
+5 new tests (60 total): unknown-before-refusal, figures cached correctly from the
+body, the note labelled derived-and-not-live, reset handling once the window
+passes, and per-minute refusals not polluting daily state.
+
+**An honest limitation.** Because a key is *parked* the moment it is refused, it
+is not called again inside that window — so the derived figure rarely appears in
+a headroom line during a single run. Where it does show up reliably is the
+parking log itself (`429 TPD 99880/100000, retry in 50m1.536s`) and the
+`daily_limit_report()` accessor. The derived note earns its place across a
+long-lived process such as the Streamlit app; within one CLI run the parking
+message is the practical source. Left as-is rather than adding machinery to
+force it into view.
+
+**Documentation:** new README section, "Groq rate limits — read this before you
+debug a stalled run", covering all four limits, which two appear in headers, the
+naming asymmetry (`limit-requests` is per DAY, `limit-tokens` is per MINUTE),
+that TPD at 100K/day is the binding constraint (≈30–50 documents), that limits
+are per-key so extra keys multiply the budget, and how the client parks versus
+retries.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **60
+passed**.

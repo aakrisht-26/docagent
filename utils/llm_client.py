@@ -219,6 +219,12 @@ class LLMClient:
         self._parked_until: Dict[int, float] = {}
         #: Last seen rate-limit headroom per key, for diagnostics.
         self._headroom: Dict[int, Dict[str, Any]] = {}
+        #: Per-key daily-limit facts learned from a 429 body. Groq reports no
+        #: header for tokens-per-day, so the only place TPD is ever stated is in
+        #: the body of a refusal. What is cached here is therefore an INFERENCE
+        #: from the last refusal, not a live counter, and is labelled as such
+        #: wherever it is surfaced. Keys never refused stay absent -> "unknown".
+        self._observed_daily: Dict[int, Dict[str, Any]] = {}
 
         if cache_enabled:
             from utils.llm_cache import LLMCache
@@ -363,7 +369,8 @@ class LLMClient:
             f"requests/day {snapshot['requests_remaining']}/{snapshot['requests_limit']} "
             f"(resets {snapshot['requests_reset']}), "
             f"tokens/min {snapshot['tokens_remaining']}/{snapshot['tokens_limit']} "
-            f"(resets {snapshot['tokens_reset']})"
+            f"(resets {snapshot['tokens_reset']}), "
+            f"{self._daily_headroom_note(idx)}"
         )
 
         # Warn when a key is running low, so exhaustion is visible before it bites.
@@ -383,9 +390,45 @@ class LLMClient:
                     f"{rem}/{lim} left, resets in {reset}"
                 )
 
+    def _daily_headroom_note(self, idx: int) -> str:
+        """
+        Human-readable daily-limit headroom for a key, derived from the last
+        429 body rather than from a header.
+
+        Groq publishes no `x-ratelimit-*` header for tokens-per-day, so this is
+        an inference from the most recent refusal and is always labelled as
+        such. A key that has never been refused reports "unknown" — no estimate
+        is invented, and no request is ever sent merely to discover a limit.
+        """
+        seen = self._observed_daily.get(idx)
+        if not seen:
+            return "daily: unknown (no refusal seen yet)"
+
+        remaining = seen["limit"] - seen["used"]
+        age_s = time.monotonic() - seen["observed_at"]
+        resets_at = seen.get("resets_at")
+
+        if resets_at is not None and time.monotonic() >= resets_at:
+            return (f"{seen['limit_type']}: window has since reset "
+                    f"(was {remaining:,}/{seen['limit']:,} left); unknown until next refusal")
+
+        reset_note = ""
+        if resets_at is not None:
+            reset_note = f", resets in {(resets_at - time.monotonic()) / 60:.0f}m"
+        return (f"{seen['limit_type']}: ~{remaining:,}/{seen['limit']:,} left "
+                f"[derived from refusal {age_s / 60:.0f}m ago, not live{reset_note}]")
+
     def headroom_report(self) -> Dict[int, Dict[str, Any]]:
         """Last observed rate-limit headroom per key index."""
         return dict(self._headroom)
+
+    def daily_limit_report(self) -> Dict[int, Dict[str, Any]]:
+        """
+        Per-key daily-limit facts inferred from 429 bodies.
+
+        Inference, not live measurement — see `_daily_headroom_note`.
+        """
+        return dict(self._observed_daily)
 
     @staticmethod
     def _backoff_seconds(attempt: int) -> float:
@@ -468,6 +511,19 @@ class LLMClient:
                     f"{limit_type} {info.get('used', '?')}/{info.get('limit', '?')}"
                     if "limit" in info else limit_type
                 )
+
+                # A day-window refusal is the ONLY place TPD/RPD figures are
+                # ever stated — they appear in no header. Cache them per key so
+                # headroom can be reported (as an inference) afterwards.
+                if info.get("window") == "day" and "limit" in info and "used" in info:
+                    self._observed_daily[idx] = {
+                        "limit_type": limit_type,
+                        "limit": info["limit"],
+                        "used": info["used"],
+                        "requested": info.get("requested"),
+                        "observed_at": time.monotonic(),
+                        "resets_at": (time.monotonic() + wait) if wait is not None else None,
+                    }
 
                 if wait is not None and wait > self.park_threshold:
                     # Exhausted for this window, not briefly throttled. Retrying

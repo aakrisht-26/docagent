@@ -171,6 +171,57 @@ class TestParkingBehaviour(unittest.TestCase):
         self.assertNotIn(0, client._parked_until)
 
 
+class TestDerivedDailyHeadroom(unittest.TestCase):
+    """TPD appears in no header, so headroom for it is inferred from refusals."""
+
+    def _trip_tpd(self, client):
+        def op(idx):
+            raise rate_limit_error(TPD_BODY)
+        client._run_with_rotation(op, what="test")
+
+    def test_unknown_before_any_refusal(self):
+        client = make_client()
+        note = client._daily_headroom_note(0)
+        self.assertIn("unknown", note)
+        self.assertNotIn("~", note, "must not invent a number")
+        self.assertEqual(client.daily_limit_report(), {})
+
+    def test_figures_cached_from_refusal(self):
+        client = make_client(keys=1)
+        self._trip_tpd(client)
+        seen = client.daily_limit_report()[0]
+        self.assertEqual(seen["limit_type"], "TPD")
+        self.assertEqual(seen["limit"], 100000)
+        self.assertEqual(seen["used"], 99682)
+        self.assertEqual(seen["requested"], 2267)
+        self.assertIsNotNone(seen["resets_at"])
+
+    def test_note_is_labelled_as_derived_not_live(self):
+        client = make_client(keys=1)
+        self._trip_tpd(client)
+        note = client._daily_headroom_note(0)
+        self.assertIn("318", note, "remaining = limit - used")
+        self.assertIn("derived from refusal", note)
+        self.assertIn("not live", note)
+
+    def test_note_reports_reset_once_window_passes(self):
+        client = make_client(keys=1)
+        self._trip_tpd(client)
+        client._observed_daily[0]["resets_at"] = time.monotonic() - 1
+        note = client._daily_headroom_note(0)
+        self.assertIn("window has since reset", note)
+        self.assertIn("unknown until next refusal", note)
+
+    def test_minute_window_refusal_is_not_cached_as_daily(self):
+        client = make_client(keys=1)
+
+        def op(idx):
+            raise rate_limit_error(TPM_BODY)
+        client._run_with_rotation(op, what="test")
+        self.assertEqual(client.daily_limit_report(), {},
+                         "a per-minute refusal must not populate daily figures")
+
+
 class TestHeadroomRecording(unittest.TestCase):
     def test_headers_are_recorded(self):
         client = make_client()
