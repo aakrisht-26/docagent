@@ -293,6 +293,8 @@ Task 11.
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 Streamlit boots clean (health 200, empty stderr).
 
+<!-- task-6-end -->
+
 ---
 
 ### Task 7 — Stop the UI swallowing pipeline errors ✅
@@ -329,3 +331,49 @@ inside the guarded block and ran it twice:
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
 Streamlit boots clean (health 200, empty stderr).
+
+---
+
+### Task 8 — DEPENDENCIES.md ✅ (documentation only)
+
+**Committed:** see `docs: document OpenCV collision and pandas version drift`
+
+**No pip command was run.** Confirmed after writing: all three OpenCV
+distributions are still installed and `cv2` still resolves to 4.10.0, unchanged.
+
+New `DEPENDENCIES.md` covering:
+
+**OpenCV, three-way collision.** `opencv-contrib-python` 4.10.0.84,
+`opencv-python` 4.13.0.92 and `opencv-python-headless` 4.8.1.78 are all
+installed, and all three ship the same top-level `cv2` package — verified via
+`importlib.metadata`, they own 135 / 92 / 90 files under `cv2/` respectively and
+overwrite each other. `requirements.txt` pins
+`opencv-python-headless==4.8.1.78`, but **4.10.0 is what actually loads**, from a
+distribution not listed in `requirements.txt` at all. The pin is decorative.
+
+Established which variant is genuinely needed rather than guessing: enumerated
+every `cv2.*` symbol used anywhere in the codebase (18 of them), confirmed there
+are **no GUI calls** and **no contrib-only modules**. So `opencv-python-headless`
+alone is correct — matching what `requirements.txt` already declares. The
+documented resolution uninstalls all three before reinstalling, because removing
+two leaves the survivor with files deleted by the others' uninstall.
+
+Flagged the specific risk: `minAreaRect`'s angle convention changed across the
+4.x line and the OCR deskew step branches on that angle, so a silent OpenCV swap
+can change OCR output with no error.
+
+**pandas ahead of its accelerators.** pandas 3.0.3 with `numexpr` 2.8.7 (wants
+≥2.10.2) and `Bottleneck` 1.3.7 (wants ≥1.4.2) — two UserWarnings on every
+Excel/CSV run. Noted that the more serious half is `pandas>=2.0.0` in
+`requirements.txt` being unbounded across a major version, so a clean install can
+resolve anywhere from 2.0 to 3.x. Gave both resolutions (upgrade accelerators;
+bound the pandas range) and noted nothing in the code depends on pandas-3-only
+behaviour, so either bound works.
+
+**Also recorded:** `python-dotenv` 0.21.0 installed against a `>=1.0.0` pin — the
+environment does not satisfy its own requirements file; the ffmpeg PATH entry
+embedding `ffmpeg-8.1.2-full_build` and the WinGet Links fix for it (your note);
+and the CPython 3.13 `.pyc` files under a 3.12.7 interpreter.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 41 passed;
+dependency state confirmed untouched.
