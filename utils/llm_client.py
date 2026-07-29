@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
@@ -98,6 +99,34 @@ _BACKOFF_MAX_SECONDS = 8.0
 _DEFAULT_PARK_THRESHOLD_SECONDS = 15.0
 
 T = TypeVar("T")
+
+# ── Process-wide rate-limit state, shared across LLMClient instances ──────────
+#
+# Keyed by the tuple of API keys, because index-based state only means anything
+# for clients configured with the same key list in the same order. Every client
+# built from those keys receives the SAME container objects, so mutations made
+# by one are immediately visible to all.
+#
+# Keys are used only as an in-memory dictionary key and are never logged.
+_SHARED_KEY_STATE: Dict[tuple, Dict[str, Any]] = {}
+_SHARED_STATE_LOCK = threading.Lock()
+
+
+def _shared_key_state(api_keys: List[str]) -> Dict[str, Any]:
+    """Return the shared rate-limit state for this exact key list, creating it once."""
+    identity = tuple(api_keys)
+    with _SHARED_STATE_LOCK:
+        state = _SHARED_KEY_STATE.get(identity)
+        if state is None:
+            state = {
+                "dead": set(),        # key indices retired by 401
+                "parked": {},         # key index -> monotonic deadline
+                "headroom": {},       # key index -> last seen header figures
+                "daily": {},          # key index -> figures inferred from a 429
+                "pointer": [0],       # rotation cursor, boxed so it is mutable
+            }
+            _SHARED_KEY_STATE[identity] = state
+        return state
 
 # Groq durations look like "28m3.936s", "1h16m19.2s", "1m26.4s", "185ms", "2.5s".
 _DURATION_RE = re.compile(
@@ -206,31 +235,74 @@ class LLMClient:
         self.temperature       = temperature
         self.max_total_retries = max_total_retries
         self._provider         = "groq"
-        self._current_key_idx  = 0
-        #: One OpenAI client per key index, built lazily and reused.
+        #: One OpenAI client per key index, built lazily and reused. NOT shared:
+        #: these hold sockets and are cheap to rebuild, and sharing them across
+        #: instances would entangle connection lifecycles.
         self._clients: Dict[int, Any] = {}
+
+        # ── Shared, process-wide rate-limit state ─────────────────────────
+        # Rate-limit state belongs to the API KEY, not to whichever object
+        # happens to be holding it. Every skill builds its own LLMClient — some
+        # per instance, some on every call — so per-instance tables meant a key
+        # parked during summarisation was retried immediately by the next stage,
+        # and the "N key(s) still usable" count reset on every stage boundary.
+        #
+        # The containers below are looked up by the key list and shared by every
+        # client using those keys, so parking, 401 retirement, the rotation
+        # pointer and observed limits all persist across stages. Skills keep
+        # their own client objects and their existing lifecycles; only the state
+        # is shared.
+        shared = _shared_key_state(self.api_keys)
         #: Key indices that returned HTTP 401. An invalid key stays invalid, so
         #: these are skipped on every later call instead of being retried and
         #: burning a round-trip each time.
-        self._dead_key_idxs: set = set()
+        self._dead_key_idxs: set = shared["dead"]
         #: Key index -> monotonic deadline until which the key is rate-limited.
         #: Unlike 401 this expires: daily and per-minute windows do reset, so a
         #: parked key returns to the rotation once its window has passed.
-        self._parked_until: Dict[int, float] = {}
+        self._parked_until: Dict[int, float] = shared["parked"]
         #: Last seen rate-limit headroom per key, for diagnostics.
-        self._headroom: Dict[int, Dict[str, Any]] = {}
+        self._headroom: Dict[int, Dict[str, Any]] = shared["headroom"]
         #: Per-key daily-limit facts learned from a 429 body. Groq reports no
         #: header for tokens-per-day, so the only place TPD is ever stated is in
         #: the body of a refusal. What is cached here is therefore an INFERENCE
         #: from the last refusal, not a live counter, and is labelled as such
         #: wherever it is surfaced. Keys never refused stay absent -> "unknown".
-        self._observed_daily: Dict[int, Dict[str, Any]] = {}
+        self._observed_daily: Dict[int, Dict[str, Any]] = shared["daily"]
+        #: Rotation pointer, shared so a later stage resumes where the previous
+        #: one left off instead of restarting at key 1 every time.
+        self._pointer: List[int] = shared["pointer"]
 
         if cache_enabled:
             from utils.llm_cache import LLMCache
             self._cache: Optional[Any] = LLMCache(max_size=cache_max_size)
         else:
             self._cache = None
+
+    # ── Shared rotation pointer ───────────────────────────────────────
+    # Exposed as a property so existing reads and assignments of
+    # `self._current_key_idx` keep working unchanged while the value actually
+    # lives in the shared state.
+
+    @property
+    def _current_key_idx(self) -> int:
+        return self._pointer[0]
+
+    @_current_key_idx.setter
+    def _current_key_idx(self, value: int) -> None:
+        self._pointer[0] = value
+
+    @staticmethod
+    def reset_shared_state() -> None:
+        """
+        Clear all process-wide key state.
+
+        Intended for tests and for the rare case of reloading configuration in a
+        long-lived process. Without this, state legitimately persists for the
+        lifetime of the process, which is the entire point.
+        """
+        with _SHARED_STATE_LOCK:
+            _SHARED_KEY_STATE.clear()
 
     @classmethod
     def from_config(cls, cfg: Dict[str, Any]) -> "LLMClient":

@@ -45,6 +45,10 @@ def rate_limit_error(body: str, retry_after: str | None = None) -> openai.RateLi
 
 
 def make_client(keys: int = 4, park_threshold: float = 15.0) -> LLMClient:
+    # Rate-limit state is now shared process-wide per key list, which is the
+    # behaviour under test. Tests must therefore reset it or they leak into
+    # each other.
+    LLMClient.reset_shared_state()
     client = LLMClient(
         model="llama-3.3-70b-versatile",
         api_keys=[f"gsk_fake{i}" for i in range(keys)],
@@ -220,6 +224,86 @@ class TestDerivedDailyHeadroom(unittest.TestCase):
         client._run_with_rotation(op, what="test")
         self.assertEqual(client.daily_limit_report(), {},
                          "a per-minute refusal must not populate daily figures")
+
+
+class TestSharedStateAcrossInstances(unittest.TestCase):
+    """Every skill builds its own LLMClient; the key state must still be shared.
+
+    Without this, a key parked during one stage was retried immediately by the
+    next, and the "N key(s) still usable" count reset at every stage boundary.
+    """
+
+    def _park_key0(self, client):
+        def op(idx):
+            if idx == 0:
+                raise rate_limit_error(TPD_BODY)
+            return "ok"
+        return client._run_with_rotation(op, what="stage")
+
+    def _plain_client(self, keys=("gsk_shared_a", "gsk_shared_b", "gsk_shared_c")):
+        c = LLMClient(model="m", api_keys=list(keys), cache_enabled=False)
+        c._client_for = lambda idx: idx
+        c._backoff_seconds = staticmethod(lambda attempt: 0.0)
+        return c
+
+    def setUp(self):
+        LLMClient.reset_shared_state()
+
+    def test_parking_persists_into_a_later_client(self):
+        first = self._plain_client()
+        self._park_key0(first)
+        self.assertIn(0, first._parked_until)
+
+        second = self._plain_client()          # a different stage's client
+        self.assertIn(0, second._parked_until, "parking must carry across instances")
+        self.assertNotIn(0, second._live_key_idxs(), "parked key must stay skipped")
+
+    def test_usable_count_does_not_reset_between_stages(self):
+        counts = []
+        for _ in range(3):
+            client = self._plain_client()
+            counts.append(len(client._live_key_idxs()))
+            # Park whichever key is currently first in the rotation.
+            def op(idx, _c=client):
+                raise rate_limit_error(TPD_BODY)
+            client._run_with_rotation(op, what="stage")
+        self.assertEqual(counts, [3, 0, 0],
+                         "usable count must decrease and stay decreased, not reset")
+
+    def test_401_retirement_is_shared(self):
+        first = self._plain_client()
+
+        def op(idx):
+            if idx == 0:
+                raise openai.APIStatusError(
+                    "invalid", response=httpx.Response(401, request=REQ), body=None)
+            return "ok"
+        first._run_with_rotation(op, what="stage")
+
+        second = self._plain_client()
+        self.assertIn(0, second._dead_key_idxs, "401 retirement must be shared too")
+
+    def test_different_key_lists_do_not_share(self):
+        a = self._plain_client(("gsk_set1_a", "gsk_set1_b"))
+        self._park_key0(a)
+        b = self._plain_client(("gsk_set2_a", "gsk_set2_b"))
+        self.assertEqual(b._parked_until, {},
+                         "unrelated key sets must not share state")
+
+    def test_reset_clears_shared_state(self):
+        client = self._plain_client()
+        self._park_key0(client)
+        LLMClient.reset_shared_state()
+        fresh = self._plain_client()
+        self.assertEqual(fresh._parked_until, {})
+
+    def test_rotation_pointer_is_shared(self):
+        first = self._plain_client()
+        self._park_key0(first)
+        moved_to = first._current_key_idx
+        second = self._plain_client()
+        self.assertEqual(second._current_key_idx, moved_to,
+                         "a later stage should resume where the previous left off")
 
 
 class TestHeadroomRecording(unittest.TestCase):

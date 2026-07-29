@@ -1058,3 +1058,55 @@ Deleted from the working tree:
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 65 passed;
 `git status` clean with no changes to commit.
+
+---
+
+## Follow-up round
+
+### Task 18 — Share rate-limit state across LLMClient instances ✅
+
+**Committed:** see `fix(llm): share rate-limit state across client instances`
+
+**Your diagnosis was correct, and the problem was broader than stated.**
+Confirmed structurally and then proved: two clients built from the same key list
+had entirely separate tables (`A._parked_until is B._parked_until` → `False`), so
+a key parked in one stage was retried by the next.
+
+Beyond per-skill clients, **three skills build a client inside `execute()`** —
+`audio_reader`, `document_chat`, `document_editor` — discarding state per *call*
+rather than per stage. And it was never only parking: `_dead_key_idxs` (401
+retirement) and the rotation pointer were duplicated too, so a key proven invalid
+by a 401 was re-tried by every other skill.
+
+Rate-limit state belongs to the API key, not to whichever object holds it. A
+module-level table keyed by the key-list tuple now hands every client the *same*
+container objects for parking, 401 retirement, headroom, observed daily limits
+and the rotation pointer. **Skills keep their own client objects and their
+existing lifecycles** — only the state is shared, per the constraint. The
+rotation pointer is exposed through a property so existing reads and assignments
+of `self._current_key_idx` are unchanged.
+
+Added `LLMClient.reset_shared_state()`, needed because state now legitimately
+outlives any single client — without it the new tests leak into one another.
+
+**Proof from a live run** (`tests/e2e/e2e.py pdf`, three LLM stages in one
+process):
+
+```
+✔ stage 3/6 [classify] completed in 2766 ms
+key 1/8: parked for 2836s (429 TPD 99688/100000) → 7 key(s) still usable
+key 2/8: parked for 2230s (429 TPD 98986/100000) → 6 key(s) still usable
+key 3/8: parked for 2282s (429 TPD 99047/100000) → 5 key(s) still usable
+✔ stage 4/6 [summarize] completed in 3875 ms
+✔ stage 5.5/6 [structured_extraction] completed in 1016 ms   ← no re-parking
+```
+
+The count descends **7 → 6 → 5** and stays there. `structured_extraction` went
+straight to key 4 instead of restarting at key 1, hitting TPD and resetting the
+counter — which is exactly what the 20:24:54 evidence showed previously.
+
+6 new tests (71 total): parking persisting into a later client, usable count not
+resetting across stages, 401 retirement shared, unrelated key lists staying
+isolated, reset clearing state, rotation pointer shared.
+
+**Verification:** `pytest tests/ -q` → **71 passed**; live `pdf` stage exit 0.
