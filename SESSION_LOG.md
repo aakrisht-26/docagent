@@ -928,3 +928,40 @@ parsed document, migration preserving legacy rows, migration idempotent.
 
 **Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → **65
 passed**.
+
+---
+
+### Task 16 — Remove `.DS_Store` and stale CPython 3.13 bytecode ✅
+
+**No commit — nothing was tracked.** The task described these as "committed",
+which was true of the *original* `doc-agent` repo but not of this one: the clean
+`docagent` repo was created from a tree where both were already gitignored.
+Verified before deleting anything —
+
+```
+git log --all -- "*.DS_Store"  -> (empty, never committed)
+git log --all -- "*.pyc"       -> (empty, never committed)
+.gitignore:178  .DS_Store
+.gitignore:2    __pycache__/
+```
+
+So this was a local disk cleanup only, and `git status` is unchanged.
+
+Deleted from the working tree:
+
+| Item | Count |
+|---|---|
+| `.DS_Store` | 1 |
+| `*.cpython-313*.pyc` | 33 |
+
+**Left alone, deliberately:**
+
+- **`*.cpython-310*.pyc` — 10 files, equally stale.** Bytecode for an
+  interpreter that is not installed either, so the same argument applies. Not
+  named in task 16, and the standing rule is not to delete beyond what that task
+  names, so it is reported rather than removed. Say the word and it goes.
+- **`*.cpython-312*.pyc` — 37 files.** The *active* interpreter (3.12.7).
+  Deleting these would only force a harmless recompile.
+
+**Verification:** all 6 e2e stages PASS (exit 0); `pytest tests/ -q` → 65 passed;
+`git status` clean with no changes to commit.
