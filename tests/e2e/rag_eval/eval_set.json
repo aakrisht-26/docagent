@@ -127,6 +127,13 @@
       "expected_sources": ["Headcount"], "match": "any",
       "expected_answer_contains": ["265"]
     },
+    {
+      "id": "lg-xls-06", "fixture": "sample_large_sales.xlsx", "category": "adversarial_sibling",
+      "question": "In the second quarter, how many consignments did the East region deliver?",
+      "expected_sources": ["Q2 Revenue"], "match": "any",
+      "expected_answer_contains": ["5590", "5,590"],
+      "note": "Deliberately hostile. The quarter is written as 'second quarter', never as 'Q2', so the literal sheet label gives no help — the keyword tokenizer fix cannot rescue this one. The four quarterly sheets are otherwise near-identical in wording, and the embedding margins on the existing quarterly cases were the three narrowest in the set (0.028-0.037). This case exists to find out whether that thin edge survives when the quarter is only implied."
+    },
 
     {
       "id": "sm-pdf-01", "fixture": "sample_report.pdf", "category": "direct",
