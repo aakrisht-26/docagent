@@ -7,9 +7,9 @@ commands to resolve them.
 > you to execute deliberately, not a changelog. Every version below was observed
 > on the development machine on 2026-07-29 via read-only inspection.
 >
-> Both issues are currently **latent** — the full pipeline passes all 6 e2e
-> stages and all 41 unit tests as-is. They are recorded because they make the
-> environment non-reproducible, not because anything is failing today.
+> Sections 1 and 4 record problems; section 2 is unresolved and section 3
+> documents a dependency that was added deliberately. The pipeline passes all
+> 6 e2e stages and all 101 unit tests as-is.
 
 ---
 
@@ -213,7 +213,79 @@ reader uses `read_excel`, `DataFrame`, and `to_string`, all stable across 2.x an
 
 ---
 
-## 3. Also worth knowing
+## 3. `sentence-transformers` — the heaviest dependency in the project
+
+Added for document-chat retrieval. Pinned in `requirements.txt` as
+`sentence-transformers==5.4.0`.
+
+### Install footprint
+
+This is by far the largest thing the project installs, and almost none of it is
+`sentence-transformers` itself:
+
+| Package | Installed | Notes |
+|---|---|---|
+| `sentence-transformers` | 5.4.0 | the pinned direct dependency |
+| `torch` | 2.7.1+cu118 | **5.2 GB on this machine** — transitive |
+| `transformers` | 5.5.4 | transitive |
+| `scikit-learn` | 1.9.0 | transitive |
+| `scipy` | 1.13.1 | transitive |
+
+**5.2 GB is the CUDA build.** It is what happened to be installed here; the
+project never asks for GPU support and runs the model on CPU. A CPU-only torch
+is a small fraction of that:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+**`torch` is deliberately not pinned.** Pinning it would force one platform's
+build on everyone — a CUDA wheel onto machines without a GPU, or a CPU wheel
+onto machines that want one. `sentence-transformers` is pinned instead, and torch
+resolves to whatever suits the platform.
+
+### First-run behaviour
+
+The model weights are **not** bundled. They download on first use and are cached
+afterwards:
+
+| | |
+|---|---|
+| Model | `all-MiniLM-L6-v2`, 384 dimensions |
+| Download size | **87 MB** |
+| Cache location | `~/.cache/huggingface` (`%USERPROFILE%\.cache\huggingface` on Windows) |
+| First encode, incl. download and load | **~30–55 s** (measured 27 s, 30 s, 32 s, 53 s across runs — varies with network and disk cache) |
+| Every later encode, 20 chunks | **~25 ms** (23–29 ms observed) |
+| Import cost | **0 ms** — loading is lazy, never at import |
+
+**Where that 30 s lands:** at document ingest, inside `DocumentStore.save()`,
+which embeds the chunks. That is *after* the progress bar reads "Complete", so
+without a spinner the page appears to freeze at the moment it looks finished.
+`ui/app.py` wraps it in `st.spinner` with wording that only mentions the
+download when a download will actually happen.
+
+**Offline first run.** If the weights cannot be fetched, the load fails, the
+failure is logged once, and chat falls back to keyword overlap. Nothing crashes,
+and the rest of the pipeline is unaffected — no other stage uses embeddings. To
+pre-warm the cache deliberately:
+
+```bash
+python -c "from utils import embeddings; embeddings.encode(['warm up'])"
+```
+
+### If you want it gone
+
+Retrieval degrades rather than breaks. Uninstalling it leaves chat working on
+keyword overlap at **13/18** on the eval set instead of 18/18 — the loss is
+concentrated in synonym-phrased questions, which drop to 0/4. Verify with:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py --keyword
+```
+
+---
+
+## 4. Also worth knowing
 
 These were observed alongside the two issues above and are recorded so they are
 not rediscovered later. No action taken.
@@ -279,4 +351,10 @@ python tests/e2e/e2e.py all
 pytest tests/ -q
 ```
 
-Expect 6 `PASS` rows with exit code 0, and 41 passing unit tests.
+Expect 6 `PASS` rows with exit code 0, and 101 passing unit tests.
+
+Retrieval quality is scored separately, with no API calls:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py
+```

@@ -18,7 +18,7 @@ DocAgent is a high-performance, modular AI agent for intelligent document unders
 - **Multi-Key API Resilience** — Round-robin rotation across multiple Groq API keys with automatic rate-limit (HTTP 429) recovery and retry logic.
 - **Advanced Adaptive OCR** — OpenCV-driven pipeline using Gaussian equalisation and adaptive thresholding to extract text from scanned or photographed PDFs with poor lighting.
 - **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial) document table extraction as structured HTML, preventing garbled text from complex layouts.
-- **Multi-Turn Document Chat** — RAG-lite Q&A: keyword-overlap chunk selection provides relevant context to the LLM without needing a vector database.
+- **Multi-Turn Document Chat** — Semantic Q&A: chunks are retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Falls back to keyword overlap when the model is unavailable. Measured **18/18** retrieval on the eval set, against 10/18 for the original keyword approach ([details](tests/e2e/rag_eval/RESULTS.md)).
 - **Natural Language Document Editing** — Describe edits in plain English; the LLM rewrites the document or applies structured JSON operations to Excel sheets.
 - **Form Filling** — Paste answers to extracted questions; DocAgent compiles the completed form as a downloadable PDF.
 - **Glassmorphic Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
@@ -113,6 +113,17 @@ The `scanned` stage is the one that proves Tesseract is wired up correctly: it
 asserts the OCR engine actually ran, so it fails loudly rather than silently
 falling back if `tesseract` is missing from PATH.
 
+> **First run downloads the embedding model.** The first document you analyse
+> pulls `all-MiniLM-L6-v2` (**87 MB**) into `~/.cache/huggingface` and takes
+> **roughly 30–55 seconds** depending on network and disk; every run after that
+> is ~0.03 s. The UI shows a spinner during it. See [Document chat retrieval](#document-chat-retrieval).
+
+Retrieval quality can be scored on its own, with no API calls and no network:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py
+```
+
 Unit tests, which need no API key or network:
 
 ```bash
@@ -126,6 +137,73 @@ streamlit run ui/app.py
 ```
 
 Open `http://localhost:8501` in your browser.
+
+### Document chat retrieval
+
+The Chat tab answers questions over one document. Which chunks reach the model is
+decided here.
+
+| | |
+|---|---|
+| **Model** | `all-MiniLM-L6-v2` via `sentence-transformers`, 384 dimensions |
+| **Runs** | Locally, on CPU. Groq has no embeddings endpoint, so there is nothing to call |
+| **Scoring** | numpy cosine over an L2-normalised matrix — **no vector database** |
+| **Where vectors live** | `history.db`, column `content_embeddings_b64` (base64 float32), alongside `embedding_model` |
+| **Fallback** | Keyword overlap, used whenever the model cannot be imported or loaded |
+| **Loading** | Lazy — on first use, never at import |
+
+**Persistence.** Vectors are computed once, when a document is saved to history,
+and stored with the model name that produced them. A document reloaded from
+history is queryable without re-embedding. Vectors written by a *different*
+model are ignored rather than compared, since they are not comparable.
+
+**Fallback.** If `sentence-transformers` is missing or the weights cannot be
+downloaded, chat keeps working on keyword overlap. Every query logs which path
+served it:
+
+```
+Chunk retrieval via embedding: selected [17, 18, 15] from 20 chunk(s) (top score 0.510)
+Chunk retrieval via keyword_overlap: selected [9, 13, 18] from 20 chunk(s) (top score 3.000)
+```
+
+#### Measured retrieval accuracy
+
+18 question/expected-source pairs over the fixtures, scored on whether the chunk
+holding the answer was **ranked** into the selected set. Full method and
+per-case results in [`tests/e2e/rag_eval/RESULTS.md`](tests/e2e/rag_eval/RESULTS.md).
+
+| Method | ranked | PDF | Workbook |
+|---|---|---|---|
+| Keyword overlap, as originally shipped | 10/18 | 9/12 | 1/6 |
+| Keyword overlap, tokenizer bug fixed | 13/18 | 9/12 | 4/6 |
+| **Embeddings (current)** | **18/18** | **12/12** | **6/6** |
+
+| Category | keyword (orig) | tokenizer-fixed | embeddings |
+|---|---|---|---|
+| `direct` | 4/4 | 4/4 | 4/4 |
+| `vocab_overlap` | 4/6 | 6/6 | 6/6 |
+| `cross_boundary` | 2/3 | 3/3 | 3/3 |
+| `synonym` | 0/4 | 0/4 | **4/4** |
+| `adversarial_sibling` | 0/1 | 0/1 | **1/1** |
+
+**Not all of that gain belongs to embeddings.** Three of the eight improvements
+over the original baseline were a tokenizer bug, not the retrieval method:
+`_tokenize` matched `[a-z]{3,}` and so never saw `Q1` or `Q3`, which made every
+quarterly sheet in a workbook score identically. Fixing that regex alone takes
+keyword overlap from **10/18 to 13/18**, and it has been fixed independently
+because the fallback path deserves to work.
+
+The genuine embedding win is the **five cases no regex reaches**: the four
+`synonym` questions, which share no content word with the chunk that answers
+them, and the adversarial sibling case, which asks about "the second quarter"
+without ever writing `Q2`.
+
+Run either path yourself:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py            # embeddings
+python tests/e2e/rag_eval/run_eval.py --keyword  # the fallback, scored alone
+```
 
 ### Groq rate limits — read this before you debug a stalled run
 
@@ -287,7 +365,7 @@ doc-agent/
 │   ├── structure_recognition_skill.py # PP-Structure table extraction
 │   ├── summarization_skill.py # Map-reduce LLM summarisation
 │   ├── question_extraction_skill.py  # Regex + LLM question extraction
-│   ├── document_chat_skill.py # RAG-lite multi-turn Q&A
+│   ├── document_chat_skill.py # Multi-turn Q&A (embedding retrieval)
 │   ├── document_editor_skill.py # NL document editing
 │   └── form_filling_skill.py  # Form compilation
 ├── utils/
