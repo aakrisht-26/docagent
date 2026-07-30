@@ -62,6 +62,42 @@ class TestLazyLoading(unittest.TestCase):
                           "is_supported() must not trigger a model load")
 
 
+class TestTokenizer(unittest.TestCase):
+    """The keyword fallback's scorer. Serves every query without the model."""
+
+    def test_letter_digit_tokens_are_visible(self):
+        tokens = DocumentChatSkill._tokenize("Revenue per consignment for North in Q3")
+        self.assertIn("q3", tokens,
+                      "quarter labels must be visible or sibling sheets tie")
+
+    def test_bare_numbers_are_excluded(self):
+        """Documents are full of figures; matching on them would be noise."""
+        tokens = DocumentChatSkill._tokenize("Revenue was 9140000 across 41300 hours")
+        self.assertNotIn("9140000", tokens)
+        self.assertNotIn("41300", tokens)
+
+    def test_ordinary_words_still_tokenised(self):
+        tokens = DocumentChatSkill._tokenize("The maintenance cost per vehicle")
+        self.assertIn("maintenance", tokens)
+        self.assertIn("vehicle", tokens)
+
+    def test_short_words_and_stopwords_still_dropped(self):
+        tokens = DocumentChatSkill._tokenize("of the a in on at")
+        self.assertEqual(tokens, set())
+
+    def test_quarters_now_discriminate_between_sibling_sheets(self):
+        """The regression this fixes: Q1 and Q3 sheets scored identically."""
+        skill = DocumentChatSkill(config={})
+        sheets = [
+            {"text": "[Sheet: Q1 Revenue] North 8120 9140000 1126", "page_or_sheet": "Q1 Revenue"},
+            {"text": "[Sheet: Q3 Revenue] North 9010 10480000 1163", "page_or_sheet": "Q3 Revenue"},
+        ]
+        q3 = skill._tokenize("revenue per consignment for North in Q3")
+        s1 = len(q3 & skill._tokenize(sheets[0]["text"]))
+        s3 = len(q3 & skill._tokenize(sheets[1]["text"]))
+        self.assertGreater(s3, s1, "the Q3 sheet must outscore the Q1 sheet")
+
+
 class TestFallback(unittest.TestCase):
     """Retrieval must degrade to keyword overlap, not fail, without the model."""
 

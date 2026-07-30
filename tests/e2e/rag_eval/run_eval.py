@@ -17,8 +17,13 @@ returns the whole document), and averaging them in would mask the real signal.
 
 Usage:
     python tests/e2e/rag_eval/run_eval.py                 # retrieval only, free
+    python tests/e2e/rag_eval/run_eval.py --keyword       # force the fallback path
     python tests/e2e/rag_eval/run_eval.py --with-answers  # also scores answers
     python tests/e2e/rag_eval/run_eval.py --json          # machine-readable
+
+`--keyword` disables embeddings for the run so the keyword fallback can be
+measured on its own. That path serves every query whenever the model is
+missing, so its score matters independently of the embedding score.
 """
 
 from __future__ import annotations
@@ -149,6 +154,11 @@ def answer_hit(case: dict, reply: str) -> bool:
 def main(argv: list) -> int:
     with_answers = "--with-answers" in argv
     as_json = "--json" in argv
+
+    if "--keyword" in argv:
+        # Force the fallback path for this run so it can be scored on its own.
+        from utils import embeddings
+        embeddings.is_supported = lambda: False
 
     spec = json.loads((HERE / "eval_set.json").read_text(encoding="utf-8"))
     cases = spec["cases"]
