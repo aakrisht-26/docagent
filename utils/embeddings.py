@@ -59,6 +59,16 @@ def is_supported() -> bool:
     return importlib.util.find_spec("sentence_transformers") is not None
 
 
+def is_loaded() -> bool:
+    """True if the model is already in memory, so the next encode is cheap.
+
+    Lets callers word a progress message honestly: the first encode in a process
+    takes ~30 s including the weights download, every later one takes
+    milliseconds.
+    """
+    return _model is not None
+
+
 def _get_model():
     """Load the model once, on first use. Returns None if it cannot be loaded."""
     global _model, _load_failed

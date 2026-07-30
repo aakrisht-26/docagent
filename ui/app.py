@@ -559,10 +559,28 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             if result.success:
                 st.session_state[state_key] = result
                 st.session_state[f"parsed_doc_{name}"] = result.parsed_document
-                # Auto-save to persistent history (non-blocking; errors are warnings)
+                # Auto-save to persistent history (non-blocking; errors are warnings).
+                #
+                # This step also embeds the document's chunks for search, which
+                # is where the embedding model gets loaded. The first time in a
+                # process that costs ~30s including the weights download, and it
+                # happens *after* the progress bar already reads "Complete" — so
+                # without a spinner the page simply freezes with no explanation.
+                # Later saves are ~0.03s, so the wording adapts rather than
+                # warning about a download that will not happen.
+                from utils import embeddings as _emb
+                if _emb.is_supported() and not _emb.is_loaded():
+                    indexing_message = (
+                        "Indexing document for search — first run only, "
+                        "downloading the embedding model (~30s)…"
+                    )
+                else:
+                    indexing_message = "Indexing document for search…"
+
                 try:
                     raw_bytes = file_data.get("bytes")
-                    _store.save(result, raw_bytes=raw_bytes)
+                    with st.spinner(indexing_message):
+                        _store.save(result, raw_bytes=raw_bytes)
                 except Exception as store_exc:
                     logger.warning(f"Could not save result to history: {store_exc}")
                 st.success(
