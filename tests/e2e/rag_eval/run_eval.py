@@ -92,20 +92,15 @@ def anchor_sources(chunks: list) -> list:
     return [chunks[0]["page_or_sheet"], chunks[-1]["page_or_sheet"]]
 
 
-def keyword_scorer(chat):
-    """Reproduce DocumentChatSkill's keyword-overlap score for a (question, text)."""
-    def score(question: str, text: str) -> float:
-        return float(len(chat._tokenize(question) & chat._tokenize(text)))
-    return score
+def score_sources(question: str, chunks: list, chat) -> tuple:
+    """(source -> score, method) using whichever retrieval method is active.
 
-
-def score_sources(question: str, chunks: list, scorer) -> dict:
-    """source -> relevance score under whichever retrieval method is active.
-
-    Recomputed here rather than read out of the skill, so that measuring does
-    not require changing the code under test.
+    Read from the skill rather than reimplemented here, so the ranked/incidental
+    classification always uses exactly the scores the selector ranked on. A
+    private copy would silently drift the moment retrieval changed.
     """
-    return {c["page_or_sheet"]: scorer(question, c.get("text", "")) for c in chunks}
+    scores, method = chat.score_chunks(question, chunks)
+    return {c["page_or_sheet"]: s for c, s in zip(chunks, scores)}, method
 
 
 def classify_hit(case: dict, selected_sources: list, scores: dict,
@@ -170,7 +165,7 @@ def main(argv: list) -> int:
         sources = [c["page_or_sheet"] for c in selected]
 
         anchors = anchor_sources(chunks)
-        scores = score_sources(case["question"], chunks, keyword_scorer(chat))
+        scores, method = score_sources(case["question"], chunks, chat)
         # Slots that were an actual choice, i.e. not structural anchors.
         chosen = [s for s in sources if s not in anchors]
 
@@ -186,6 +181,7 @@ def main(argv: list) -> int:
             "n_chunks": len(chunks),
             "retrieval_hit": retrieval_hit(case, sources),
             "hit_kind": classify_hit(case, sources, scores, anchors),
+            "method": method,
             "answer_hit": None,
         }
 
@@ -265,8 +261,10 @@ def main(argv: list) -> int:
                   f"selected {r['selected']} (anchors {r['anchors_in_selection']})")
         print("  These inflate the 'any' number. The 'ranked' column is the honest one.")
 
+    methods = sorted({r["method"] for r in results})
     print()
     print("=" * 104)
+    print(f"  retrieval method(s) used: {', '.join(methods)}")
     summarise("HEADLINE (meaningful fixtures)", meaningful)
     summarise("trivial fixtures (no signal)", [r for r in results if r["fixture"] in TRIVIAL])
     anchor_slots = sum(len(r["anchors_in_selection"]) for r in meaningful)
