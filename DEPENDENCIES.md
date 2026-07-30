@@ -155,18 +155,64 @@ configuration, not as full coverage of the angle space.
 
 ---
 
-## 2. pandas 3.0.3 is ahead of its acceleration dependencies
+## 2. pandas 3.0.3 is ahead of its acceleration dependencies — ✅ RESOLVED
 
-### What is installed
+> **Resolved on 2026-07-29.** Both halves are fixed, by one change rather than
+> two: pandas was moved into the range Streamlit actually supports.
+>
+> ```
+> requirements.txt:  pandas>=2.0.0   ->  pandas>=2.0.0,<3
+> installed:         pandas 3.0.3    ->  pandas 2.3.3
+> ```
+>
+> **Why `<3` and not an accelerator upgrade.** The upper bound is not this
+> project's own constraint — it is Streamlit's. `streamlit 1.37.1` declares
+> `pandas<3,>=1.3.0`, so pandas 3.0.3 made `pip check` report an incompatible
+> environment. Bounding pandas satisfies that *and* removes the unbounded
+> major-version span in one move.
+>
+> **The accelerator warnings disappeared as a side effect.** pandas 2.3.3 has
+> lower minimums for `numexpr` and `Bottleneck` than 3.0.x, and the installed
+> 2.8.7 / 1.3.7 satisfy them — so no upgrade of either was needed and neither
+> warning is emitted any more. Unit-test warnings dropped from 4 to 2.
+>
+> **Excel output is byte-identical across the change**, verified rather than
+> assumed: the parsed text of both workbook fixtures hashes the same under
+> pandas 3.0.3 and 2.3.3.
+>
+> | | pandas 3.0.3 | pandas 2.3.3 |
+> |---|---|---|
+> | `sample_sales.xlsx` | 2 sheets, 719 chars, sha `2c8c4939567cfca1` | identical |
+> | `sample_large_sales.xlsx` | 8 sheets, 2827 chars, sha `9ef344a7302bef35` | identical |
+>
+> **Still outstanding, unrelated to pandas.** `pip check` continues to report
+> three pre-existing conflicts that were present before this change and are not
+> caused by it:
+>
+> ```
+> opentelemetry-proto 1.40.0 requires protobuf<7.0,>=5.0, but protobuf 7.35.0 is installed
+> streamlit 1.37.1    requires protobuf<6,>=3.20,  but protobuf 7.35.0 is installed
+> shap 0.52.0         requires numpy>=2,           but numpy 1.26.4 is installed (pinned here)
+> ```
+>
+> **A note on a fresh clone.** A clean resolve of `requirements.txt` selects
+> `streamlit 1.60.0`, which permits pandas 3 — so the conflict is a property of
+> the *installed* streamlit 1.37.1, not of the requirements file. The `<3` bound
+> is still correct: it guarantees a consistent environment on both, rather than
+> depending on which Streamlit a resolver happens to pick.
+>
+> The original problem statement is kept below as the record.
 
-| Package | Installed | pandas 3.0.3 requires |
+### What was installed
+
+| Package | Installed (before) | pandas 3.0.3 required |
 |---|---|---|
 | `pandas` | 3.0.3 | — |
 | `numexpr` | 2.8.7 | **>= 2.10.2** |
 | `Bottleneck` | 1.3.7 | **>= 1.4.2** |
 | `numpy` | 1.26.4 | satisfied |
 
-Every run that touches the Excel/CSV path emits:
+Every run that touched the Excel/CSV path emitted:
 
 ```
 UserWarning: Pandas requires version '2.10.2' or newer of 'numexpr'
