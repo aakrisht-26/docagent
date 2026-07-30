@@ -3,13 +3,13 @@
 Known dependency problems in this environment, why they matter, and the exact
 commands to resolve them.
 
-> **Nothing in this document has been run.** These are documented resolutions for
-> you to execute deliberately, not a changelog. Every version below was observed
-> on the development machine on 2026-07-29 via read-only inspection.
+> **Status.** Sections 1 and 2 are **resolved** — the commands in them were run
+> and the outcome is recorded inline. Section 3 documents a dependency that was
+> added deliberately. Section 4 records smaller things that are still open and
+> have *not* been acted on.
 >
-> Sections 1 and 4 record problems; section 2 is unresolved and section 3
-> documents a dependency that was added deliberately. The pipeline passes all
-> 6 e2e stages and all 101 unit tests as-is.
+> Versions were observed on the development machine on 2026-07-29. The pipeline
+> passes all 6 e2e stages and all 101 unit tests as-is.
 
 ---
 
