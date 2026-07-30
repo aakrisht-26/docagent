@@ -50,9 +50,12 @@ requests>=2.31.0
 rich>=13.7.0
 
 # Audio & YouTube Processing
+# ffmpeg itself is a SYSTEM BINARY, not a pip package — see README step 3.
+# `pydub` and `ffmpeg-python` were previously declared here. Both were removed:
+# neither is imported anywhere in the codebase, neither was installed, and the
+# pin `ffmpeg-python>=0.2.1` was unsatisfiable (0.2.0 is the newest release),
+# which made `pip install -r requirements.txt` fail outright on a fresh clone.
 yt-dlp>=2024.01.01
-pydub>=0.25.1
-ffmpeg-python>=0.2.1
 
 # Testing
 pytest>=7.4.0
