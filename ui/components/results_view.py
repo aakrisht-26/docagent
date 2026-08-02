@@ -130,7 +130,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
     story.append(p(
         f"**Words:** {result.word_count:,}   |   "
         f"**Pages/Sheets:** {result.page_count}   |   "
-        f"**Classification:** {result.classification_confidence:.0%} ({result.classification_method})   |   "
+        f"**Classification:** {display_confidence(result):.0%} ({result.classification_method})   |   "
         f"**Processing:** {result.processing_time_ms / 1000:.2f}s",
         meta_k, is_md=True
     ))
@@ -414,8 +414,30 @@ def _render_tables_tab(tables: list) -> None:
 
 # ── Confidence meter ─────────────────────────────────────────────────────────
 
-def _render_confidence_meter(confidence: float, label: str = "Classification Confidence") -> None:
-    pct = int(confidence * 100)
+def display_confidence(result: Any) -> float:
+    """How confident the classifier is *in the answer it gave*, 0.0–1.0.
+
+    `PipelineResult.classification_confidence` is NOT that number. It is the
+    questionnaire-likelihood score: how strongly the document looked like a
+    form. For a document classified `normal_document`, a score of 0.035 means
+    the classifier was ~96.5% sure it was a normal document — but the UI showed
+    "Classification Confidence 3%" in red, which reads as a failed
+    classification when it is in fact a confident, correct one.
+
+    So the score is inverted here for display when the winning class is
+    "normal_document". The stored field is deliberately left untouched: it is
+    persisted in history.db, asserted on in tests, and consumed by the pipeline,
+    and changing its meaning would be a data change rather than a display fix.
+    """
+    score = float(getattr(result, "classification_confidence", 0.0) or 0.0)
+    doc_type = (getattr(result, "doc_type", "") or "").lower()
+    return score if doc_type == "questionnaire" else 1.0 - score
+
+
+def _render_confidence_meter(confidence: float, label: str = "Classification confidence") -> None:
+    # round(), not int(). int() truncates, so 0.965 rendered as 96 here while
+    # the banner's `:.0%` rounded it to 97 — the two disagreed by a step.
+    pct = round(confidence * 100)
     color = "#34d399" if pct >= 70 else "#fbbf24" if pct >= 40 else "#f87171"
     _html(f"""
     <div class="confidence-meter-wrap">
@@ -490,7 +512,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
     else:
         label, css_cls = "Normal Document", "normal"
 
-    conf_pct = f"{result.classification_confidence:.0%}"
+    conf_pct = f"{display_confidence(result):.0%}"
     _html(f"""
     <div class="doc-type-banner {css_cls} fade-in">
       <div style="flex:1">
@@ -520,7 +542,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
             st.warning(f"⚠️ {w}", icon=None)
 
     # ── Confidence meter ───────────────────────────────────────────────
-    _render_confidence_meter(result.classification_confidence)
+    _render_confidence_meter(display_confidence(result))
 
     # ── Stats row ──────────────────────────────────────────────────────
     char_count = len(result.raw_text)
@@ -1085,7 +1107,7 @@ if (typeof speechSynthesis !== 'undefined')
             <div class="empty-state">
               <h3>Not a questionnaire</h3>
               <p>This document was classified as a normal document
-              ({result.classification_confidence:.0%} confidence).
+              ({display_confidence(result):.0%} confidence).
               Question extraction only runs on questionnaires.</p>
             </div>""")
 
