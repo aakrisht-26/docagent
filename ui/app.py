@@ -411,16 +411,45 @@ def _render_upload() -> tuple[list, dict]:
 
     overrides = {"summary_length": summary_length, "summary_tone": summary_tone}
 
-    # Convert YouTube URL to stable file entry (name must survive reruns)
+    # Convert YouTube URL to stable file entry (name must survive reruns).
+    #
+    # Validation happens HERE, before a name is derived. Previously the name was
+    # built from `extract_youtube_video_id(url) or hash(url)`, so an unusable URL
+    # still produced an entry called something like `youtube_56152687.audio`, and
+    # the results area rendered a heading for that non-existent document before
+    # `_run_pipeline` got as far as rejecting it. The user saw a filename they
+    # never supplied, for a document that was never going to exist.
     if input_mode == "YouTube URL" and youtube_url:
+        from utils.file_handler import extract_youtube_video_id
+
         url_stripped = youtube_url.strip()
-        if url_stripped:
-            # Use video ID (or a short hash) as stable key so theme-toggle reruns
-            # don't generate a new name and invalidate the cached result.
-            from utils.file_handler import extract_youtube_video_id
-            video_id = extract_youtube_video_id(url_stripped) or str(abs(hash(url_stripped)) % 10**8)
+        # Gate on the VIDEO ID, not on is_valid_youtube_url(). That helper only
+        # checks the domain, so `youtube.com/playlist?list=…` and a truncated
+        # `watch?v=short` both pass it while yielding no id — which would name
+        # the entry `youtube_None.audio` and then fail later inside yt-dlp.
+        video_id = extract_youtube_video_id(url_stripped) if url_stripped else None
+
+        if not url_stripped:
+            files = []
+        elif video_id:
+            # Video ID as a stable key, so theme-toggle reruns don't generate a
+            # new name and invalidate the cached result.
             files = [{"youtube_url": url_stripped, "name": f"youtube_{video_id}.audio"}]
         else:
+            with col:
+                if is_valid_youtube_url(url_stripped):
+                    st.error(
+                        "That is a YouTube link, but not to a single video. "
+                        "Playlists, channels and shortened search links are not "
+                        "supported — paste a `watch?v=…` or `youtu.be/…` link.",
+                        icon=":material/link_off:",
+                    )
+                else:
+                    st.error(
+                        "That does not look like a YouTube link. Expected "
+                        "`youtube.com/watch?v=…` or `youtu.be/…`.",
+                        icon=":material/link_off:",
+                    )
             files = []
     else:
         files = files or []
