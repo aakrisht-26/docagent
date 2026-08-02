@@ -95,7 +95,12 @@ class DocumentStore:
             # separately so history reload gains content without altering the
             # export. Added via migration so existing databases keep working.
             existing = {row[1] for row in conn.execute("PRAGMA table_info(history)")}
-            for column in ("content_text", "content_chunks_json"):
+            for column in ("content_text", "content_chunks_json",
+                           # Chunk embeddings, base64 float32, plus the model
+                           # that produced them. Vectors are only comparable to
+                           # vectors from the same model, so the name is stored
+                           # with them and checked on load rather than trusted.
+                           "content_embeddings_b64", "embedding_model"):
                 if column not in existing:
                     conn.execute(f"ALTER TABLE history ADD COLUMN {column} TEXT")
 
@@ -137,14 +142,28 @@ class DocumentStore:
             ensure_ascii=False,
         ) if chunks else None
 
+        # Embed once, here, so a document reloaded from history is queryable
+        # without paying the model cost again. Best-effort: if the model is
+        # unavailable the row is still written and chat falls back to keyword
+        # overlap, exactly as it would for a pre-migration row.
+        embeddings_b64 = None
+        embedding_model = None
+        if chunks:
+            from utils import embeddings as _emb
+            matrix = _emb.encode([c.text for c in chunks])
+            if matrix is not None and len(matrix) == len(chunks):
+                embeddings_b64 = _emb.to_blob(matrix)
+                embedding_model = _emb.model_name()
+
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO history
                     (file_name, file_hash, file_type, doc_type, domain,
                      word_count, question_count, processing_time_ms, result_json,
-                     content_text, content_chunks_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     content_text, content_chunks_json,
+                     content_embeddings_b64, embedding_model)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.file_name,
@@ -158,6 +177,8 @@ class DocumentStore:
                     result_json,
                     content_text,
                     content_chunks_json,
+                    embeddings_b64,
+                    embedding_model,
                 ),
             )
             entry_id = cursor.lastrowid
@@ -219,7 +240,8 @@ class DocumentStore:
         """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT result_json, content_text, content_chunks_json "
+                "SELECT result_json, content_text, content_chunks_json, "
+                "content_embeddings_b64, embedding_model "
                 "FROM history WHERE id = ?",
                 (entry_id,),
             ).fetchone()
@@ -238,7 +260,44 @@ class DocumentStore:
         except json.JSONDecodeError:
             logger.warning(f"DocumentStore: unreadable chunks for entry #{entry_id}")
             data["content_chunks"] = []
+
+        # Attach stored vectors to their chunks so retrieval needs no
+        # re-embedding. Skipped when the row predates embeddings, when the
+        # stored vectors came from a different model, or when the counts do not
+        # line up — in each case chat re-embeds or falls back, rather than
+        # comparing vectors that are not comparable.
+        self._attach_embeddings(data, row[3], row[4], entry_id)
         return data
+
+    @staticmethod
+    def _attach_embeddings(data: Dict[str, Any], blob: Optional[str],
+                           stored_model: Optional[str], entry_id: int) -> None:
+        chunks = data.get("content_chunks") or []
+        if not blob or not chunks:
+            return
+
+        from utils import embeddings as _emb
+        if stored_model and stored_model != _emb.model_name():
+            logger.info(
+                f"DocumentStore: entry #{entry_id} was embedded with "
+                f"'{stored_model}' but '{_emb.model_name()}' is active; "
+                "ignoring stored vectors and re-embedding."
+            )
+            return
+
+        matrix = _emb.from_blob(blob)
+        if matrix is None:
+            return
+        if len(matrix) != len(chunks):
+            logger.warning(
+                f"DocumentStore: entry #{entry_id} has {len(matrix)} vectors for "
+                f"{len(chunks)} chunks; ignoring stored vectors."
+            )
+            return
+
+        for chunk, vector in zip(chunks, matrix):
+            chunk["embedding"] = vector.tolist()
+        data["embedding_model"] = stored_model
 
     def find_by_hash(self, file_hash: str) -> Optional[Dict[str, Any]]:
         """Return the most recent result for a given file hash (cache lookup)."""

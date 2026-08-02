@@ -1014,33 +1014,105 @@ The threshold 0.72 was calibrated empirically on a corpus of real questionnaires
 **Location:** `skills/document_chat_skill.py`
 **Purpose:** Multi-turn Q&A over the document without a vector database.
 
-#### RAG-Lite: Keyword Overlap Retrieval
+#### Embedding Retrieval, with Keyword Overlap as Fallback
+
+> **This section previously argued for keyword overlap over embeddings, on three
+> grounds that were later measured and found wrong.** The original text is
+> preserved below under "The superseded argument", because the *shape* of the
+> reasoning was sound — it was the numbers that were guessed rather than
+> measured.
 
 ```python
-def _select_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
-    query_tokens = self._tokenize(query)    # Lowercase, remove stopwords, 3+ char words
+def score_chunks(self, query, chunks) -> tuple[list[float], str]:
+    # Preferred: cosine similarity over local embeddings.
+    if embeddings.is_supported():
+        cached = [c.get("embedding") for c in chunks]        # from DocumentStore
+        matrix = np.asarray(cached) if all(v is not None for v in cached) \
+                 else embeddings.encode([c["text"] for c in chunks])
+        if matrix is not None:
+            qv = embeddings.encode([query])
+            if qv is not None:
+                return list(embeddings.similarity(qv[0], matrix)), "embedding"
 
-    scored = []
-    for chunk in chunks:
-        chunk_tokens = self._tokenize(chunk["text"])
-        score = len(query_tokens & chunk_tokens)    # Count shared keywords
-        scored.append((score, chunk))
-
-    # Top 3 keyword-matching chunks + document start + document end
-    top    = sorted(scored, reverse=True)[:3]
-    anchors = [chunks[0], chunks[-1]]
-    return deduplicate(top + anchors)
+    # Fallback: keyword overlap, whenever the model is unavailable.
+    qw = self._tokenize(query)
+    return [float(len(qw & self._tokenize(c["text"]))) for c in chunks], "keyword_overlap"
 ```
 
-**Why keyword overlap instead of semantic embeddings?**
+`_select_chunks()` then takes the top 3 by score, appends the first/last
+**anchors**, and caps at `_MAX_CONTEXT_CHARS`. **Only the scoring changed** —
+the selection shape is identical to the keyword-only version, which is what makes
+the before/after comparison meaningful.
 
-Semantic embeddings (OpenAI `text-embedding-3-small`, SentenceTransformers, etc.) are more accurate for paraphrase-heavy queries. But:
+Anchors are always included because introductions carry scope and conclusions
+carry findings, both frequently relevant regardless of query. Note they are
+*structural padding, not retrieval*: across the eval they account for 36 of 86
+selected slots, so roughly a third of what reaches the model was not chosen by
+relevance at all.
 
-1. **Dependency cost:** SentenceTransformers adds PyTorch as a required dependency — a 500 MB install. For a document chat feature in an application that might be deployed on a lightweight cloud instance, this is disproportionate.
-2. **Latency:** Embedding 100 chunks takes 0.3–1.5 seconds even with GPU acceleration. Keyword overlap is O(n) string operations — microseconds.
-3. **Quality at this task:** DocAgent users ask factual questions about specific topics ("What were the Q3 revenues?", "What is the maximum load capacity?"). These questions contain the exact terms that appear in the document. Keyword overlap retrieval has ~90% precision for this query pattern.
+**Where vectors live.** `DocumentStore` persists them per row in
+`content_embeddings_b64` (base64 float32, ~40 KB for 20 chunks; 30 KB raw) alongside
+`embedding_model`. A document reloaded from history is queryable without
+re-embedding. Vectors written by a different model are ignored, not compared.
 
-The anchor chunks (document start + end) are always included because introductions contain document scope/context and conclusions contain key findings — both frequently relevant regardless of the query.
+**Loading.** Lazy, on first `encode()`. Import stays free — verified by a
+subprocess test, because checking `sys.modules` in-process passes alone and
+fails in a full run.
+
+#### Measured retrieval accuracy
+
+18 pairs across the fixtures, scored on whether the answering chunk was
+**ranked** (strictly outscored every excluded chunk) rather than merely present.
+
+| Method | ranked | PDF | Workbook |
+|---|---|---|---|
+| Keyword overlap, as originally shipped | 10/18 | 9/12 | 1/6 |
+| Keyword overlap, tokenizer bug fixed | 13/18 | 9/12 | 4/6 |
+| **Embeddings (current)** | **18/18** | **12/12** | **6/6** |
+
+| Category | keyword (orig) | tokenizer-fixed | embeddings |
+|---|---|---|---|
+| `direct` | 4/4 | 4/4 | 4/4 |
+| `vocab_overlap` | 4/6 | 6/6 | 6/6 |
+| `cross_boundary` | 2/3 | 3/3 | 3/3 |
+| `synonym` | 0/4 | 0/4 | **4/4** |
+| `adversarial_sibling` | 0/1 | 0/1 | **1/1** |
+
+**Attribution matters here.** Three of the eight gains over the original
+baseline were a *tokenizer bug*, not the retrieval method: `_tokenize` matched
+`[a-z]{3,}` and never saw `Q1` or `Q3`, so every quarterly sheet scored
+identically and the selection was byte-identical no matter which quarter was
+asked about. Fixing that regex alone takes keyword overlap from 10/18 to 13/18.
+It has been fixed independently, since the fallback serves every query when the
+model is missing.
+
+The genuine embedding win is the **five cases no regex reaches** — four
+`synonym` questions sharing no content word with their answer, plus the
+adversarial sibling asking about "the second quarter" without writing `Q2`.
+
+**Caveat on the score.** `ranked` requires strictly outscoring every excluded
+chunk. Under integer keyword scores ties are common and that test does real
+work; under cosine, exact ties are effectively impossible, so 18/18 is not
+passing an identical bar. Margins are the honest substitute: smallest 0.0284,
+median 0.2227, none below 0.02 — but the four narrowest are all near-identical
+quarterly sheets (0.028–0.047), so that edge is thin and should be re-measured
+after any model change.
+
+#### The superseded argument
+
+Kept as a record of what was assumed before it was measured:
+
+1. ~~**Dependency cost:** SentenceTransformers adds PyTorch — a 500 MB install.~~
+   The direction was right, the magnitude badly wrong: torch is **5.2 GB** on
+   this machine (CUDA build; a CPU-only build is far smaller). This remains the
+   strongest argument against the dependency — see `DEPENDENCIES.md`.
+2. ~~**Latency:** Embedding 100 chunks takes 0.3–1.5 s even with GPU.~~
+   Measured: **~25 ms** for 20 chunks on CPU once warm. The real cost is the
+   one-off first load (**~30–55 s**), not per-query latency.
+3. ~~**Quality:** keyword overlap has ~90% precision for this query pattern.~~
+   Measured **10/18 (56%)** ranked on the eval set, and **0/4** on synonym
+   phrasing. The claim held only for queries that reuse the document's exact
+   wording, which is the easy case and not the one retrieval exists for.
 
 **Context window management:**
 

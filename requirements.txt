@@ -15,10 +15,23 @@ paddleocr>=2.6.0.3
 
 # Excel / CSV Parsing
 openpyxl>=3.1.2
-pandas>=2.0.0
+# Upper bound is set by Streamlit, not by this project's own code: the pinned
+# streamlit line below declares `pandas<3,>=1.3.0`, and pandas 3.0.x installed
+# against it made `pip check` report an incompatible environment. The previous
+# unbounded `pandas>=2.0.0` also spanned a major release, so a fresh install
+# could resolve anywhere from 2.0 to 3.x and behave differently.
+pandas>=2.0.0,<3
 
 # Text Processing
 ftfy>=6.1.3
+
+# Document-chat retrieval (embeddings)
+# Pinned: stored vectors are only comparable to vectors from the same model, and
+# DocumentStore records the model name so a mismatch is detected rather than
+# silently compared. Pulls in torch transitively — see DEPENDENCIES.md for the
+# install footprint and first-run download. Chat degrades to keyword overlap if
+# this is missing, so the rest of the pipeline does not depend on it.
+sentence-transformers==5.4.0
 
 # LLM Integration (xAI Grok / OpenAI compatible)
 openai>=1.12.0
@@ -42,9 +55,12 @@ requests>=2.31.0
 rich>=13.7.0
 
 # Audio & YouTube Processing
+# ffmpeg itself is a SYSTEM BINARY, not a pip package — see README step 3.
+# `pydub` and `ffmpeg-python` were previously declared here. Both were removed:
+# neither is imported anywhere in the codebase, neither was installed, and the
+# pin `ffmpeg-python>=0.2.1` was unsatisfiable (0.2.0 is the newest release),
+# which made `pip install -r requirements.txt` fail outright on a fresh clone.
 yt-dlp>=2024.01.01
-pydub>=0.25.1
-ffmpeg-python>=0.2.1
 
 # Testing
 pytest>=7.4.0

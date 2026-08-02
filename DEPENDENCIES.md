@@ -3,13 +3,13 @@
 Known dependency problems in this environment, why they matter, and the exact
 commands to resolve them.
 
-> **Nothing in this document has been run.** These are documented resolutions for
-> you to execute deliberately, not a changelog. Every version below was observed
-> on the development machine on 2026-07-29 via read-only inspection.
+> **Status.** Sections 1 and 2 are **resolved** — the commands in them were run
+> and the outcome is recorded inline. Section 3 documents a dependency that was
+> added deliberately. Section 4 records smaller things that are still open and
+> have *not* been acted on.
 >
-> Both issues are currently **latent** — the full pipeline passes all 6 e2e
-> stages and all 41 unit tests as-is. They are recorded because they make the
-> environment non-reproducible, not because anything is failing today.
+> Versions were observed on the development machine on 2026-07-29. The pipeline
+> passes all 6 e2e stages and all 101 unit tests as-is.
 
 ---
 
@@ -155,18 +155,64 @@ configuration, not as full coverage of the angle space.
 
 ---
 
-## 2. pandas 3.0.3 is ahead of its acceleration dependencies
+## 2. pandas 3.0.3 is ahead of its acceleration dependencies — ✅ RESOLVED
 
-### What is installed
+> **Resolved on 2026-07-29.** Both halves are fixed, by one change rather than
+> two: pandas was moved into the range Streamlit actually supports.
+>
+> ```
+> requirements.txt:  pandas>=2.0.0   ->  pandas>=2.0.0,<3
+> installed:         pandas 3.0.3    ->  pandas 2.3.3
+> ```
+>
+> **Why `<3` and not an accelerator upgrade.** The upper bound is not this
+> project's own constraint — it is Streamlit's. `streamlit 1.37.1` declares
+> `pandas<3,>=1.3.0`, so pandas 3.0.3 made `pip check` report an incompatible
+> environment. Bounding pandas satisfies that *and* removes the unbounded
+> major-version span in one move.
+>
+> **The accelerator warnings disappeared as a side effect.** pandas 2.3.3 has
+> lower minimums for `numexpr` and `Bottleneck` than 3.0.x, and the installed
+> 2.8.7 / 1.3.7 satisfy them — so no upgrade of either was needed and neither
+> warning is emitted any more. Unit-test warnings dropped from 4 to 2.
+>
+> **Excel output is byte-identical across the change**, verified rather than
+> assumed: the parsed text of both workbook fixtures hashes the same under
+> pandas 3.0.3 and 2.3.3.
+>
+> | | pandas 3.0.3 | pandas 2.3.3 |
+> |---|---|---|
+> | `sample_sales.xlsx` | 2 sheets, 719 chars, sha `2c8c4939567cfca1` | identical |
+> | `sample_large_sales.xlsx` | 8 sheets, 2827 chars, sha `9ef344a7302bef35` | identical |
+>
+> **Still outstanding, unrelated to pandas.** `pip check` continues to report
+> three pre-existing conflicts that were present before this change and are not
+> caused by it:
+>
+> ```
+> opentelemetry-proto 1.40.0 requires protobuf<7.0,>=5.0, but protobuf 7.35.0 is installed
+> streamlit 1.37.1    requires protobuf<6,>=3.20,  but protobuf 7.35.0 is installed
+> shap 0.52.0         requires numpy>=2,           but numpy 1.26.4 is installed (pinned here)
+> ```
+>
+> **A note on a fresh clone.** A clean resolve of `requirements.txt` selects
+> `streamlit 1.60.0`, which permits pandas 3 — so the conflict is a property of
+> the *installed* streamlit 1.37.1, not of the requirements file. The `<3` bound
+> is still correct: it guarantees a consistent environment on both, rather than
+> depending on which Streamlit a resolver happens to pick.
+>
+> The original problem statement is kept below as the record.
 
-| Package | Installed | pandas 3.0.3 requires |
+### What was installed
+
+| Package | Installed (before) | pandas 3.0.3 required |
 |---|---|---|
 | `pandas` | 3.0.3 | — |
 | `numexpr` | 2.8.7 | **>= 2.10.2** |
 | `Bottleneck` | 1.3.7 | **>= 1.4.2** |
 | `numpy` | 1.26.4 | satisfied |
 
-Every run that touches the Excel/CSV path emits:
+Every run that touched the Excel/CSV path emitted:
 
 ```
 UserWarning: Pandas requires version '2.10.2' or newer of 'numexpr'
@@ -213,7 +259,79 @@ reader uses `read_excel`, `DataFrame`, and `to_string`, all stable across 2.x an
 
 ---
 
-## 3. Also worth knowing
+## 3. `sentence-transformers` — the heaviest dependency in the project
+
+Added for document-chat retrieval. Pinned in `requirements.txt` as
+`sentence-transformers==5.4.0`.
+
+### Install footprint
+
+This is by far the largest thing the project installs, and almost none of it is
+`sentence-transformers` itself:
+
+| Package | Installed | Notes |
+|---|---|---|
+| `sentence-transformers` | 5.4.0 | the pinned direct dependency |
+| `torch` | 2.7.1+cu118 | **5.2 GB on this machine** — transitive |
+| `transformers` | 5.5.4 | transitive |
+| `scikit-learn` | 1.9.0 | transitive |
+| `scipy` | 1.13.1 | transitive |
+
+**5.2 GB is the CUDA build.** It is what happened to be installed here; the
+project never asks for GPU support and runs the model on CPU. A CPU-only torch
+is a small fraction of that:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+**`torch` is deliberately not pinned.** Pinning it would force one platform's
+build on everyone — a CUDA wheel onto machines without a GPU, or a CPU wheel
+onto machines that want one. `sentence-transformers` is pinned instead, and torch
+resolves to whatever suits the platform.
+
+### First-run behaviour
+
+The model weights are **not** bundled. They download on first use and are cached
+afterwards:
+
+| | |
+|---|---|
+| Model | `all-MiniLM-L6-v2`, 384 dimensions |
+| Download size | **87 MB** |
+| Cache location | `~/.cache/huggingface` (`%USERPROFILE%\.cache\huggingface` on Windows) |
+| First encode, incl. download and load | **~30–55 s** (measured 27 s, 30 s, 32 s, 53 s across runs — varies with network and disk cache) |
+| Every later encode, 20 chunks | **~25 ms** (23–29 ms observed) |
+| Import cost | **0 ms** — loading is lazy, never at import |
+
+**Where that 30 s lands:** at document ingest, inside `DocumentStore.save()`,
+which embeds the chunks. That is *after* the progress bar reads "Complete", so
+without a spinner the page appears to freeze at the moment it looks finished.
+`ui/app.py` wraps it in `st.spinner` with wording that only mentions the
+download when a download will actually happen.
+
+**Offline first run.** If the weights cannot be fetched, the load fails, the
+failure is logged once, and chat falls back to keyword overlap. Nothing crashes,
+and the rest of the pipeline is unaffected — no other stage uses embeddings. To
+pre-warm the cache deliberately:
+
+```bash
+python -c "from utils import embeddings; embeddings.encode(['warm up'])"
+```
+
+### If you want it gone
+
+Retrieval degrades rather than breaks. Uninstalling it leaves chat working on
+keyword overlap at **13/18** on the eval set instead of 18/18 — the loss is
+concentrated in synonym-phrased questions, which drop to 0/4. Verify with:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py --keyword
+```
+
+---
+
+## 4. Also worth knowing
 
 These were observed alongside the two issues above and are recorded so they are
 not rediscovered later. No action taken.
@@ -279,4 +397,10 @@ python tests/e2e/e2e.py all
 pytest tests/ -q
 ```
 
-Expect 6 `PASS` rows with exit code 0, and 41 passing unit tests.
+Expect 6 `PASS` rows with exit code 0, and 101 passing unit tests.
+
+Retrieval quality is scored separately, with no API calls:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py
+```

@@ -87,6 +87,33 @@ All inter-component communication uses typed dataclasses from `core/models.py`. 
 
 `SummarizationSkill` uses map-reduce: section-aware chunking → per-chunk bullet extraction → LLM synthesis. Falls back to heading-boosted extractive scoring if LLM is unavailable.
 
+### Document Chat Retrieval
+
+`DocumentChatSkill.score_chunks()` ranks chunks by **embedding similarity**
+(`all-MiniLM-L6-v2` via `sentence-transformers`, local CPU, 384 dims), scored as
+a numpy cosine product. There is no vector database — at tens of chunks per
+document a dot product is exact and instant.
+
+- **Keyword overlap is the fallback**, used whenever the model cannot be
+  imported or loaded. Every query logs which path served it.
+- **The model loads lazily**, on first use, never at import. The first load
+  costs ~30–55s including an 87 MB download; the UI shows a spinner during it.
+- **Vectors persist** in `history.db` (`content_embeddings_b64`) with the model
+  name, so history reloads do not re-embed. Vectors from a different model are
+  ignored rather than compared.
+- `_select_chunks()` still takes the top 3 plus first/last **anchors** and caps
+  at `_MAX_CONTEXT_CHARS`. Only the *scoring* changed.
+
+Retrieval is measured, not assumed: **18/18** on the eval set against 10/18 for
+the original keyword approach. Score it with
+`python tests/e2e/rag_eval/run_eval.py` (no API calls), or `--keyword` for the
+fallback alone. Method and per-case results in `tests/e2e/rag_eval/RESULTS.md`.
+
+**If you change the model**, stored vectors become incomparable. `MODEL_NAME` in
+`utils/embeddings.py` is recorded per row, so old rows are skipped and
+re-embedded rather than silently mis-scored — but re-run the eval, since the
+three narrowest margins are near-identical sibling sheets at ~0.03.
+
 ### UI
 
 `ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Custom glassmorphism styles are in `ui/styles/custom.css`.
