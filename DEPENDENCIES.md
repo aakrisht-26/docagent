@@ -400,19 +400,27 @@ error, warn, or log — the styling simply reverts to Streamlit's default and th
 surface quietly looks wrong, often only in one theme. It can sit broken for a
 long time without anyone noticing.
 
-That is not hypothetical here. An audit of all 22 test IDs the stylesheet
-targeted found **three that had never matched anything in this build**:
+That is not hypothetical here. An audit of every test ID the stylesheet targeted
+— 25 distinct widget targets, written as 28 selector strings because the three
+button rules carry two spellings each — found **four that had never matched
+anything in this build**:
 
 ```
-stBaseButton-secondary      dead   ->  baseButton-secondary
-stBaseButton-primary        dead   ->  baseButton-primary
-stBaseButton-headerNoPadding dead  ->  baseButton-headerNoPadding
+stBaseButton-secondary        dead  ->  baseButton-secondary
+stBaseButton-primary          dead  ->  baseButton-primary
+stBaseButton-headerNoPadding  dead  ->  baseButton-headerNoPadding
+stSidebarCollapsedControl     dead  ->  (no equivalent; rule removed)
 ```
 
-Streamlit 1.37.1 builds these as `"baseButton-".concat(kind)` — confirmed by
-grepping the shipped frontend bundle. The `stBaseButton-*` spelling belongs to a
-later release. Every button rule in the stylesheet was therefore inert, in both
-themes, for as long as those rules had existed.
+Streamlit 1.37.1 builds the button IDs as `"baseButton-".concat(kind)` —
+confirmed by grepping the shipped frontend bundle, where the literal
+`"stBaseButton-primary"` never appears but `"data-testid":"baseButton-".concat(t)`
+does. The `stBaseButton-*` spelling belongs to a later release. Every button rule
+in the stylesheet was therefore inert, in both themes, for as long as those rules
+had existed.
+
+A fifth, `stNumberInput`, is a real ID in this version but the app renders no
+number inputs, so that rule was removed as dead weight rather than as a bug.
 
 The rules now carry **both spellings**, so they work on 1.37.x and keep working
 after the rename rather than silently dying at the next upgrade.
