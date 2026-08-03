@@ -42,9 +42,13 @@ def validate_file(
 
     ext = file_path.suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
+        # Interpolating the set directly rendered a Python list repr —
+        # "Accepted: ['.csv', '.flac', ...]" — straight into the UI's error
+        # banner, which is a developer's debug output, not a message.
+        accepted = ", ".join(sorted(ALLOWED_EXTENSIONS))
         return (
-            f"Unsupported file type '{ext}'. "
-            f"Accepted: {sorted(ALLOWED_EXTENSIONS)}"
+            f"Cannot read '{ext}' files. "
+            f"Accepted formats: {accepted}"
         )
 
     size_mb = file_path.stat().st_size / (1024 * 1024)

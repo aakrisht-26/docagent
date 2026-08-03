@@ -165,14 +165,17 @@ def _render_sidebar() -> None:
             logger.warning("Could not read server.maxUploadSize: %s", exc)
 
         # ── Config health check ────────────────────────────────────────
+        # No leading divider of its own. There is already one above and one
+        # below, so on the normal path — no issues, nothing rendered — the two
+        # sat back to back with ~146px of dead space between them and the
+        # sidebar opened on a void.
         if cfg_issues:
-            st.divider()
             st.markdown("**⚠️ Configuration issues**")
             for issue in cfg_issues:
                 st.warning(issue, icon="⚙️")
+            st.divider()
 
         # ── Recent documents ───────────────────────────────────────────
-        st.divider()
         st.markdown("**Recent Documents**")
         try:
             recent = _store.list_recent(limit=10)
@@ -331,6 +334,16 @@ def _render_upload() -> tuple[list, dict]:
     return files, overrides
 
 
+def _escape_backticks(text: str) -> str:
+    """Make `text` safe to place inside a markdown code span.
+
+    Filenames are user-supplied, and a backtick in one would close the span
+    early and let the rest of the name render as markdown — the same class of
+    problem as the auto-linked URL, just quieter.
+    """
+    return text.replace("`", "ˋ")  # modifier letter grave accent
+
+
 # ── Progress display ───────────────────────────────────────────────────────────
 
 STEP_LABELS = {
@@ -381,9 +394,23 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         is_youtube = youtube_url is not None
 
         if is_youtube:
-            # Validate YouTube URL
+            # Backticks are load-bearing. Streamlit renders alert bodies as
+            # markdown with GFM autolinking, so interpolating a URL bare turned
+            # the rejected link into a live <a href> — an error message whose
+            # most prominent element was an invitation to click the very thing
+            # it was rejecting. Verified against this build: bare interpolation
+            # emits an anchor, backticked emits <code> and no anchor.
+            #
+            # This branch is defence in depth rather than the user-facing path:
+            # _render_upload() gates on extract_youtube_video_id() before a file
+            # entry is ever built, and every URL yielding an id also satisfies
+            # is_valid_youtube_url(), so a real user reaches the friendlier
+            # messages there instead.
             if not is_valid_youtube_url(youtube_url):
-                st.error(f"Invalid YouTube URL: {youtube_url}")
+                st.error(
+                    f"Not a YouTube link: `{youtube_url}`",
+                    icon=":material/link_off:",
+                )
                 return
             file_path = Path(tmp_dir) / name
             file_path.touch()  # Create a placeholder file for path-based processing
@@ -393,7 +420,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             file_path = save_upload(file_bytes, name, tmp_dir)
             err = validate_file(file_path, max_size_mb=_cfg.max_file_size_mb)
             if err:
-                st.error(err)
+                # Icon-led and typeless, like the URL rejections above — that
+                # is the whole visual distinction from the crash handler at the
+                # bottom of this function, which leads with an exception type
+                # and carries a traceback.
+                st.error(err, icon=":material/description:")
                 return
 
         agent = _get_agent(
@@ -535,7 +566,15 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                     state="error",
                     expanded=True,
                 )
-                st.error(f"Pipeline finished with errors: {', '.join(result.errors)}")
+                # The third variety: the pipeline ran and reported failure
+                # itself, rather than crashing or rejecting the input. Bulleted
+                # because there can be several, and they used to be joined into
+                # one comma-run that was unreadable past about two.
+                st.error(
+                    "The pipeline reported errors on this document:\n\n"
+                    + "\n".join(f"- {e}" for e in result.errors),
+                    icon=":material/report:",
+                )
 
         render_results(result, export_cfg=_cfg.export)
 
@@ -563,12 +602,26 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 label=f"Failed — {type(exc).__name__}", state="error", expanded=True
             )
 
-        st.error(f"Processing failed — {type(exc).__name__}: {detail}")
-        st.caption(
-            "Full traceback written to the log. Set `DOCAGENT_DEBUG=true` to "
-            "re-raise instead of catching."
+        # A crash and a rejected input used to be the same red box, so the two
+        # were indistinguishable at a glance even though they need opposite
+        # responses: one is "fix your input and retry", the other is "this is a
+        # fault in the app, nothing you type will help".
+        #
+        # This one is the fault. It says so, in those words, and leads with what
+        # broke rather than with a filename. Validation messages stay a plain
+        # icon-led st.error with no exception type and no traceback, which is
+        # what now tells them apart.
+        st.error(
+            f"**{type(exc).__name__}** — {detail}\n\n"
+            f"This is a fault in DocAgent, not a problem with your file. "
+            f"`{_escape_backticks(name)}` was not analysed.",
+            icon=":material/bug_report:",
         )
-        with st.expander("Show traceback"):
+        with st.expander("Technical detail"):
+            st.caption(
+                "Also written to the log file. Set `DOCAGENT_DEBUG=true` to "
+                "re-raise instead of catching, so a debugger can break on it."
+            )
             st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                     language="text")
     finally:
@@ -672,12 +725,57 @@ def main() -> None:
     file_data: list[dict] = st.session_state.get("_file_data", [])
 
     if not file_data:
+        # The first screen is the one a reader judges the tool by, and it used
+        # to be a single heading restating the control directly above it plus a
+        # comma-separated list of extensions. It said what the app ACCEPTS but
+        # never what it DOES, so nothing on screen explained why you would
+        # upload anything. Three columns, because this is scannable reference
+        # rather than prose, and because it uses the width the layout now has.
         st.markdown("""
-        <div class="empty-state fade-in" style="padding: 4rem 1rem">
-          <h3>Upload a document or paste a YouTube link to get started</h3>
-          <p>Supports PDF, Excel (.xlsx / .xls), CSV, Audio (MP3, WAV, etc.), and YouTube videos</p>
+        <div class="empty-state fade-in" style="padding: 2.5rem 1rem 1.5rem">
+          <h3>Turn a document, spreadsheet or recording into something you can question</h3>
+          <p>Everything runs through the same six-stage pipeline: parse, clean,
+          classify, find structure, summarise, extract questions.</p>
         </div>
         """, unsafe_allow_html=True)
+
+        intro_cols = st.columns(3, gap="large")
+        with intro_cols[0]:
+            st.markdown(
+                "**What you can give it**\n\n"
+                "- PDFs, including scanned ones — OCR runs automatically when\n"
+                "  there is no text layer\n"
+                "- Excel and CSV, sheet by sheet\n"
+                "- Audio: MP3, M4A, WAV, FLAC, OGG, WEBM\n"
+                "- A YouTube link — the audio is fetched and transcribed"
+            )
+        with intro_cols[1]:
+            st.markdown(
+                "**What it works out**\n\n"
+                "- Whether the file is a questionnaire or a normal document,\n"
+                "  and how confident it is\n"
+                "- Its subject domain\n"
+                "- Any tables it can recover as data\n"
+                "- Every question, if the document asks any"
+            )
+        with intro_cols[2]:
+            st.markdown(
+                "**What you get back**\n\n"
+                "- A structured summary, cited back to the page it came from\n"
+                "- Answers to your own questions about the content\n"
+                "- The extracted text and per-stage timings\n"
+                "- Export as PDF, Markdown, JSON, or questions as CSV"
+            )
+
+        # Accurate, not reassuring. Parsing and embedding really are local, but
+        # audio is uploaded to Groq for Whisper transcription and document text
+        # is sent there to be summarised — claiming otherwise would be a false
+        # privacy promise, which is worse than saying nothing.
+        st.caption(
+            "Parsing, OCR and search indexing run on this machine. Document "
+            "text is sent to Groq to be summarised, and audio is uploaded there "
+            "to be transcribed. Results are kept in a local history database."
+        )
         return
 
     # ── Separate already-processed from pending files ──────────────────

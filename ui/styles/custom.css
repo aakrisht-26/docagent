@@ -113,10 +113,19 @@ html, body, [class*="css"] {
 }
 
 /* ── Main container ─────────────────────────────────────── */
+/* 1200px plus Streamlit's default 5rem side padding left 1040px of content in
+   a 1584px main area on a 1920 screen — 544px unused, and the page read as a
+   narrow column stranded in the middle of a wide window. The cap exists to
+   stop prose running to 150+ characters per line, but capping the whole
+   LAYOUT to protect the TEXT also starved the tables, metric grid and stage
+   panel, none of which have a reading measure. So the container gets the
+   width and the prose keeps its own limit (see .summary-para below). */
 .main .block-container {
-  max-width: 1200px;
+  max-width: 1440px;
   padding-top: 1rem;
   padding-bottom: 3rem;
+  padding-left: 2.5rem;
+  padding-right: 2.5rem;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
@@ -377,6 +386,9 @@ html, body, [class*="css"] {
   color: var(--text-secondary);
   margin-bottom: 0.5rem;
   word-break: break-word;
+  /* The reading measure lives here rather than on the container, so widening
+     the layout does not stretch body text to an unreadable line length. */
+  max-width: 78ch;
 }
 
 .summary-bullet {
@@ -810,6 +822,19 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
    readable from the icon alone, not just the label. */
 [data-testid="stExpanderIconCheck"] { color: var(--success) !important; }
 [data-testid="stExpanderIconError"] { color: var(--error) !important; }
+
+/* Code blocks. The fourth surface painted from the pinned dark config rather
+   than the tokens: a near-black slab on a white page, which the "Extracted
+   text" tab turns into a full-height wall of it. Safe to recolour because both
+   st.code() call sites pass language="text", so there is no syntax
+   highlighting whose palette this could fight. */
+[data-testid="stCodeBlock"] pre {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+[data-testid="stCodeBlock"] code { color: var(--text-primary) !important; }
+[data-testid="stCodeBlock"] button svg { fill: var(--text-muted) !important; }
 
 /* Select dropdown popover — inherited the dark surface on white. */
 [data-baseweb="popover"] [role="listbox"],
