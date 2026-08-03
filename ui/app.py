@@ -44,193 +44,51 @@ _store = DocumentStore()
 
 # ── CSS injection ──────────────────────────────────────────────────────────────
 
-_LIGHT_VARS = """
+_LIGHT_TOKENS = """
 <style>
+/* Light theme = the same design-token ROLES from custom.css, re-valued.
+
+   This block used to be 189 lines: 16 token values plus 51 `!important`
+   overrides across 42 Streamlit-internal selectors. Because every light
+   surface had to be listed by hand, anything nobody remembered stayed dark
+   — sidebar history buttons rendered dark-on-dark, download buttons were
+   black-on-black, unselected radios showed as filled dots, and the page
+   background below the fold never switched.
+
+   Now it swaps tokens only. The element rules live once in custom.css,
+   written against var(--token), so they are correct in both themes by
+   construction and a new surface cannot be forgotten in one of them.
+
+   Dark values live in custom.css :root. Light values live HERE. One place
+   per theme — do not mirror these into custom.css or they will drift. */
 :root {
-  --bg-base:        #fafafa;
-  --bg-surface:     #ffffff;
+  --bg-base:        #ffffff;
+  --bg-surface:     #f6f7f9;
   --bg-card:        #ffffff;
-  --border:         #e4e7ec;
-  --border-accent:  rgba(29,78,216,0.15);
+  --bg-input:       #ffffff;
+  --bg-hover:       #eef1f6;
+
+  --border:         #e2e6ed;
+  --border-strong:  #cbd3e0;
+  --border-accent:  rgba(29,78,216,0.35);
+
   --text-primary:   #0f172a;
   --text-secondary: #475569;
-  --text-muted:     #94a3b8;
-  --accent:         #1D4ED8;
-  --accent-light:   #2563EB;
-  --accent-2:       #0891b2;
-  --accent-2-light: #0891b2;
-  --success:        #059669;
-  --warning:        #d97706;
-  --error:          #dc2626;
-  --sidebar-bg:     #f4f4f7;
-}
+  --text-muted:     #64748b;
+  --text-on-accent: #ffffff;
 
-/* ── App shell ── */
-[data-testid="stAppViewContainer"]  { background: #fafafa !important; }
-[data-testid="stHeader"]            { background: #fafafa !important; border-bottom: 1px solid #e4e7ec !important; }
-[data-testid="stSidebar"]           { background: #f4f4f7 !important; border-right: 1px solid #e4e7ec !important; }
-[data-testid="stSidebar"] > div     { background: #f4f4f7 !important; }
+  --accent:         #1d4ed8;
+  --accent-hover:   #1e40af;
+  --accent-soft:    rgba(29,78,216,0.10);
+  --accent-2:       #0e7490;
 
-/* ── All native Streamlit text in light mode ── */
-p, span, label, h1, h2, h3, h4, h5, li,
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li,
-[data-testid="stWidgetLabel"] p,
-[data-testid="stWidgetLabel"] span,
-[data-testid="stText"],
-.stRadio label, .stSelectbox label, .stCheckbox label,
-[data-testid="stCaptionContainer"] p,
-[data-baseweb="radio"] label,
-[data-baseweb="select"] span,
-[class*="st-emotion"] p,
-[class*="st-emotion"] span { color: #0f172a !important; }
+  --success:        #047857;
+  --warning:        #b45309;
+  --error:          #b91c1c;
+  --error-soft:     rgba(185,28,28,0.08);
 
-/* ── Input / select / textarea backgrounds ── */
-[data-baseweb="select"] > div,
-[data-baseweb="input"] > div,
-[data-testid="stSelectbox"] [data-baseweb="select"] > div:first-child,
-[data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stNumberInput"] input {
-  background: #ffffff !important;
-  border-color: #d1d5db !important;
-  color: #0f172a !important;
+  --sidebar-bg:     #f6f7f9;
 }
-
-/* ── Regular action buttons in light mode (not download buttons) ── */
-[data-testid="stBaseButton-secondary"]:not([data-testid="stDownloadButton"] button) {
-  background: rgba(29,78,216,0.07) !important;
-  color: #1D4ED8 !important;
-  border: 1px solid rgba(29,78,216,0.2) !important;
-}
-
-/* ── Theme toggle stays round in light mode too ── */
-.theme-toggle-wrap > div > div > button,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"] {
-  background: rgba(29,78,216,0.08) !important;
-  border: 1px solid rgba(29,78,216,0.2) !important;
-  color: #1D4ED8 !important;
-}
-.theme-toggle-wrap > div > div > button:hover,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"]:hover {
-  background: rgba(29,78,216,0.16) !important;
-  border-color: rgba(29,78,216,0.4) !important;
-}
-
-/* ── Download buttons keep their gradients in light mode ── */
-.btn-pdf [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #1D4ED8, #2563EB) !important;
-  color: white !important;
-}
-.btn-md [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #0891b2, #06B6D4) !important;
-  color: white !important;
-}
-.btn-json [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #065f46, #059669) !important;
-  color: white !important;
-}
-
-/* ── Selectbox dropdown popup ── */
-[data-baseweb="popover"],
-[data-baseweb="menu"],
-[role="listbox"],
-ul[data-baseweb="menu"] {
-  background: #ffffff !important;
-  border: 1px solid #e4e7ec !important;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.08) !important;
-}
-[data-baseweb="option"],
-li[role="option"],
-[role="option"] {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[data-baseweb="option"]:hover,
-li[role="option"]:hover,
-[role="option"]:hover,
-[aria-selected="true"][role="option"] {
-  background: rgba(29,78,216,0.08) !important;
-  color: #0f172a !important;
-}
-
-/* ── File uploader ── */
-[data-testid="stFileUploader"] > div:first-child {
-  background: rgba(29,78,216,0.025) !important;
-  border-color: rgba(29,78,216,0.3) !important;
-}
-[data-testid="stFileUploaderDropzone"],
-[data-testid="stFileUploaderDropzone"] > div,
-[data-testid="stFileUploaderDropzoneInstructions"] {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[data-testid="stFileUploaderDropzone"] button {
-  background: #1D4ED8 !important;
-  color: #ffffff !important;
-}
-
-/* ── Dividers and borders ── */
-hr { border-color: #e4e7ec !important; }
-
-/* ── Code blocks inside chat bubbles and markdown ── */
-pre,
-[data-testid="stMarkdownContainer"] pre,
-.chat-bubble-bot pre,
-.chat-bubble-user pre {
-  background: #f1f5f9 !important;
-  border: 1px solid #e4e7ec !important;
-  border-radius: 8px !important;
-}
-pre code,
-[data-testid="stMarkdownContainer"] pre code,
-.chat-bubble-bot pre code,
-.chat-bubble-user pre code {
-  background: transparent !important;
-  color: #1e293b !important;
-}
-/* Streamlit's st.code / stCodeBlock container */
-[data-testid="stCodeBlock"],
-[data-testid="stCodeBlock"] > div,
-[data-testid="stCodeBlock"] pre {
-  background: #f1f5f9 !important;
-  border: 1px solid #e4e7ec !important;
-  border-radius: 8px !important;
-  color: #1e293b !important;
-}
-[data-testid="stCodeBlock"] code,
-[data-testid="stCodeBlock"] span {
-  color: #1e293b !important;
-}
-/* Inline code */
-code:not(pre code) {
-  background: #e8edf5 !important;
-  color: #1D4ED8 !important;
-  border-radius: 4px !important;
-  padding: 1px 5px !important;
-}
-
-/* ── Custom component overrides ── */
-.doc-type-banner.questionnaire  { color: #0891b2; background: rgba(8,145,178,0.07); border-color: rgba(8,145,178,0.2); }
-.doc-type-banner.normal         { color: #1D4ED8; background: rgba(29,78,216,0.06); border-color: rgba(29,78,216,0.15); }
-.stat-value                     { color: #1D4ED8; }
-.stat-label                     { color: #94a3b8; }
-.stat-card                      { background: #ffffff; border-color: #e4e7ec; }
-.summary-section-heading        { color: #1D4ED8; border-color: rgba(29,78,216,0.2); }
-.summary-subsection-heading     { color: #0891b2; }
-.summary-para                   { color: #475569; }
-.summary-bullet                 { color: #475569; border-left-color: rgba(29,78,216,0.25); }
-.chat-bubble-user               { background: rgba(29,78,216,0.08); border-color: rgba(29,78,216,0.18); color: #0f172a; }
-.chat-bubble-bot                { background: #ffffff; border-color: #e4e7ec; color: #0f172a; }
-.question-item                  { background: #ffffff; border-color: #e4e7ec; }
-.question-text                  { color: #0f172a; }
-.question-num                   { background: rgba(29,78,216,0.1); color: #1D4ED8; }
-.confidence-meter-bg            { background: #e4e7ec; }
-.hero-subtitle                  { color: #64748b; }
-.badge-blue, .badge-purple      { background: rgba(29,78,216,0.1); color: #1D4ED8; border-color: rgba(29,78,216,0.25); }
-.meta-table td:first-child      { color: #1D4ED8; }
-.options-bar [data-testid="stWidgetLabel"] p { color: #94a3b8 !important; }
-.timing-bar-fill                { background: linear-gradient(90deg, #1D4ED8, #0891b2); }
 </style>
 """
 
@@ -242,9 +100,13 @@ def _inject_css() -> None:
             css = fh.read()
         st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-    # Inject theme variable overrides on top of base CSS
-    if st.session_state.get("theme") == "light":
-        st.markdown(_LIGHT_VARS, unsafe_allow_html=True)
+    # Swap the token values for light. Injected after custom.css so the
+    # :root block here wins. Read from the widget key rather than a derived
+    # variable, because this runs before _render_sidebar() creates the
+    # control — on the rerun that follows a change, the widget's value is
+    # already in session_state.
+    if st.session_state.get("theme_choice", "Dark") == "Light":
+        st.markdown(_LIGHT_TOKENS, unsafe_allow_html=True)
 
 
 _inject_css()
@@ -255,19 +117,31 @@ _inject_css()
 def _render_sidebar() -> None:
     """Sidebar with theme toggle and config health warnings."""
     with st.sidebar:
-        # ── Header row: title + theme icon toggle ──────────────────────
-        hdr_col, toggle_col = st.columns([3, 1])
-        with hdr_col:
-            st.markdown("## DocAgent")
-        with toggle_col:
-            theme = st.session_state.get("theme", "dark")
-            icon  = "☀️" if theme == "dark" else "🌙"
-            st.markdown('<div class="theme-toggle-wrap">', unsafe_allow_html=True)
-            if st.button(icon, key="theme_toggle",
-                         help="Switch to light mode" if theme == "dark" else "Switch to dark mode"):
-                st.session_state.theme = "light" if theme == "dark" else "dark"
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("## DocAgent")
+
+        # ── Theme control ──────────────────────────────────────────────
+        # ICON-AS-STATE, with both options always visible.
+        #
+        # The previous control was a single icon button showing the icon for
+        # the theme you would GET (a sun while in dark mode). That conflates
+        # state and action: a lone ☀ can equally be read as "you are in light
+        # mode" or "press for light mode", and there was no label to settle it.
+        #
+        # Showing both options with the current one selected removes the
+        # question entirely — you can see which theme is active AND what the
+        # alternative is, with no hover or guesswork. A radio is also a
+        # Streamlit primitive rather than a styled button, so it reruns on
+        # change by itself and needs no manual st.rerun().
+        #
+        # The key is read directly by _inject_css(), which runs before this
+        # function, so the value must live in the widget key, not a derived one.
+        st.radio(
+            "Theme",
+            options=["Dark", "Light"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="theme_choice",
+        )
         st.divider()
 
         # ── Upload limit agreement ─────────────────────────────────────
