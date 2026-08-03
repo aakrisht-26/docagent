@@ -407,6 +407,12 @@ html, body, [class*="css"] {
 }
 
 /* ── Buttons (all variants) ──────────────────────────────── */
+/* Every button rule below is written twice. On streamlit 1.37.1 only the
+   `baseButton-*` spelling matches -- the frontend builds these ids as
+   "baseButton-".concat(kind). The `stBaseButton-*` half is INERT here and is
+   kept purely so the styling survives the later release that renames them.
+   Debugging a button on this version? Edit the `baseButton-*` selector; the
+   `st`-prefixed one does nothing. See DEPENDENCIES.md section 5. */
 /* Base reset for all Streamlit buttons */
 [data-testid="stDownloadButton"] button,
 [data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"],

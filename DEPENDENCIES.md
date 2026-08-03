@@ -425,6 +425,17 @@ number inputs, so that rule was removed as dead weight rather than as a bug.
 The rules now carry **both spellings**, so they work on 1.37.x and keep working
 after the rename rather than silently dying at the next upgrade.
 
+> **The three `stBaseButton-*` selectors are inert on this version.** They match
+> nothing in 1.37.1 and are present for forward compatibility only — they exist
+> so the button styling survives the upgrade that renames `baseButton-*`. Do not
+> read them as working rules, and do not "fix" a button by editing them: on this
+> version only the `baseButton-*` half of each rule has any effect. If you are
+> debugging button styling here, the `baseButton-*` selector is the live one.
+>
+> Once this project moves to a Streamlit version that emits `stBaseButton-*`, the
+> pair inverts and the `baseButton-*` half becomes the dead one. Neither half is
+> safe to delete until the supported version range covers only one spelling.
+
 ### If styling looks wrong after a Streamlit upgrade
 
 Suspect this first. To re-audit, dump what the running app actually emits and
