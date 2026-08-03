@@ -198,6 +198,30 @@ html, body, [class*="css"] {
   border: 1px solid rgba(239,68,68,0.25);
 }
 
+/* ── Document header ─────────────────────────────────────── */
+/* Names the file the results below describe. Deliberately quiet: it is
+   orientation, not a finding, so it sits above the classification banner
+   without competing with it. */
+.doc-header {
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-header-name {
+  font-size: var(--fs-heading);
+  font-weight: var(--fw-bold);
+  color: var(--text-primary);
+  line-height: var(--lh-tight);
+  word-break: break-word;
+}
+
+.doc-header-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 /* ── Doc type banner ─────────────────────────────────────── */
 .doc-type-banner {
   display: flex;
@@ -765,6 +789,27 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
 /* Send-arrow button: an icon button, so it needs fill not color. */
 [data-testid="stChatInput"] button svg { fill: var(--text-secondary) !important; }
 [data-testid="stChatInput"] button:hover svg { fill: var(--accent) !important; }
+
+/* Progress bar. Same root cause as the chat input above: the unfilled track is
+   painted from the pinned config.toml secondaryBackgroundColor, so on white it
+   rendered as a solid black bar. The fill takes the pinned primaryColor for the
+   same reason, which is close to but not the accent token. Both are pinned to
+   tokens here so the status panel matches the rest of the theme.
+   Structure in 1.37.1 is [role=progressbar] > div > track > fill. */
+[data-testid="stProgress"] div[role="progressbar"] > div > div {
+  background: var(--bg-hover) !important;
+}
+[data-testid="stProgress"] div[role="progressbar"] > div > div > div {
+  background: var(--accent) !important;
+}
+
+/* Status panel state icons. Streamlit colours these from the pinned dark
+   config.toml textColor, so on white the completion tick and the error cross
+   both rendered near-white and effectively vanished. Colouring them
+   semantically rather than with the text token also means the state is
+   readable from the icon alone, not just the label. */
+[data-testid="stExpanderIconCheck"] { color: var(--success) !important; }
+[data-testid="stExpanderIconError"] { color: var(--error) !important; }
 
 /* Select dropdown popover — inherited the dark surface on white. */
 [data-baseweb="popover"] [role="listbox"],

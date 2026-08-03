@@ -372,6 +372,9 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         return
 
     tmp_dir = make_temp_dir()
+    # Bound outside the try so the exception handler can mark the panel failed
+    # without caring how far the run got before it raised.
+    status_panel = None
     try:
         # Determine input type: YouTube URL or file
         youtube_url = file_data.get("youtube_url")
@@ -398,12 +401,24 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             summary_tone=overrides.get("summary_tone", "Professional"),
         )
 
-        progress_placeholder = st.empty()
-        detail_placeholder   = st.empty()
-        status_placeholder   = st.empty()
-
-        with progress_placeholder.container():
-            bar = st.progress(0, text="Starting…")
+        # Presentation only. The bar and the per-stage lines now sit inside an
+        # st.status panel, so a run reads as a checklist that has a state
+        # (running / complete / error) instead of a bare bar with a caption
+        # under it. st.status is a Streamlit primitive, so this needs no CSS.
+        # The progress mechanism below — the _log_step wrapper, the position
+        # maths, the labels — is untouched; only where its output is drawn
+        # changed.
+        # Note the absence of `with status_panel:` here. Streamlit's status
+        # container marks itself complete when a `with` block exits, and the
+        # block would exit immediately — before a single stage had run — so the
+        # panel rendered a tick and collapsed itself at the start of the run
+        # and the checklist was never visible while it mattered. Creating the
+        # children off the container directly leaves the panel running until
+        # the explicit update() calls below.
+        status_panel = st.status("Analysing document…", expanded=True)
+        bar = status_panel.progress(0, text="Starting…")
+        detail_placeholder = status_panel.empty()
+        status_placeholder = st.empty()
 
         start_ts = time.monotonic()
 
@@ -438,7 +453,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
                 completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
 
-            detail_placeholder.caption("  ·  ".join(completed[-4:]))
+            # A vertical checklist rather than a truncated one-line caption:
+            # inside the status panel there is room to keep every stage
+            # visible, so a skipped or failed stage stays on screen instead of
+            # scrolling out of the last-4 window.
+            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
@@ -456,7 +475,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         elapsed = time.monotonic() - start_ts
         bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:
-            detail_placeholder.caption("  ·  ".join(completed))
+            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+
+        # The panel is finalised further down, after indexing — the document is
+        # not actually ready until its chunks are embedded, so calling the run
+        # "complete" here would be premature on a first run.
 
         with status_placeholder.container():
             if result.success:
@@ -486,11 +509,32 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                         _store.save(result, raw_bytes=raw_bytes)
                 except Exception as store_exc:
                     logger.warning(f"Could not save result to history: {store_exc}")
-                st.success(
-                    f"Analysis complete in **{elapsed:.1f}s** — "
-                    f"classified as **{result.doc_type.replace('_', ' ').title()}**"
+
+                # Collapse the panel now that it has nothing left to say. The
+                # stage list stays one click away — detail while it matters, a
+                # single summary line afterwards.
+                #
+                # This replaces a separate green success banner. The banner said
+                # only the elapsed time and the classification: the first is in
+                # this label, the second is the first thing the results header
+                # states, so the banner was a whole row of chrome sitting
+                # between the panel and the actual finding.
+                status_panel.update(
+                    label=(
+                        f"Analysed in {elapsed:.1f}s · {len(completed)} stage(s) · "
+                        f"{result.doc_type.replace('_', ' ').title()}"
+                    ),
+                    state="complete",
+                    expanded=False,
                 )
             else:
+                # A failed run keeps its stage list open — that list is the
+                # first thing anyone debugging it needs.
+                status_panel.update(
+                    label=f"Finished with errors after {elapsed:.1f}s",
+                    state="error",
+                    expanded=True,
+                )
                 st.error(f"Pipeline finished with errors: {', '.join(result.errors)}")
 
         render_results(result, export_cfg=_cfg.export)
@@ -511,6 +555,14 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # ""), which produced a "Processing failed:" message with nothing after
         # it and no way to tell what went wrong.
         detail = str(exc).strip() or "(no message)"
+
+        # Otherwise the panel keeps its running spinner forever and the page
+        # reads as still working while the error sits underneath it.
+        if status_panel is not None:
+            status_panel.update(
+                label=f"Failed — {type(exc).__name__}", state="error", expanded=True
+            )
+
         st.error(f"Processing failed — {type(exc).__name__}: {detail}")
         st.caption(
             "Full traceback written to the log. Set `DOCAGENT_DEBUG=true` to "
@@ -636,7 +688,10 @@ def main() -> None:
     # (so the Analyze button for new files appears at the bottom, where
     #  the user is looking after scrolling through previous results)
     for fd in processed:
-        st.markdown(f"---\n### `{fd['name']}`")
+        # Just the rule. The filename used to be repeated here as a code-styled
+        # H3, which now sits directly above the results header that states the
+        # same name along with its type, page count and length.
+        st.markdown("---")
         _run_pipeline(fd["name"], fd, overrides)
 
     # ── Show Analyze button for pending files at the bottom ────────────
@@ -652,7 +707,7 @@ def main() -> None:
             do_analyze = st.button("Analyze", type="primary", use_container_width=True, key="run_btn")
         if do_analyze:
             for fd in pending:
-                st.markdown(f"---\n### `{fd['name']}`")
+                st.markdown("---")  # see note above: header names the file now
                 _run_pipeline(fd["name"], fd, overrides)
 
 

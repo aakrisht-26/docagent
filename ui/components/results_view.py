@@ -4,9 +4,9 @@ Results view component for DocAgent Streamlit UI.
 Renders the full PipelineResult in a tabbed interface:
     Tab 1 — Summary    (structured sections, key findings)
     Tab 2 — Questions  (searchable list with count badge)
-    Tab 3 — Tables     (dataframe rendering, only if tables present)
-    Tab 4 — Raw Text   (monospace scrollable)
-    Tab 5 — Metadata   (key-value + timing breakdown)
+    Tab 3 — Chat       (multi-turn Q&A over the document)
+    Tab 4 — Edit       (restructure / fill the document)
+    Tab 5 — Document   (extracted text, tables, run detail)
 
 Also provides download buttons: PDF, Markdown, JSON, and CSV (questions).
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from html import escape as _escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -371,7 +372,7 @@ def _render_tables_tab(tables: list) -> None:
         </div>""")
         return
 
-    _html(f'<p style="color:var(--text-muted);font-size:.85rem;margin-bottom:1rem">Found <strong style="color:var(--accent-light)">{len(tables)}</strong> table(s) in this document.</p>')
+    _html(f'<p style="color:var(--text-muted);font-size:.85rem;margin-bottom:1rem">Found <strong style="color:var(--accent)">{len(tables)}</strong> table(s) in this document.</p>')
 
     for idx, tbl in enumerate(tables):
         # Tables can be stored as dicts with "data" (list of rows) or "text" (string repr)
@@ -504,7 +505,26 @@ def _prepare_tts_segments(summary: str) -> list[dict]:
 # ── Main render function ──────────────────────────────────────────────────────
 
 def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> None:
-    """Render the full PipelineResult in a tabbed Streamlit UI."""
+    """Render the full PipelineResult in a tabbed Streamlit UI.
+
+    Ordered so the page answers, top to bottom: what you uploaded, what we
+    made of it, what we found, and then what you can do with it. Exports used
+    to sit above the summary, which offered a download of something the reader
+    had not been shown yet; they are now below the content.
+    """
+
+    # ── What you uploaded ──────────────────────────────────────────────
+    # The results block never named the file it was describing. With history
+    # in the sidebar it is genuinely ambiguous which document is on screen.
+    page_word = "Sheet" if result.file_type in ("xlsx", "xls", "csv") else "Page"
+    page_label = f"{result.page_count} {page_word}{'s' if result.page_count != 1 else ''}"
+    _html(f"""
+    <div class="doc-header fade-in">
+      <div class="doc-header-name">{_escape(result.file_name)}</div>
+      <div class="doc-header-meta">{_escape(result.file_type.upper())} · {page_label}
+        · {result.word_count:,} words</div>
+    </div>
+    """)
 
     # ── Document type banner ───────────────────────────────────────────
     if result.doc_type == "questionnaire":
@@ -536,10 +556,15 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
             icon="🔴",
         )
 
-    # ── Processing warnings (e.g. document truncated) ─────────────────
+    # ── Processing warnings and errors ────────────────────────────────
+    # These were previously rendered twice — once here and once again below
+    # the stats row — so every warning appeared as two identical banners.
+    if result.errors:
+        for e in result.errors:
+            st.error(e)
     if result.warnings:
         for w in result.warnings:
-            st.warning(f"⚠️ {w}", icon=None)
+            st.warning(w)
 
     # ── Confidence meter ───────────────────────────────────────────────
     _render_confidence_meter(display_confidence(result))
@@ -576,15 +601,9 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
     </div>
     """)
 
-    # ── Warnings / errors (shown inline, no diagnostics expander) ────────
-    if result.errors:
-        for e in result.errors:
-            st.error(e)
-    if result.warnings:
-        for w in result.warnings:
-            st.warning(w)
-
-    # ── Download buttons ───────────────────────────────────────────────
+    # ── Exports ────────────────────────────────────────────────────────
+    # Built here (the PDF render is the slow part) but drawn after the tabs,
+    # so the reader sees the findings before being offered a download of them.
     md_bytes   = result.to_markdown().encode("utf-8")
     json_bytes = json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str).encode("utf-8")
     fname      = Path(result.file_name).stem
@@ -598,64 +617,15 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
         except Exception:
             pdf_bytes = md_bytes
 
-    dl_cols = st.columns(3)
-    with dl_cols[0]:
-        _html('<div class="btn-pdf">')
-        st.download_button(
-            label="Download PDF",
-            data=pdf_bytes,
-            file_name=f"{fname}_docagent_report.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            key=f"dl_pdf_{fname}",
-        )
-        _html("</div>")
-
-    with dl_cols[1]:
-        _html('<div class="btn-md">')
-        st.download_button(
-            label="Download Markdown",
-            data=md_bytes,
-            file_name=f"{fname}_docagent_report.md",
-            mime="text/markdown",
-            use_container_width=True,
-            key=f"dl_md_{fname}",
-        )
-        _html("</div>")
-
-    with dl_cols[2]:
-        _html('<div class="btn-json">')
-        st.download_button(
-            label="Download JSON",
-            data=json_bytes,
-            file_name=f"{fname}_docagent_report.json",
-            mime="application/json",
-            use_container_width=True,
-            key=f"dl_json_{fname}",
-        )
-        _html("</div>")
-
-    # Questions CSV download (visible only if there are questions)
-    if result.questions:
-        import csv as _csv
-        csv_buf = io.StringIO()
-        w = _csv.writer(csv_buf)
-        w.writerow(["#", "Question"])
-        for i, q in enumerate(result.questions, 1):
-            w.writerow([i, q])
-        st.download_button(
-            label=f"Download Questions CSV ({len(result.questions)})",
-            data=csv_buf.getvalue().encode("utf-8"),
-            file_name=f"{fname}_questions.csv",
-            mime="text/csv",
-            use_container_width=False,
-            key=f"dl_csv_{fname}",
-        )
-
     st.divider()
 
     # ── Tabs ───────────────────────────────────────────────────────────
-    tab_labels = ["Summary", "Questions", "Chat", "Edit"]
+    # "Document" is secondary navigation for the source material — the raw
+    # extracted text, the tables and the run metadata. Those are reference,
+    # not findings, so they sit behind the last tab rather than competing with
+    # the summary. (The tables and metadata renderers already existed but were
+    # unreachable: nothing had called them since the tab list was trimmed.)
+    tab_labels = ["Summary", "Questions", "Chat", "Edit", "Document"]
     tabs = st.tabs(tab_labels)
 
     # ── Tab 1: Summary ─────────────────────────────────────────────────
@@ -1119,6 +1089,89 @@ if (typeof speechSynthesis !== 'undefined')
     with tabs[3]:
         _render_edit_tab(result, fname)
 
+    # ── Tab 5: Document (source material and run detail) ───────────────
+    with tabs[4]:
+        doc_sections = st.tabs(["Extracted text", "Tables", "Run detail"])
+
+        with doc_sections[0]:
+            if result.raw_text:
+                st.caption(
+                    f"{len(result.raw_text):,} characters as extracted, before "
+                    "any summarisation."
+                )
+                st.code(result.raw_text, language="text")
+            else:
+                _html("""
+                <div class="empty-state">
+                  <span class="icon">📄</span>
+                  <h3>No extracted text</h3>
+                  <p>Text is not retained for documents restored from history.</p>
+                </div>""")
+
+        with doc_sections[1]:
+            _render_tables_tab(result.tables)
+
+        with doc_sections[2]:
+            _render_metadata(result)
+
+    # ── Exports ────────────────────────────────────────────────────────
+    st.divider()
+    st.caption("Export")
+
+    dl_cols = st.columns(3)
+    with dl_cols[0]:
+        _html('<div class="btn-pdf">')
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name=f"{fname}_docagent_report.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"dl_pdf_{fname}",
+        )
+        _html("</div>")
+
+    with dl_cols[1]:
+        _html('<div class="btn-md">')
+        st.download_button(
+            label="Download Markdown",
+            data=md_bytes,
+            file_name=f"{fname}_docagent_report.md",
+            mime="text/markdown",
+            use_container_width=True,
+            key=f"dl_md_{fname}",
+        )
+        _html("</div>")
+
+    with dl_cols[2]:
+        _html('<div class="btn-json">')
+        st.download_button(
+            label="Download JSON",
+            data=json_bytes,
+            file_name=f"{fname}_docagent_report.json",
+            mime="application/json",
+            use_container_width=True,
+            key=f"dl_json_{fname}",
+        )
+        _html("</div>")
+
+    # Questions CSV download (visible only if there are questions)
+    if result.questions:
+        import csv as _csv
+        csv_buf = io.StringIO()
+        w = _csv.writer(csv_buf)
+        w.writerow(["#", "Question"])
+        for i, q in enumerate(result.questions, 1):
+            w.writerow([i, q])
+        st.download_button(
+            label=f"Download Questions CSV ({len(result.questions)})",
+            data=csv_buf.getvalue().encode("utf-8"),
+            file_name=f"{fname}_questions.csv",
+            mime="text/csv",
+            use_container_width=False,
+            key=f"dl_csv_{fname}",
+        )
+
 
 def _render_chat_tab(result: PipelineResult, fname: str) -> None:
     """Feature 4: Multi-turn document chat."""
@@ -1316,45 +1369,52 @@ def _render_edit_tab(result: PipelineResult, fname: str) -> None:
 
 
 def _render_metadata(result: PipelineResult) -> None:
-    """Render metadata table + timing breakdown."""
+    """Render metadata table + timing breakdown.
+
+    Each card is emitted as ONE complete HTML string. It used to be built from
+    a series of _html() fragments — an opening <div>, then the heading, then
+    rows — but every _html() is a separate st.markdown call and Streamlit
+    closes unbalanced tags per call. The result was an empty bordered card
+    followed by content sitting outside it. Nobody had noticed because this
+    function had no caller.
+    """
     clean_meta = {k: v for k, v in result.metadata.items()
                   if v and str(v).strip() and k not in ("engine",)}
 
     if clean_meta:
-        _html('<div class="glass-card fade-in" style="margin-bottom:1rem">')
-        _html("<h4 style='color:var(--accent-light);margin:0 0 .75rem'>Document Metadata</h4>")
-        _html('<table class="meta-table">')
-        for k, v in list(clean_meta.items())[:30]:
-            _html(f"<tr><td>{k}</td><td>{str(v)[:200]}</td></tr>")
-        _html("</table></div>")
+        rows = "".join(
+            f"<tr><td>{_escape(str(k))}</td><td>{_escape(str(v)[:200])}</td></tr>"
+            for k, v in list(clean_meta.items())[:30]
+        )
+        _html(
+            '<div class="glass-card fade-in" style="margin-bottom:1rem">'
+            '<h4 style="color:var(--accent);margin:0 0 .75rem">Document Metadata</h4>'
+            f'<table class="meta-table">{rows}</table>'
+            "</div>"
+        )
 
     if result.skill_timings:
-        _html('<div class="glass-card fade-in">')
-        _html("<h4 style='color:var(--accent-light);margin:0 0 .75rem'>Skill Timing</h4>")
         total_ms = sum(result.skill_timings.values())
-        for skill, ms in result.skill_timings.items():
-            pct = ms / max(total_ms, 1) * 100
-            _html(f"""
-            <div class="timing-bar-wrap">
-              <div class="timing-label">
-                <span>{skill}</span>
-                <span>{ms:.0f} ms</span>
-              </div>
-              <div class="timing-bar-bg">
-                <div class="timing-bar-fill" style="width:{pct:.1f}%"></div>
-              </div>
-            </div>""")
-        _html(f'<p style="font-size:.78rem;color:var(--text-muted);margin-top:.5rem">Total: {total_ms:.0f} ms</p>')
-        _html("</div>")
+        bars = "".join(
+            f'<div class="timing-bar-wrap">'
+            f'<div class="timing-label"><span>{_escape(skill)}</span>'
+            f"<span>{ms:.0f} ms</span></div>"
+            f'<div class="timing-bar-bg">'
+            f'<div class="timing-bar-fill" style="width:{ms / max(total_ms, 1) * 100:.1f}%"></div>'
+            f"</div></div>"
+            for skill, ms in result.skill_timings.items()
+        )
+        _html(
+            '<div class="glass-card fade-in">'
+            '<h4 style="color:var(--accent);margin:0 0 .75rem">Skill Timing</h4>'
+            f"{bars}"
+            f'<p style="font-size:.78rem;color:var(--text-muted);margin-top:.5rem">'
+            f"Total: {total_ms:.0f} ms</p>"
+            "</div>"
+        )
 
-    if result.errors or result.warnings:
-        _html('<div class="glass-card fade-in" style="margin-top:1rem">')
-        if result.errors:
-            _html("<h4 style='color:#f87171;margin:0 0 .5rem'>Errors</h4>")
-            for e in result.errors:
-                _html(f'<p style="color:#f87171;font-size:.85rem">✘ {e}</p>')
-        if result.warnings:
-            _html("<h4 style='color:#fbbf24;margin:.5rem 0'>Warnings</h4>")
-            for w in result.warnings:
-                _html(f'<p style="color:#fbbf24;font-size:.85rem">⚠ {w}</p>')
-        _html("</div>")
+    # Errors and warnings are rendered by render_results as real st.error /
+    # st.warning banners at the top of the page, where they belong. Repeating
+    # them here in hand-coloured HTML meant two sources of truth for the same
+    # state — and the literal #f87171 / #fbbf24 were dark-theme values that
+    # would have been unreadable on white.
