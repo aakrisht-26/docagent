@@ -744,6 +744,22 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
   border-color: var(--border) !important;
 }
 
+/* Chat input. Streamlit paints this container from the *pinned* config.toml
+   theme (secondaryBackgroundColor), which is dark — so unlike the text inputs
+   above it does not follow the token block and rendered as a black bar on
+   white. Both the container and its textarea need the token explicitly. */
+[data-testid="stChatInput"] {
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+[data-testid="stChatInput"]:focus-within { border-color: var(--accent) !important; }
+[data-testid="stChatInputTextArea"] { color: var(--text-primary) !important; }
+[data-testid="stChatInputTextArea"]::placeholder { color: var(--text-muted) !important; }
+/* Send-arrow button: an icon button, so it needs fill not color. */
+[data-testid="stChatInput"] button svg { fill: var(--text-secondary) !important; }
+[data-testid="stChatInput"] button:hover svg { fill: var(--accent) !important; }
+
 /* Select dropdown popover — inherited the dark surface on white. */
 [data-baseweb="popover"] [role="listbox"],
 ul[data-baseweb="menu"] {
