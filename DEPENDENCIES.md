@@ -385,6 +385,70 @@ problem. Removal is covered by Task 16.
 
 ---
 
+## 5. The stylesheet depends on Streamlit's internal test IDs
+
+`ui/styles/custom.css` styles Streamlit's own widgets by targeting
+`[data-testid="…"]` attributes. **These are internal, undocumented, and get
+renamed between Streamlit versions.**
+
+**Verified against `streamlit==1.37.1`.**
+
+### Why this is worth writing down
+
+**The failure mode is silent.** A selector that no longer matches does not
+error, warn, or log — the styling simply reverts to Streamlit's default and the
+surface quietly looks wrong, often only in one theme. It can sit broken for a
+long time without anyone noticing.
+
+That is not hypothetical here. An audit of all 22 test IDs the stylesheet
+targeted found **three that had never matched anything in this build**:
+
+```
+stBaseButton-secondary      dead   ->  baseButton-secondary
+stBaseButton-primary        dead   ->  baseButton-primary
+stBaseButton-headerNoPadding dead  ->  baseButton-headerNoPadding
+```
+
+Streamlit 1.37.1 builds these as `"baseButton-".concat(kind)` — confirmed by
+grepping the shipped frontend bundle. The `stBaseButton-*` spelling belongs to a
+later release. Every button rule in the stylesheet was therefore inert, in both
+themes, for as long as those rules had existed.
+
+The rules now carry **both spellings**, so they work on 1.37.x and keep working
+after the rename rather than silently dying at the next upgrade.
+
+### If styling looks wrong after a Streamlit upgrade
+
+Suspect this first. To re-audit, dump what the running app actually emits and
+compare against what the stylesheet targets:
+
+```javascript
+// in the browser console, with the app open
+[...new Set([...document.querySelectorAll('[data-testid]')]
+  .map(e => e.getAttribute('data-testid')))].sort()
+```
+
+```bash
+grep -oE 'data-testid="[^"]+"' ui/styles/custom.css | sort -u
+```
+
+Anything in the second list and not the first is either dead or belongs to a
+widget that is not on the page you sampled — check the shipped bundle to tell
+those apart:
+
+```bash
+grep -rl '"stAlert"' "$(python -c 'import streamlit,os;print(os.path.dirname(streamlit.__file__))')/static/static/js"
+```
+
+### Reducing the exposure
+
+Streamlit primitives are preferred over CSS wherever they can do the job, and
+the theme is driven by design tokens so a broken rule affects one surface rather
+than a whole theme. The remaining rules are commented with what each is for, so
+a future reader can judge whether a dead one still matters.
+
+---
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:

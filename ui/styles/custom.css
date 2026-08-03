@@ -33,7 +33,7 @@
 
   --border:         rgba(255,255,255,0.07);
   --border-strong:  rgba(255,255,255,0.14);
-  --border-accent:  var(--border-accent);
+  --border-accent:  rgba(59,130,246,0.35);
 
   /* Text, in descending emphasis. Three levels, matching the type scale. */
   --text-primary:   #f1f5f9;
@@ -480,8 +480,7 @@ html, body, [class*="css"] {
 
 /* ── Text inputs & text areas ────────────────────────────── */
 [data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stNumberInput"] input {
+[data-testid="stTextArea"] textarea {
   background: var(--bg-surface) !important;
   color: var(--text-primary) !important;
   border: 1px solid var(--border) !important;
@@ -875,8 +874,7 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
 }
 
 /* Sidebar collapse chevron — same inheritance problem. */
-[data-testid="stSidebarCollapseButton"] svg,
-[data-testid="stSidebarCollapsedControl"] svg { fill: var(--text-secondary) !important; }
+[data-testid="stSidebarCollapseButton"] svg { fill: var(--text-secondary) !important; }
 
 /* Hover tooltips. Streamlit renders these into a portal outside the app
    container, so they never picked up the theme and stayed dark-on-dark in
