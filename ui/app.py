@@ -44,193 +44,51 @@ _store = DocumentStore()
 
 # ── CSS injection ──────────────────────────────────────────────────────────────
 
-_LIGHT_VARS = """
+_LIGHT_TOKENS = """
 <style>
+/* Light theme = the same design-token ROLES from custom.css, re-valued.
+
+   This block used to be 189 lines: 16 token values plus 51 `!important`
+   overrides across 42 Streamlit-internal selectors. Because every light
+   surface had to be listed by hand, anything nobody remembered stayed dark
+   — sidebar history buttons rendered dark-on-dark, download buttons were
+   black-on-black, unselected radios showed as filled dots, and the page
+   background below the fold never switched.
+
+   Now it swaps tokens only. The element rules live once in custom.css,
+   written against var(--token), so they are correct in both themes by
+   construction and a new surface cannot be forgotten in one of them.
+
+   Dark values live in custom.css :root. Light values live HERE. One place
+   per theme — do not mirror these into custom.css or they will drift. */
 :root {
-  --bg-base:        #fafafa;
-  --bg-surface:     #ffffff;
+  --bg-base:        #ffffff;
+  --bg-surface:     #f6f7f9;
   --bg-card:        #ffffff;
-  --border:         #e4e7ec;
-  --border-accent:  rgba(29,78,216,0.15);
+  --bg-input:       #ffffff;
+  --bg-hover:       #eef1f6;
+
+  --border:         #e2e6ed;
+  --border-strong:  #cbd3e0;
+  --border-accent:  rgba(29,78,216,0.35);
+
   --text-primary:   #0f172a;
   --text-secondary: #475569;
-  --text-muted:     #94a3b8;
-  --accent:         #1D4ED8;
-  --accent-light:   #2563EB;
-  --accent-2:       #0891b2;
-  --accent-2-light: #0891b2;
-  --success:        #059669;
-  --warning:        #d97706;
-  --error:          #dc2626;
-  --sidebar-bg:     #f4f4f7;
-}
+  --text-muted:     #64748b;
+  --text-on-accent: #ffffff;
 
-/* ── App shell ── */
-[data-testid="stAppViewContainer"]  { background: #fafafa !important; }
-[data-testid="stHeader"]            { background: #fafafa !important; border-bottom: 1px solid #e4e7ec !important; }
-[data-testid="stSidebar"]           { background: #f4f4f7 !important; border-right: 1px solid #e4e7ec !important; }
-[data-testid="stSidebar"] > div     { background: #f4f4f7 !important; }
+  --accent:         #1d4ed8;
+  --accent-hover:   #1e40af;
+  --accent-soft:    rgba(29,78,216,0.10);
+  --accent-2:       #0e7490;
 
-/* ── All native Streamlit text in light mode ── */
-p, span, label, h1, h2, h3, h4, h5, li,
-[data-testid="stMarkdownContainer"] p,
-[data-testid="stMarkdownContainer"] li,
-[data-testid="stWidgetLabel"] p,
-[data-testid="stWidgetLabel"] span,
-[data-testid="stText"],
-.stRadio label, .stSelectbox label, .stCheckbox label,
-[data-testid="stCaptionContainer"] p,
-[data-baseweb="radio"] label,
-[data-baseweb="select"] span,
-[class*="st-emotion"] p,
-[class*="st-emotion"] span { color: #0f172a !important; }
+  --success:        #047857;
+  --warning:        #b45309;
+  --error:          #b91c1c;
+  --error-soft:     rgba(185,28,28,0.08);
 
-/* ── Input / select / textarea backgrounds ── */
-[data-baseweb="select"] > div,
-[data-baseweb="input"] > div,
-[data-testid="stSelectbox"] [data-baseweb="select"] > div:first-child,
-[data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stNumberInput"] input {
-  background: #ffffff !important;
-  border-color: #d1d5db !important;
-  color: #0f172a !important;
+  --sidebar-bg:     #f6f7f9;
 }
-
-/* ── Regular action buttons in light mode (not download buttons) ── */
-[data-testid="stBaseButton-secondary"]:not([data-testid="stDownloadButton"] button) {
-  background: rgba(29,78,216,0.07) !important;
-  color: #1D4ED8 !important;
-  border: 1px solid rgba(29,78,216,0.2) !important;
-}
-
-/* ── Theme toggle stays round in light mode too ── */
-.theme-toggle-wrap > div > div > button,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"] {
-  background: rgba(29,78,216,0.08) !important;
-  border: 1px solid rgba(29,78,216,0.2) !important;
-  color: #1D4ED8 !important;
-}
-.theme-toggle-wrap > div > div > button:hover,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"]:hover {
-  background: rgba(29,78,216,0.16) !important;
-  border-color: rgba(29,78,216,0.4) !important;
-}
-
-/* ── Download buttons keep their gradients in light mode ── */
-.btn-pdf [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #1D4ED8, #2563EB) !important;
-  color: white !important;
-}
-.btn-md [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #0891b2, #06B6D4) !important;
-  color: white !important;
-}
-.btn-json [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #065f46, #059669) !important;
-  color: white !important;
-}
-
-/* ── Selectbox dropdown popup ── */
-[data-baseweb="popover"],
-[data-baseweb="menu"],
-[role="listbox"],
-ul[data-baseweb="menu"] {
-  background: #ffffff !important;
-  border: 1px solid #e4e7ec !important;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.08) !important;
-}
-[data-baseweb="option"],
-li[role="option"],
-[role="option"] {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[data-baseweb="option"]:hover,
-li[role="option"]:hover,
-[role="option"]:hover,
-[aria-selected="true"][role="option"] {
-  background: rgba(29,78,216,0.08) !important;
-  color: #0f172a !important;
-}
-
-/* ── File uploader ── */
-[data-testid="stFileUploader"] > div:first-child {
-  background: rgba(29,78,216,0.025) !important;
-  border-color: rgba(29,78,216,0.3) !important;
-}
-[data-testid="stFileUploaderDropzone"],
-[data-testid="stFileUploaderDropzone"] > div,
-[data-testid="stFileUploaderDropzoneInstructions"] {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[data-testid="stFileUploaderDropzone"] button {
-  background: #1D4ED8 !important;
-  color: #ffffff !important;
-}
-
-/* ── Dividers and borders ── */
-hr { border-color: #e4e7ec !important; }
-
-/* ── Code blocks inside chat bubbles and markdown ── */
-pre,
-[data-testid="stMarkdownContainer"] pre,
-.chat-bubble-bot pre,
-.chat-bubble-user pre {
-  background: #f1f5f9 !important;
-  border: 1px solid #e4e7ec !important;
-  border-radius: 8px !important;
-}
-pre code,
-[data-testid="stMarkdownContainer"] pre code,
-.chat-bubble-bot pre code,
-.chat-bubble-user pre code {
-  background: transparent !important;
-  color: #1e293b !important;
-}
-/* Streamlit's st.code / stCodeBlock container */
-[data-testid="stCodeBlock"],
-[data-testid="stCodeBlock"] > div,
-[data-testid="stCodeBlock"] pre {
-  background: #f1f5f9 !important;
-  border: 1px solid #e4e7ec !important;
-  border-radius: 8px !important;
-  color: #1e293b !important;
-}
-[data-testid="stCodeBlock"] code,
-[data-testid="stCodeBlock"] span {
-  color: #1e293b !important;
-}
-/* Inline code */
-code:not(pre code) {
-  background: #e8edf5 !important;
-  color: #1D4ED8 !important;
-  border-radius: 4px !important;
-  padding: 1px 5px !important;
-}
-
-/* ── Custom component overrides ── */
-.doc-type-banner.questionnaire  { color: #0891b2; background: rgba(8,145,178,0.07); border-color: rgba(8,145,178,0.2); }
-.doc-type-banner.normal         { color: #1D4ED8; background: rgba(29,78,216,0.06); border-color: rgba(29,78,216,0.15); }
-.stat-value                     { color: #1D4ED8; }
-.stat-label                     { color: #94a3b8; }
-.stat-card                      { background: #ffffff; border-color: #e4e7ec; }
-.summary-section-heading        { color: #1D4ED8; border-color: rgba(29,78,216,0.2); }
-.summary-subsection-heading     { color: #0891b2; }
-.summary-para                   { color: #475569; }
-.summary-bullet                 { color: #475569; border-left-color: rgba(29,78,216,0.25); }
-.chat-bubble-user               { background: rgba(29,78,216,0.08); border-color: rgba(29,78,216,0.18); color: #0f172a; }
-.chat-bubble-bot                { background: #ffffff; border-color: #e4e7ec; color: #0f172a; }
-.question-item                  { background: #ffffff; border-color: #e4e7ec; }
-.question-text                  { color: #0f172a; }
-.question-num                   { background: rgba(29,78,216,0.1); color: #1D4ED8; }
-.confidence-meter-bg            { background: #e4e7ec; }
-.hero-subtitle                  { color: #64748b; }
-.badge-blue, .badge-purple      { background: rgba(29,78,216,0.1); color: #1D4ED8; border-color: rgba(29,78,216,0.25); }
-.meta-table td:first-child      { color: #1D4ED8; }
-.options-bar [data-testid="stWidgetLabel"] p { color: #94a3b8 !important; }
-.timing-bar-fill                { background: linear-gradient(90deg, #1D4ED8, #0891b2); }
 </style>
 """
 
@@ -242,9 +100,13 @@ def _inject_css() -> None:
             css = fh.read()
         st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-    # Inject theme variable overrides on top of base CSS
-    if st.session_state.get("theme") == "light":
-        st.markdown(_LIGHT_VARS, unsafe_allow_html=True)
+    # Swap the token values for light. Injected after custom.css so the
+    # :root block here wins. Read from the widget key rather than a derived
+    # variable, because this runs before _render_sidebar() creates the
+    # control — on the rerun that follows a change, the widget's value is
+    # already in session_state.
+    if st.session_state.get("theme_choice", "Dark") == "Light":
+        st.markdown(_LIGHT_TOKENS, unsafe_allow_html=True)
 
 
 _inject_css()
@@ -255,19 +117,31 @@ _inject_css()
 def _render_sidebar() -> None:
     """Sidebar with theme toggle and config health warnings."""
     with st.sidebar:
-        # ── Header row: title + theme icon toggle ──────────────────────
-        hdr_col, toggle_col = st.columns([3, 1])
-        with hdr_col:
-            st.markdown("## DocAgent")
-        with toggle_col:
-            theme = st.session_state.get("theme", "dark")
-            icon  = "☀️" if theme == "dark" else "🌙"
-            st.markdown('<div class="theme-toggle-wrap">', unsafe_allow_html=True)
-            if st.button(icon, key="theme_toggle",
-                         help="Switch to light mode" if theme == "dark" else "Switch to dark mode"):
-                st.session_state.theme = "light" if theme == "dark" else "dark"
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("## DocAgent")
+
+        # ── Theme control ──────────────────────────────────────────────
+        # ICON-AS-STATE, with both options always visible.
+        #
+        # The previous control was a single icon button showing the icon for
+        # the theme you would GET (a sun while in dark mode). That conflates
+        # state and action: a lone ☀ can equally be read as "you are in light
+        # mode" or "press for light mode", and there was no label to settle it.
+        #
+        # Showing both options with the current one selected removes the
+        # question entirely — you can see which theme is active AND what the
+        # alternative is, with no hover or guesswork. A radio is also a
+        # Streamlit primitive rather than a styled button, so it reruns on
+        # change by itself and needs no manual st.rerun().
+        #
+        # The key is read directly by _inject_css(), which runs before this
+        # function, so the value must live in the widget key, not a derived one.
+        st.radio(
+            "Theme",
+            options=["Dark", "Light"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="theme_choice",
+        )
         st.divider()
 
         # ── Upload limit agreement ─────────────────────────────────────
@@ -291,14 +165,17 @@ def _render_sidebar() -> None:
             logger.warning("Could not read server.maxUploadSize: %s", exc)
 
         # ── Config health check ────────────────────────────────────────
+        # No leading divider of its own. There is already one above and one
+        # below, so on the normal path — no issues, nothing rendered — the two
+        # sat back to back with ~146px of dead space between them and the
+        # sidebar opened on a void.
         if cfg_issues:
-            st.divider()
             st.markdown("**⚠️ Configuration issues**")
             for issue in cfg_issues:
                 st.warning(issue, icon="⚙️")
+            st.divider()
 
         # ── Recent documents ───────────────────────────────────────────
-        st.divider()
         st.markdown("**Recent Documents**")
         try:
             recent = _store.list_recent(limit=10)
@@ -411,21 +288,60 @@ def _render_upload() -> tuple[list, dict]:
 
     overrides = {"summary_length": summary_length, "summary_tone": summary_tone}
 
-    # Convert YouTube URL to stable file entry (name must survive reruns)
+    # Convert YouTube URL to stable file entry (name must survive reruns).
+    #
+    # Validation happens HERE, before a name is derived. Previously the name was
+    # built from `extract_youtube_video_id(url) or hash(url)`, so an unusable URL
+    # still produced an entry called something like `youtube_56152687.audio`, and
+    # the results area rendered a heading for that non-existent document before
+    # `_run_pipeline` got as far as rejecting it. The user saw a filename they
+    # never supplied, for a document that was never going to exist.
     if input_mode == "YouTube URL" and youtube_url:
+        from utils.file_handler import extract_youtube_video_id
+
         url_stripped = youtube_url.strip()
-        if url_stripped:
-            # Use video ID (or a short hash) as stable key so theme-toggle reruns
-            # don't generate a new name and invalidate the cached result.
-            from utils.file_handler import extract_youtube_video_id
-            video_id = extract_youtube_video_id(url_stripped) or str(abs(hash(url_stripped)) % 10**8)
+        # Gate on the VIDEO ID, not on is_valid_youtube_url(). That helper only
+        # checks the domain, so `youtube.com/playlist?list=…` and a truncated
+        # `watch?v=short` both pass it while yielding no id — which would name
+        # the entry `youtube_None.audio` and then fail later inside yt-dlp.
+        video_id = extract_youtube_video_id(url_stripped) if url_stripped else None
+
+        if not url_stripped:
+            files = []
+        elif video_id:
+            # Video ID as a stable key, so theme-toggle reruns don't generate a
+            # new name and invalidate the cached result.
             files = [{"youtube_url": url_stripped, "name": f"youtube_{video_id}.audio"}]
         else:
+            with col:
+                if is_valid_youtube_url(url_stripped):
+                    st.error(
+                        "That is a YouTube link, but not to a single video. "
+                        "Playlists, channels and shortened search links are not "
+                        "supported — paste a `watch?v=…` or `youtu.be/…` link.",
+                        icon=":material/link_off:",
+                    )
+                else:
+                    st.error(
+                        "That does not look like a YouTube link. Expected "
+                        "`youtube.com/watch?v=…` or `youtu.be/…`.",
+                        icon=":material/link_off:",
+                    )
             files = []
     else:
         files = files or []
 
     return files, overrides
+
+
+def _escape_backticks(text: str) -> str:
+    """Make `text` safe to place inside a markdown code span.
+
+    Filenames are user-supplied, and a backtick in one would close the span
+    early and let the rest of the name render as markdown — the same class of
+    problem as the auto-linked URL, just quieter.
+    """
+    return text.replace("`", "ˋ")  # modifier letter grave accent
 
 
 # ── Progress display ───────────────────────────────────────────────────────────
@@ -469,16 +385,21 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         return
 
     tmp_dir = make_temp_dir()
+    # Bound outside the try so the exception handler can mark the panel failed
+    # without caring how far the run got before it raised.
+    status_panel = None
     try:
         # Determine input type: YouTube URL or file
         youtube_url = file_data.get("youtube_url")
         is_youtube = youtube_url is not None
 
         if is_youtube:
-            # Validate YouTube URL
-            if not is_valid_youtube_url(youtube_url):
-                st.error(f"Invalid YouTube URL: {youtube_url}")
-                return
+            # No URL check here. _render_upload() only builds a youtube_url
+            # entry once extract_youtube_video_id() has returned an id, and
+            # AudioReaderSkill._process_youtube() re-checks the same way at the
+            # layer that actually consumes the URL. A third check in between
+            # was unreachable, weaker than both (domain-only), and covered by
+            # no test.
             file_path = Path(tmp_dir) / name
             file_path.touch()  # Create a placeholder file for path-based processing
         else:
@@ -487,7 +408,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             file_path = save_upload(file_bytes, name, tmp_dir)
             err = validate_file(file_path, max_size_mb=_cfg.max_file_size_mb)
             if err:
-                st.error(err)
+                # Icon-led and typeless, like the URL rejections above — that
+                # is the whole visual distinction from the crash handler at the
+                # bottom of this function, which leads with an exception type
+                # and carries a traceback.
+                st.error(err, icon=":material/description:")
                 return
 
         agent = _get_agent(
@@ -495,12 +420,24 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             summary_tone=overrides.get("summary_tone", "Professional"),
         )
 
-        progress_placeholder = st.empty()
-        detail_placeholder   = st.empty()
-        status_placeholder   = st.empty()
-
-        with progress_placeholder.container():
-            bar = st.progress(0, text="Starting…")
+        # Presentation only. The bar and the per-stage lines now sit inside an
+        # st.status panel, so a run reads as a checklist that has a state
+        # (running / complete / error) instead of a bare bar with a caption
+        # under it. st.status is a Streamlit primitive, so this needs no CSS.
+        # The progress mechanism below — the _log_step wrapper, the position
+        # maths, the labels — is untouched; only where its output is drawn
+        # changed.
+        # Note the absence of `with status_panel:` here. Streamlit's status
+        # container marks itself complete when a `with` block exits, and the
+        # block would exit immediately — before a single stage had run — so the
+        # panel rendered a tick and collapsed itself at the start of the run
+        # and the checklist was never visible while it mattered. Creating the
+        # children off the container directly leaves the panel running until
+        # the explicit update() calls below.
+        status_panel = st.status("Analysing document…", expanded=True)
+        bar = status_panel.progress(0, text="Starting…")
+        detail_placeholder = status_panel.empty()
+        status_placeholder = st.empty()
 
         start_ts = time.monotonic()
 
@@ -535,7 +472,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
                 completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
 
-            detail_placeholder.caption("  ·  ".join(completed[-4:]))
+            # A vertical checklist rather than a truncated one-line caption:
+            # inside the status panel there is room to keep every stage
+            # visible, so a skipped or failed stage stays on screen instead of
+            # scrolling out of the last-4 window.
+            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
@@ -553,7 +494,11 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         elapsed = time.monotonic() - start_ts
         bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:
-            detail_placeholder.caption("  ·  ".join(completed))
+            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+
+        # The panel is finalised further down, after indexing — the document is
+        # not actually ready until its chunks are embedded, so calling the run
+        # "complete" here would be premature on a first run.
 
         with status_placeholder.container():
             if result.success:
@@ -583,12 +528,41 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                         _store.save(result, raw_bytes=raw_bytes)
                 except Exception as store_exc:
                     logger.warning(f"Could not save result to history: {store_exc}")
-                st.success(
-                    f"Analysis complete in **{elapsed:.1f}s** — "
-                    f"classified as **{result.doc_type.replace('_', ' ').title()}**"
+
+                # Collapse the panel now that it has nothing left to say. The
+                # stage list stays one click away — detail while it matters, a
+                # single summary line afterwards.
+                #
+                # This replaces a separate green success banner. The banner said
+                # only the elapsed time and the classification: the first is in
+                # this label, the second is the first thing the results header
+                # states, so the banner was a whole row of chrome sitting
+                # between the panel and the actual finding.
+                status_panel.update(
+                    label=(
+                        f"Analysed in {elapsed:.1f}s · {len(completed)} stage(s) · "
+                        f"{result.doc_type.replace('_', ' ').title()}"
+                    ),
+                    state="complete",
+                    expanded=False,
                 )
             else:
-                st.error(f"Pipeline finished with errors: {', '.join(result.errors)}")
+                # A failed run keeps its stage list open — that list is the
+                # first thing anyone debugging it needs.
+                status_panel.update(
+                    label=f"Finished with errors after {elapsed:.1f}s",
+                    state="error",
+                    expanded=True,
+                )
+                # The third variety: the pipeline ran and reported failure
+                # itself, rather than crashing or rejecting the input. Bulleted
+                # because there can be several, and they used to be joined into
+                # one comma-run that was unreadable past about two.
+                st.error(
+                    "The pipeline reported errors on this document:\n\n"
+                    + "\n".join(f"- {e}" for e in result.errors),
+                    icon=":material/report:",
+                )
 
         render_results(result, export_cfg=_cfg.export)
 
@@ -608,12 +582,34 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # ""), which produced a "Processing failed:" message with nothing after
         # it and no way to tell what went wrong.
         detail = str(exc).strip() or "(no message)"
-        st.error(f"Processing failed — {type(exc).__name__}: {detail}")
-        st.caption(
-            "Full traceback written to the log. Set `DOCAGENT_DEBUG=true` to "
-            "re-raise instead of catching."
+
+        # Otherwise the panel keeps its running spinner forever and the page
+        # reads as still working while the error sits underneath it.
+        if status_panel is not None:
+            status_panel.update(
+                label=f"Failed — {type(exc).__name__}", state="error", expanded=True
+            )
+
+        # A crash and a rejected input used to be the same red box, so the two
+        # were indistinguishable at a glance even though they need opposite
+        # responses: one is "fix your input and retry", the other is "this is a
+        # fault in the app, nothing you type will help".
+        #
+        # This one is the fault. It says so, in those words, and leads with what
+        # broke rather than with a filename. Validation messages stay a plain
+        # icon-led st.error with no exception type and no traceback, which is
+        # what now tells them apart.
+        st.error(
+            f"**{type(exc).__name__}** — {detail}\n\n"
+            f"This is a fault in DocAgent, not a problem with your file. "
+            f"`{_escape_backticks(name)}` was not analysed.",
+            icon=":material/bug_report:",
         )
-        with st.expander("Show traceback"):
+        with st.expander("Technical detail"):
+            st.caption(
+                "Also written to the log file. Set `DOCAGENT_DEBUG=true` to "
+                "re-raise instead of catching, so a debugger can break on it."
+            )
             st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                     language="text")
     finally:
@@ -717,12 +713,57 @@ def main() -> None:
     file_data: list[dict] = st.session_state.get("_file_data", [])
 
     if not file_data:
+        # The first screen is the one a reader judges the tool by, and it used
+        # to be a single heading restating the control directly above it plus a
+        # comma-separated list of extensions. It said what the app ACCEPTS but
+        # never what it DOES, so nothing on screen explained why you would
+        # upload anything. Three columns, because this is scannable reference
+        # rather than prose, and because it uses the width the layout now has.
         st.markdown("""
-        <div class="empty-state fade-in" style="padding: 4rem 1rem">
-          <h3>Upload a document or paste a YouTube link to get started</h3>
-          <p>Supports PDF, Excel (.xlsx / .xls), CSV, Audio (MP3, WAV, etc.), and YouTube videos</p>
+        <div class="empty-state fade-in" style="padding: 2.5rem 1rem 1.5rem">
+          <h3>Turn a document, spreadsheet or recording into something you can question</h3>
+          <p>Everything runs through the same six-stage pipeline: parse, clean,
+          classify, find structure, summarise, extract questions.</p>
         </div>
         """, unsafe_allow_html=True)
+
+        intro_cols = st.columns(3, gap="large")
+        with intro_cols[0]:
+            st.markdown(
+                "**What you can give it**\n\n"
+                "- PDFs, including scanned ones — OCR runs automatically when\n"
+                "  there is no text layer\n"
+                "- Excel and CSV, sheet by sheet\n"
+                "- Audio: MP3, M4A, WAV, FLAC, OGG, WEBM\n"
+                "- A YouTube link — the audio is fetched and transcribed"
+            )
+        with intro_cols[1]:
+            st.markdown(
+                "**What it works out**\n\n"
+                "- Whether the file is a questionnaire or a normal document,\n"
+                "  and how confident it is\n"
+                "- Its subject domain\n"
+                "- Any tables it can recover as data\n"
+                "- Every question, if the document asks any"
+            )
+        with intro_cols[2]:
+            st.markdown(
+                "**What you get back**\n\n"
+                "- A structured summary, cited back to the page it came from\n"
+                "- Answers to your own questions about the content\n"
+                "- The extracted text and per-stage timings\n"
+                "- Export as PDF, Markdown, JSON, or questions as CSV"
+            )
+
+        # Accurate, not reassuring. Parsing and embedding really are local, but
+        # audio is uploaded to Groq for Whisper transcription and document text
+        # is sent there to be summarised — claiming otherwise would be a false
+        # privacy promise, which is worse than saying nothing.
+        st.caption(
+            "Parsing, OCR and search indexing run on this machine. Document "
+            "text is sent to Groq to be summarised, and audio is uploaded there "
+            "to be transcribed. Results are kept in a local history database."
+        )
         return
 
     # ── Separate already-processed from pending files ──────────────────
@@ -733,7 +774,10 @@ def main() -> None:
     # (so the Analyze button for new files appears at the bottom, where
     #  the user is looking after scrolling through previous results)
     for fd in processed:
-        st.markdown(f"---\n### `{fd['name']}`")
+        # Just the rule. The filename used to be repeated here as a code-styled
+        # H3, which now sits directly above the results header that states the
+        # same name along with its type, page count and length.
+        st.markdown("---")
         _run_pipeline(fd["name"], fd, overrides)
 
     # ── Show Analyze button for pending files at the bottom ────────────
@@ -749,7 +793,7 @@ def main() -> None:
             do_analyze = st.button("Analyze", type="primary", use_container_width=True, key="run_btn")
         if do_analyze:
             for fd in pending:
-                st.markdown(f"---\n### `{fd['name']}`")
+                st.markdown("---")  # see note above: header names the file now
                 _run_pipeline(fd["name"], fd, overrides)
 
 

@@ -6,6 +6,18 @@ DocAgent is a high-performance, modular AI agent for intelligent document unders
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10+-06B6D4)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+![DocAgent analysing a document](docs/screenshots/after-dark-04-results-summary.png)
+
+A run reports itself stage by stage, then collapses to a single line when it is
+done — and the whole interface is a first-class citizen in light mode too:
+
+| A run in progress | Light mode |
+|---|---|
+| ![Stage checklist during a run](docs/screenshots/after-dark-03-status-midrun.png) | ![The same results page in light mode](docs/screenshots/after-light-04-results-summary.png) |
+
+More, including before-and-after comparisons of every surface in both themes:
+**[docs/ui-before-after.md](docs/ui-before-after.md)**.
+
 ---
 
 ## Key Features

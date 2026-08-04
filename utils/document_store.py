@@ -155,7 +155,50 @@ class DocumentStore:
                 embeddings_b64 = _emb.to_blob(matrix)
                 embedding_model = _emb.model_name()
 
+        columns = (
+            result.file_name, file_hash, result.file_type, result.doc_type,
+            result.domain, result.word_count, len(result.questions),
+            result.processing_time_ms, result_json, content_text,
+            content_chunks_json, embeddings_b64, embedding_model,
+        )
+
         with self._connect() as conn:
+            # Re-analysing the same source UPDATES its row rather than adding a
+            # second one. Previously every run appended, so the sidebar filled
+            # with entries that were byte-identical in label and content and
+            # could not be told apart.
+            #
+            # The one argument for appending would be preserving runs made with
+            # different summary settings — but file_hash is derived from the
+            # raw bytes alone and ignores those settings, so both runs collide
+            # on the same hash and produce duplicates rather than distinguishable
+            # variants. Keying on the hash is also what the schema always
+            # intended: the column and its index exist, and find_by_hash() was
+            # written for exactly this and then never wired up.
+            existing = conn.execute(
+                "SELECT id FROM history WHERE file_hash = ? ORDER BY id DESC LIMIT 1",
+                (file_hash,),
+            ).fetchone()
+
+            if existing is not None:
+                entry_id = existing[0]
+                conn.execute(
+                    """
+                    UPDATE history SET
+                        file_name = ?, file_hash = ?, file_type = ?, doc_type = ?,
+                        domain = ?, word_count = ?, question_count = ?,
+                        processing_time_ms = ?, result_json = ?, content_text = ?,
+                        content_chunks_json = ?, content_embeddings_b64 = ?,
+                        embedding_model = ?, created_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (*columns, entry_id),
+                )
+                logger.info(
+                    f"DocumentStore: updated '{result.file_name}' (entry #{entry_id})"
+                )
+                return entry_id
+
             cursor = conn.execute(
                 """
                 INSERT INTO history
@@ -165,21 +208,7 @@ class DocumentStore:
                      content_embeddings_b64, embedding_model)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    result.file_name,
-                    file_hash,
-                    result.file_type,
-                    result.doc_type,
-                    result.domain,
-                    result.word_count,
-                    len(result.questions),
-                    result.processing_time_ms,
-                    result_json,
-                    content_text,
-                    content_chunks_json,
-                    embeddings_b64,
-                    embedding_model,
-                ),
+                columns,
             )
             entry_id = cursor.lastrowid
             logger.info(f"DocumentStore: saved '{result.file_name}' as entry #{entry_id}")

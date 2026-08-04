@@ -121,6 +121,36 @@ class TestContentPersistence(unittest.TestCase):
         self.assertEqual(loaded["raw_text"], "", "pre-migration rows have no content")
         self.assertEqual(loaded["content_chunks"], [])
 
+    def test_reanalysis_updates_instead_of_duplicating(self):
+        """Re-analysing the same source must not add a second history row."""
+        first = self.store.save(make_result(), raw_bytes=b"same-bytes")
+        second = self.store.save(make_result(), raw_bytes=b"same-bytes")
+
+        self.assertEqual(first, second, "the same source should reuse its row")
+        rows = sqlite_do(self.db, lambda c: c.execute(
+            "SELECT COUNT(*) FROM history").fetchone()[0])
+        self.assertEqual(rows, 1, "expected one row, not a duplicate")
+
+    def test_reanalysis_refreshes_the_stored_result(self):
+        original = make_result()
+        entry_id = self.store.save(original, raw_bytes=b"same-bytes")
+
+        updated = make_result()
+        updated.summary = "A revised summary."
+        updated.word_count = 999
+        self.store.save(updated, raw_bytes=b"same-bytes")
+
+        loaded = self.store.load(entry_id)
+        self.assertEqual(loaded["summary"], "A revised summary.")
+        self.assertEqual(loaded["word_count"], 999)
+
+    def test_different_sources_still_get_their_own_rows(self):
+        self.store.save(make_result(), raw_bytes=b"document-one")
+        self.store.save(make_result(), raw_bytes=b"document-two")
+        rows = sqlite_do(self.db, lambda c: c.execute(
+            "SELECT COUNT(*) FROM history").fetchone()[0])
+        self.assertEqual(rows, 2, "distinct sources must not collapse together")
+
     def test_migration_is_idempotent(self):
         DocumentStore(db_path=self.db)
         DocumentStore(db_path=self.db)  # must not raise "duplicate column"

@@ -1,31 +1,91 @@
 /* ══════════════════════════════════════════════════════════
    DocAgent — Professional UI Stylesheet
-   Uses CSS custom properties for light/dark theme switching.
-   Dark theme values are defaults; light overrides are injected
-   dynamically by app.py based on st.session_state.theme.
+   Role-based design tokens drive both themes. Dark values are the
+   defaults in :root below; light values are injected by ui/app.py.
+   Rules are written against var(--token) only, never a colour literal.
    ══════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* ── CSS variable defaults (dark) ────────────────────────── */
+/* ── Design tokens ────────────────────────────────────────
+   Every colour in this file is a role, never a literal. Rules below are
+   written ONCE against these tokens and are therefore correct in both
+   themes automatically.
+
+   This replaced a light-mode block in app.py that was 189 lines, of which
+   only 16 were token values — the other 173 were 51 `!important` overrides
+   across 42 Streamlit-internal selectors. Because every light surface had
+   to be listed by hand there, any surface nobody remembered stayed dark:
+   sidebar history buttons, download buttons, and the page background below
+   the fold were all unreadable in light mode. app.py now swaps only the
+   token block.
+
+   Adding a colour? Add a ROLE here with both values. Never write a hex
+   literal in a rule.
+   ──────────────────────────────────────────────────────── */
 :root {
-  --bg-base:        #09090f;
-  --bg-surface:     #111118;
+  /* Surfaces, back to front */
+  --bg-base:        #09090f;   /* page */
+  --bg-surface:     #111118;   /* sidebar, raised panels */
   --bg-card:        rgba(255,255,255,0.03);
+  --bg-input:       rgba(255,255,255,0.04);
+  --bg-hover:       rgba(255,255,255,0.06);
+
   --border:         rgba(255,255,255,0.07);
-  --border-accent:  rgba(37,99,235,0.2);
+  --border-strong:  rgba(255,255,255,0.14);
+  --border-accent:  rgba(59,130,246,0.35);
+
+  /* Text, in descending emphasis. Three levels, matching the type scale. */
   --text-primary:   #f1f5f9;
   --text-secondary: #94a3b8;
-  --text-muted:     #475569;
-  --accent:         #2563EB;
-  --accent-light:   #60A5FA;
+  --text-muted:     #64748b;
+  --text-on-accent: #ffffff;
+
+  /* ONE accent. --accent-2 is retained only for the citation chips and
+     timing bars that already used it; it is never used for actions. */
+  --accent:         #3b82f6;
+  --accent-hover:   #60a5fa;
+  --accent-soft:    rgba(59,130,246,0.14);
   --accent-2:       #06B6D4;
-  --accent-2-light: #22d3ee;
+
+  /* Semantic. Used for meaning, never decoration. */
   --success:        #34d399;
   --warning:        #fbbf24;
   --error:          #f87171;
-  --sidebar-bg:     rgba(9,9,15,0.97);
+  --error-soft:     rgba(248,113,113,0.12);
+
+  --sidebar-bg:     #0d0d14;
+
+  /* Type scale — three levels, so heading / body / metadata are
+     distinguishable without relying on colour alone. */
+  --fs-display:     1.75rem;
+  --fs-heading:     1.05rem;
+  --fs-body:        0.94rem;
+  --fs-meta:        0.8rem;
+  --fs-micro:       0.72rem;
+
+  --lh-tight:       1.25;
+  --lh-body:        1.65;
+
+  --fw-normal:      400;
+  --fw-medium:      500;
+  --fw-bold:        650;
+
+  /* Spacing rhythm, so gaps stop being ad hoc */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+
+  --radius:         10px;
+  --radius-sm:      6px;
 }
+
+/* Light theme values live in ui/app.py (_LIGHT_TOKENS), injected after this
+   file so its :root wins. Deliberately NOT duplicated here — two copies of
+   the same tokens drift. Dark here, light there, one source of truth each. */
 
 /* ── Base reset ─────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
@@ -53,10 +113,19 @@ html, body, [class*="css"] {
 }
 
 /* ── Main container ─────────────────────────────────────── */
+/* 1200px plus Streamlit's default 5rem side padding left 1040px of content in
+   a 1584px main area on a 1920 screen — 544px unused, and the page read as a
+   narrow column stranded in the middle of a wide window. The cap exists to
+   stop prose running to 150+ characters per line, but capping the whole
+   LAYOUT to protect the TEXT also starved the tables, metric grid and stage
+   panel, none of which have a reading measure. So the container gets the
+   width and the prose keeps its own limit (see .summary-para below). */
 .main .block-container {
-  max-width: 1200px;
+  max-width: 1440px;
   padding-top: 1rem;
   padding-bottom: 3rem;
+  padding-left: 2.5rem;
+  padding-right: 2.5rem;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────── */
@@ -76,10 +145,7 @@ html, body, [class*="css"] {
   font-size: 2.75rem;
   font-weight: 700;
   letter-spacing: -0.04em;
-  background: linear-gradient(135deg, #1D4ED8 0%, #60A5FA 50%, #22d3ee 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--text-primary);
   margin: 0 0 0.4rem 0;
   line-height: 1.1;
 }
@@ -90,41 +156,6 @@ html, body, [class*="css"] {
   font-weight: 400;
   margin: 0;
   letter-spacing: 0.01em;
-}
-
-/* ── Theme toggle icon button ────────────────────────────── */
-.theme-toggle-wrap {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 0.5rem;
-}
-
-.theme-toggle-wrap > div {
-  width: auto !important;
-}
-
-.theme-toggle-wrap > div > div > button,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"] {
-  width: 38px !important;
-  height: 38px !important;
-  min-width: 38px !important;
-  border-radius: 50% !important;
-  padding: 0 !important;
-  font-size: 1.15rem !important;
-  line-height: 1 !important;
-  background: rgba(37,99,235,0.1) !important;
-  border: 1px solid rgba(37,99,235,0.22) !important;
-  color: var(--accent-light) !important;
-  transition: transform 0.35s ease, background 0.22s ease, box-shadow 0.22s ease !important;
-  box-shadow: none !important;
-}
-
-.theme-toggle-wrap > div > div > button:hover,
-.theme-toggle-wrap [data-testid="stBaseButton-secondary"]:hover {
-  background: rgba(37,99,235,0.2) !important;
-  border-color: rgba(37,99,235,0.45) !important;
-  transform: rotate(18deg) scale(1.1) !important;
-  box-shadow: 0 0 12px rgba(37,99,235,0.25) !important;
 }
 
 /* ── Badges ─────────────────────────────────────────────── */
@@ -140,21 +171,21 @@ html, body, [class*="css"] {
 }
 
 .badge-blue {
-  background: rgba(37,99,235,0.15);
-  color: var(--accent-light);
-  border: 1px solid rgba(37,99,235,0.3);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  border: 1px solid var(--border-accent);
 }
 
 /* Keep badge-purple as alias so any old references still work */
 .badge-purple {
-  background: rgba(37,99,235,0.15);
-  color: var(--accent-light);
-  border: 1px solid rgba(37,99,235,0.3);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  border: 1px solid var(--border-accent);
 }
 
 .badge-cyan {
   background: rgba(6,182,212,0.12);
-  color: var(--accent-2-light);
+  color: var(--accent-2);
   border: 1px solid rgba(6,182,212,0.25);
 }
 
@@ -176,6 +207,30 @@ html, body, [class*="css"] {
   border: 1px solid rgba(239,68,68,0.25);
 }
 
+/* ── Document header ─────────────────────────────────────── */
+/* Names the file the results below describe. Deliberately quiet: it is
+   orientation, not a finding, so it sits above the classification banner
+   without competing with it. */
+.doc-header {
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-header-name {
+  font-size: var(--fs-heading);
+  font-weight: var(--fw-bold);
+  color: var(--text-primary);
+  line-height: var(--lh-tight);
+  word-break: break-word;
+}
+
+.doc-header-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 /* ── Doc type banner ─────────────────────────────────────── */
 .doc-type-banner {
   display: flex;
@@ -191,13 +246,13 @@ html, body, [class*="css"] {
 .doc-type-banner.questionnaire {
   background: linear-gradient(135deg, rgba(6,182,212,0.08) 0%, rgba(6,182,212,0.03) 100%);
   border: 1px solid rgba(6,182,212,0.25);
-  color: var(--accent-2-light);
+  color: var(--accent-2);
 }
 
 .doc-type-banner.normal {
-  background: linear-gradient(135deg, rgba(37,99,235,0.08) 0%, rgba(37,99,235,0.03) 100%);
+  background: var(--accent-soft);
   border: 1px solid var(--border-accent);
-  color: var(--accent-light);
+  color: var(--accent-hover);
 }
 
 /* ── Confidence meter ────────────────────────────────────── */
@@ -246,7 +301,7 @@ html, body, [class*="css"] {
 .stat-value {
   font-size: 1.4rem;
   font-weight: 700;
-  color: var(--accent-light);
+  color: var(--accent-hover);
   line-height: 1;
   margin-bottom: 0.25rem;
 }
@@ -273,7 +328,7 @@ html, body, [class*="css"] {
 }
 
 .question-item:hover {
-  background: rgba(37,99,235,0.07);
+  background: var(--accent-soft);
   border-color: var(--border-accent);
 }
 
@@ -285,8 +340,8 @@ html, body, [class*="css"] {
   align-items: center;
   justify-content: center;
   border-radius: 5px;
-  background: rgba(37,99,235,0.18);
-  color: var(--accent-light);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
   font-size: 0.68rem;
   font-weight: 700;
 }
@@ -311,7 +366,7 @@ html, body, [class*="css"] {
 .summary-section-heading {
   font-size: 0.93rem;
   font-weight: 700;
-  color: var(--accent-light);
+  color: var(--accent-hover);
   margin: 1.25rem 0 0.4rem;
   padding-bottom: 0.25rem;
   border-bottom: 1px solid var(--border-accent);
@@ -321,7 +376,7 @@ html, body, [class*="css"] {
 .summary-subsection-heading {
   font-size: 0.87rem;
   font-weight: 600;
-  color: var(--accent-2-light);
+  color: var(--accent-2);
   margin: 0.875rem 0 0.3rem;
 }
 
@@ -331,6 +386,9 @@ html, body, [class*="css"] {
   color: var(--text-secondary);
   margin-bottom: 0.5rem;
   word-break: break-word;
+  /* The reading measure lives here rather than on the container, so widening
+     the layout does not stretch body text to an unreadable line length. */
+  max-width: 78ch;
 }
 
 .summary-bullet {
@@ -338,7 +396,7 @@ html, body, [class*="css"] {
   line-height: 1.65;
   color: var(--text-secondary);
   padding: 0.2rem 0 0.2rem 0.75rem;
-  border-left: 2px solid rgba(37,99,235,0.3);
+  border-left: 2px solid var(--border-accent);
   margin: 0.25rem 0;
 }
 
@@ -351,7 +409,7 @@ html, body, [class*="css"] {
   display: inline-block;
   background: rgba(8,145,178,0.12);
   border: 1px solid rgba(8,145,178,0.3);
-  color: var(--accent-2-light);
+  color: var(--accent-2);
   font-size: 0.68rem;
   padding: 1px 6px;
   border-radius: 8px;
@@ -363,8 +421,8 @@ html, body, [class*="css"] {
 
 /* ── Chat bubbles ───────────────────────────────────────── */
 .chat-bubble-user {
-  background: rgba(37,99,235,0.12);
-  border: 1px solid rgba(37,99,235,0.28);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-accent);
   border-radius: 16px 16px 4px 16px;
   padding: 0.6rem 0.95rem;
   margin: 0.4rem 0 0.4rem 20%;
@@ -385,10 +443,16 @@ html, body, [class*="css"] {
 }
 
 /* ── Buttons (all variants) ──────────────────────────────── */
+/* Every button rule below is written twice. On streamlit 1.37.1 only the
+   `baseButton-*` spelling matches -- the frontend builds these ids as
+   "baseButton-".concat(kind). The `stBaseButton-*` half is INERT here and is
+   kept purely so the styling survives the later release that renames them.
+   Debugging a button on this version? Edit the `baseButton-*` selector; the
+   `st`-prefixed one does nothing. See DEPENDENCIES.md section 5. */
 /* Base reset for all Streamlit buttons */
 [data-testid="stDownloadButton"] button,
-[data-testid="stBaseButton-secondary"],
-[data-testid="stBaseButton-primary"] {
+[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"],
+[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"] {
   border-radius: 8px !important;
   font-weight: 600 !important;
   font-size: 0.82rem !important;
@@ -399,26 +463,26 @@ html, body, [class*="css"] {
 }
 
 /* Default action button (st.button) */
-[data-testid="stBaseButton-secondary"] {
-  background: rgba(37,99,235,0.1) !important;
-  color: var(--accent-light) !important;
-  border: 1px solid rgba(37,99,235,0.28) !important;
+[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"] {
+  background: var(--accent-soft) !important;
+  color: var(--accent-hover) !important;
+  border: 1px solid var(--border-accent) !important;
 }
-[data-testid="stBaseButton-secondary"]:hover {
-  background: rgba(37,99,235,0.2) !important;
-  border-color: rgba(37,99,235,0.5) !important;
+[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"]:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--border-accent) !important;
 }
 
 /* Primary button */
-[data-testid="stBaseButton-primary"] {
-  background: linear-gradient(135deg, #1D4ED8, #2563EB) !important;
+[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"] {
+  background: var(--accent) !important;
   color: white !important;
   border: none !important;
-  box-shadow: 0 3px 10px rgba(37,99,235,0.3) !important;
+  box-shadow: 0 3px 10px var(--border-accent) !important;
 }
-[data-testid="stBaseButton-primary"]:hover {
+[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"]:hover {
   transform: translateY(-1px) !important;
-  box-shadow: 0 5px 16px rgba(37,99,235,0.45) !important;
+  box-shadow: 0 5px 16px var(--border-accent) !important;
 }
 
 /* Download button wrappers */
@@ -427,17 +491,17 @@ html, body, [class*="css"] {
 }
 
 .btn-pdf [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #1D4ED8, #2563EB) !important;
+  background: var(--accent) !important;
   color: white !important;
-  box-shadow: 0 3px 10px rgba(37,99,235,0.28) !important;
+  box-shadow: 0 3px 10px var(--border-accent) !important;
 }
 .btn-pdf [data-testid="stDownloadButton"] button:hover {
   transform: translateY(-1px) !important;
-  box-shadow: 0 5px 16px rgba(37,99,235,0.45) !important;
+  box-shadow: 0 5px 16px var(--border-accent) !important;
 }
 
 .btn-md [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #0891b2, #06B6D4) !important;
+  background: var(--accent) !important;
   color: white !important;
   box-shadow: 0 3px 10px rgba(6,182,212,0.25) !important;
 }
@@ -447,7 +511,7 @@ html, body, [class*="css"] {
 }
 
 .btn-json [data-testid="stDownloadButton"] button {
-  background: linear-gradient(135deg, #065f46, #059669) !important;
+  background: var(--accent) !important;
   color: white !important;
   box-shadow: 0 3px 10px rgba(5,150,105,0.25) !important;
 }
@@ -458,8 +522,7 @@ html, body, [class*="css"] {
 
 /* ── Text inputs & text areas ────────────────────────────── */
 [data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stNumberInput"] input {
+[data-testid="stTextArea"] textarea {
   background: var(--bg-surface) !important;
   color: var(--text-primary) !important;
   border: 1px solid var(--border) !important;
@@ -468,7 +531,7 @@ html, body, [class*="css"] {
 [data-testid="stTextInput"] input:focus,
 [data-testid="stTextArea"] textarea:focus {
   border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px rgba(37,99,235,0.15) !important;
+  box-shadow: 0 0 0 2px var(--accent-soft) !important;
 }
 
 /* ── Options bar (below uploader) ───────────────────────── */
@@ -493,15 +556,15 @@ html, body, [class*="css"] {
 
 /* ── Upload zone ─────────────────────────────────────────── */
 [data-testid="stFileUploader"] > div:first-child {
-  border: 2px dashed rgba(37,99,235,0.35) !important;
+  border: 2px dashed var(--border-accent) !important;
   border-radius: 14px !important;
-  background: rgba(37,99,235,0.025) !important;
+  background: var(--accent-soft) !important;
   transition: border-color 0.2s ease !important;
 }
 
 [data-testid="stFileUploader"] > div:first-child:hover {
-  border-color: rgba(37,99,235,0.6) !important;
-  background: rgba(37,99,235,0.05) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
 }
 
 /* ── Tab styling ─────────────────────────────────────────── */
@@ -532,7 +595,7 @@ button[data-baseweb="tab"] {
 }
 
 .meta-table td:first-child {
-  color: var(--accent-light);
+  color: var(--accent-hover);
   font-weight: 600;
   width: 38%;
 }
@@ -590,8 +653,8 @@ button[data-baseweb="tab"] {
 
 /* ── Inline code (dark mode) ─────────────────────────────── */
 code:not(pre code) {
-  background: rgba(37,99,235,0.12) !important;
-  color: var(--accent-light) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent-hover) !important;
   border-radius: 4px !important;
   padding: 1px 5px !important;
 }
@@ -605,11 +668,11 @@ hr {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(37,99,235,0.28);
+  background: var(--border-accent);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(37,99,235,0.55);
+  background: var(--accent);
 }
 
 /* ── Animations ─────────────────────────────────────────── */
@@ -628,4 +691,292 @@ hr {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .doc-type-banner { flex-direction: column; gap: 0.4rem; }
   .main .block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
+}
+
+/* ══════════════════════════════════════════════════════════
+   Streamlit widget surfaces
+   ──────────────────────────────────────────────────────────
+   These are the surfaces that used to be styled ONLY inside app.py's
+   light-mode block, which is why they were broken in whichever theme the
+   author was not looking at. Written once against tokens, so both themes
+   get them.
+
+   Each of these targets a Streamlit-internal selector, which is exactly
+   the kind of thing that breaks on a Streamlit upgrade. Every rule below
+   therefore says what it is for, so a future reader can tell whether a
+   broken rule still matters. If Streamlit changes a data-testid, the
+   symptom is a surface reverting to Streamlit's default — not a crash.
+   ══════════════════════════════════════════════════════════ */
+
+/* Streamlit's own chrome. Hidden because "Deploy" and the hamburger are the
+   loudest signal that this is a framework demo rather than a product, and
+   neither does anything useful for a viewer of this app. */
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+#MainMenu,
+header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-headerNoPadding"] { display: none !important; }
+
+/* App + sidebar background. Without the first rule the page below the fold
+   kept the dark base colour in light mode. */
+[data-testid="stAppViewContainer"] { background: var(--bg-base); }
+[data-testid="stHeader"]           { background: transparent; }
+[data-testid="stSidebar"]          { background: var(--sidebar-bg); border-right: 1px solid var(--border); }
+[data-testid="stSidebar"] > div    { background: transparent; }
+
+/* Radio groups. In light mode the UNSELECTED dot rendered as a solid black
+   circle, so every option looked chosen. Force the ring/fill relationship
+   to come from tokens rather than from Streamlit's base theme. */
+/* Checked state lives on the <input>, not on a div with aria-checked — the
+   ring and the dot are sibling divs before it. Without this, Streamlit's dark
+   base theme filled the UNSELECTED ring solid, so in light mode every option
+   looked selected. */
+[data-baseweb="radio"] > div:first-child {
+  background: transparent !important;
+  border: 2px solid var(--border-strong) !important;
+}
+[data-baseweb="radio"]:has(input:checked) > div:first-child {
+  border-color: var(--accent) !important;
+}
+[data-baseweb="radio"] > div:first-child > div {
+  background: transparent !important;
+}
+[data-baseweb="radio"]:has(input:checked) > div:first-child > div {
+  background: var(--accent) !important;
+}
+[data-testid="stRadio"] label { color: var(--text-primary) !important; }
+
+/* Download buttons. These rendered black-on-black in light mode because the
+   light block styled only the .btn-pdf/.btn-md/.btn-json wrappers. */
+[data-testid="stDownloadButton"] button {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+}
+[data-testid="stDownloadButton"] button:hover {
+  background: var(--bg-hover) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* File uploader. The format line was pale grey on white and unreadable. */
+[data-testid="stFileUploaderDropzone"] {
+  background: var(--bg-card) !important;
+  border: 1px dashed var(--border-strong) !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] small {
+  color: var(--text-secondary) !important;
+}
+[data-testid="stFileUploaderDropzone"] button {
+  background: var(--accent) !important;
+  color: var(--text-on-accent) !important;
+  border: none !important;
+}
+
+/* Tooltip / help icon — invisible on white before. */
+[data-testid="stTooltipIcon"] svg { fill: var(--text-muted) !important; }
+
+/* Inputs */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-baseweb="select"] > div {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border) !important;
+}
+
+/* Chat input. Streamlit paints this container from the *pinned* config.toml
+   theme (secondaryBackgroundColor), which is dark — so unlike the text inputs
+   above it does not follow the token block and rendered as a black bar on
+   white. Both the container and its textarea need the token explicitly. */
+[data-testid="stChatInput"] {
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+[data-testid="stChatInput"]:focus-within { border-color: var(--accent) !important; }
+[data-testid="stChatInputTextArea"] { color: var(--text-primary) !important; }
+[data-testid="stChatInputTextArea"]::placeholder { color: var(--text-muted) !important; }
+/* Send-arrow button: an icon button, so it needs fill not color. */
+[data-testid="stChatInput"] button svg { fill: var(--text-secondary) !important; }
+[data-testid="stChatInput"] button:hover svg { fill: var(--accent) !important; }
+
+/* Progress bar. Same root cause as the chat input above: the unfilled track is
+   painted from the pinned config.toml secondaryBackgroundColor, so on white it
+   rendered as a solid black bar. The fill takes the pinned primaryColor for the
+   same reason, which is close to but not the accent token. Both are pinned to
+   tokens here so the status panel matches the rest of the theme.
+   Structure in 1.37.1 is [role=progressbar] > div > track > fill. */
+[data-testid="stProgress"] div[role="progressbar"] > div > div {
+  background: var(--bg-hover) !important;
+}
+[data-testid="stProgress"] div[role="progressbar"] > div > div > div {
+  background: var(--accent) !important;
+}
+
+/* Status panel state icons. Streamlit colours these from the pinned dark
+   config.toml textColor, so on white the completion tick and the error cross
+   both rendered near-white and effectively vanished. Colouring them
+   semantically rather than with the text token also means the state is
+   readable from the icon alone, not just the label. */
+[data-testid="stExpanderIconCheck"] { color: var(--success) !important; }
+[data-testid="stExpanderIconError"] { color: var(--error) !important; }
+
+/* Code blocks. The fourth surface painted from the pinned dark config rather
+   than the tokens: a near-black slab on a white page, which the "Extracted
+   text" tab turns into a full-height wall of it. Safe to recolour because both
+   st.code() call sites pass language="text", so there is no syntax
+   highlighting whose palette this could fight. */
+[data-testid="stCodeBlock"] pre {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+[data-testid="stCodeBlock"] code { color: var(--text-primary) !important; }
+[data-testid="stCodeBlock"] button svg { fill: var(--text-muted) !important; }
+
+/* Select dropdown popover — inherited the dark surface on white. */
+[data-baseweb="popover"] [role="listbox"],
+ul[data-baseweb="menu"] {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+}
+li[role="option"] { background: transparent !important; color: var(--text-primary) !important; }
+li[role="option"]:hover,
+li[role="option"][aria-selected="true"] { background: var(--accent-soft) !important; }
+
+/* Alerts. Streamlit's defaults are the "raw framework output" look flagged
+   in the audit; these give them the same surface language as everything else. */
+[data-testid="stAlert"], .stAlert, [role="alert"] {
+  border-radius: var(--radius) !important;
+  border: 1px solid var(--border) !important;
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  font-size: var(--fs-body);
+}
+[data-testid="stAlert"] a, .stAlert a, [role="alert"] a { color: var(--accent) !important; }
+
+/* Tabs — were the quietest thing on screen despite being primary navigation. */
+[data-baseweb="tab-list"] { gap: var(--sp-1); border-bottom: 1px solid var(--border); }
+[data-baseweb="tab"] {
+  font-size: var(--fs-body) !important;
+  font-weight: var(--fw-medium) !important;
+  color: var(--text-secondary) !important;
+  padding: var(--sp-2) var(--sp-4) !important;
+}
+[data-baseweb="tab"][aria-selected="true"] { color: var(--accent) !important; }
+
+/* Sidebar buttons (the history list). These kept a dark fill with dark text
+   in light mode, making every filename invisible. */
+[data-testid="stSidebar"] [data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"] {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  text-align: left !important;
+  font-size: var(--fs-meta) !important;
+  font-weight: var(--fw-normal) !important;
+}
+[data-testid="stSidebar"] [data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"]:hover {
+  background: var(--bg-hover) !important;
+  border-color: var(--accent) !important;
+}
+
+
+/* ══════════════════════════════════════════════════════════
+   Type scale
+   ──────────────────────────────────────────────────────────
+   Three levels, so heading / body / metadata are told apart by SIZE and
+   WEIGHT rather than by colour alone — the audit found everything sitting
+   at roughly one weight, which is why nothing led the eye.
+
+     display  page + document titles
+     heading  section headings inside results
+     body     prose
+     meta     labels, captions, stat labels
+   ══════════════════════════════════════════════════════════ */
+
+.main .block-container p,
+.main .block-container li,
+[data-testid="stMarkdownContainer"] p {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--text-primary);
+}
+
+.main .block-container h1 {
+  font-size: var(--fs-display);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.main .block-container h2 {
+  font-size: calc(var(--fs-heading) * 1.2);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--text-primary);
+}
+
+.main .block-container h3 {
+  font-size: var(--fs-heading);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  color: var(--text-primary);
+}
+
+/* Captions and widget labels are metadata: smaller, quieter, never competing
+   with the content they describe. */
+[data-testid="stCaptionContainer"] p,
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label {
+  font-size: var(--fs-meta) !important;
+  color: var(--text-secondary) !important;
+  font-weight: var(--fw-normal) !important;
+  letter-spacing: 0.01em;
+}
+
+/* Sidebar section labels — the one place a bold micro-label is wanted. */
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: var(--fw-bold);
+}
+
+/* Sidebar typography. Sidebar headings sit outside `.main .block-container`,
+   so the type-scale rules above do not reach them and they were inheriting
+   Streamlit's base-theme text colour — which is light, and therefore
+   invisible on a light background. Bind them to tokens like everything else. */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+  color: var(--text-primary) !important;
+  font-size: var(--fs-heading) !important;
+  font-weight: var(--fw-bold) !important;
+  letter-spacing: -0.01em;
+}
+
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+  color: var(--text-secondary) !important;
+}
+
+/* Sidebar collapse chevron — same inheritance problem. */
+[data-testid="stSidebarCollapseButton"] svg { fill: var(--text-secondary) !important; }
+
+/* Hover tooltips. Streamlit renders these into a portal outside the app
+   container, so they never picked up the theme and stayed dark-on-dark in
+   light mode — visible on the sidebar history items, which use the tooltip
+   for their metadata. */
+[data-baseweb="tooltip"],
+[data-testid="stTooltipContent"] {
+  background: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  font-size: var(--fs-meta) !important;
 }

@@ -385,6 +385,137 @@ problem. Removal is covered by Task 16.
 
 ---
 
+## 5. The stylesheet depends on Streamlit's internal test IDs
+
+`ui/styles/custom.css` styles Streamlit's own widgets by targeting
+`[data-testid="…"]` attributes. **These are internal, undocumented, and get
+renamed between Streamlit versions.**
+
+**Verified against `streamlit==1.37.1`.**
+
+### Why this is worth writing down
+
+**The failure mode is silent.** A selector that no longer matches does not
+error, warn, or log — the styling simply reverts to Streamlit's default and the
+surface quietly looks wrong, often only in one theme. It can sit broken for a
+long time without anyone noticing.
+
+That is not hypothetical here. An audit of every test ID the stylesheet targeted
+— 25 distinct widget targets, written as 28 selector strings because the three
+button rules carry two spellings each — found **four that had never matched
+anything in this build**:
+
+```
+stBaseButton-secondary        dead  ->  baseButton-secondary
+stBaseButton-primary          dead  ->  baseButton-primary
+stBaseButton-headerNoPadding  dead  ->  baseButton-headerNoPadding
+stSidebarCollapsedControl     dead  ->  (no equivalent; rule removed)
+```
+
+Streamlit 1.37.1 builds the button IDs as `"baseButton-".concat(kind)` —
+confirmed by grepping the shipped frontend bundle, where the literal
+`"stBaseButton-primary"` never appears but `"data-testid":"baseButton-".concat(t)`
+does. The `stBaseButton-*` spelling belongs to a later release. Every button rule
+in the stylesheet was therefore inert, in both themes, for as long as those rules
+had existed.
+
+A fifth, `stNumberInput`, is a real ID in this version but the app renders no
+number inputs, so that rule was removed as dead weight rather than as a bug.
+
+The rules now carry **both spellings**, so they work on 1.37.x and keep working
+after the rename rather than silently dying at the next upgrade.
+
+> **The three `stBaseButton-*` selectors are inert on this version.** They match
+> nothing in 1.37.1 and are present for forward compatibility only — they exist
+> so the button styling survives the upgrade that renames `baseButton-*`. Do not
+> read them as working rules, and do not "fix" a button by editing them: on this
+> version only the `baseButton-*` half of each rule has any effect. If you are
+> debugging button styling here, the `baseButton-*` selector is the live one.
+>
+> Once this project moves to a Streamlit version that emits `stBaseButton-*`, the
+> pair inverts and the `baseButton-*` half becomes the dead one. Neither half is
+> safe to delete until the supported version range covers only one spelling.
+
+### If styling looks wrong after a Streamlit upgrade
+
+Suspect this first. To re-audit, dump what the running app actually emits and
+compare against what the stylesheet targets:
+
+```javascript
+// in the browser console, with the app open
+[...new Set([...document.querySelectorAll('[data-testid]')]
+  .map(e => e.getAttribute('data-testid')))].sort()
+```
+
+```bash
+grep -oE 'data-testid="[^"]+"' ui/styles/custom.css | sort -u
+```
+
+Anything in the second list and not the first is either dead or belongs to a
+widget that is not on the page you sampled — check the shipped bundle to tell
+those apart:
+
+```bash
+grep -rl '"stAlert"' "$(python -c 'import streamlit,os;print(os.path.dirname(streamlit.__file__))')/static/static/js"
+```
+
+### Reducing the exposure
+
+Streamlit primitives are preferred over CSS wherever they can do the job, and
+the theme is driven by design tokens so a broken rule affects one surface rather
+than a whole theme. The remaining rules are commented with what each is for, so
+a future reader can judge whether a dead one still matters.
+
+---
+
+## 6. `config.toml` pins the base theme, and some widgets ignore our tokens
+
+**If a surface renders black-on-white in light mode, look here first.**
+
+`.streamlit/config.toml` pins `base = "dark"`. Light mode is then applied by
+swapping the design-token values in a `:root` block — see `_LIGHT_TOKENS` in
+`ui/app.py`. That works for everything the stylesheet paints, because those
+rules are written against `var(--token)`.
+
+It does **not** work for widgets Streamlit paints from its *own* theme config.
+Those read `secondaryBackgroundColor` / `textColor` straight out of the pinned
+dark base, so they stay dark no matter what the token block says. The symptom is
+always the same: a near-black slab or invisible text on a white page, in light
+mode only.
+
+**Known instances, all now pinned to tokens in `ui/styles/custom.css`:**
+
+| Widget | Test ID | Was |
+|---|---|---|
+| Chat input | `stChatInput` | `rgb(17,17,24)` container — a black bar under the chat |
+| Progress bar track | `stProgress` | black unfilled track; the fill also used the pinned `primaryColor` |
+| Status panel state icons | `stExpanderIconCheck` / `stExpanderIconError` | `rgb(241,245,249)` — the dark theme's text colour, invisible on white |
+| Code blocks | `stCodeBlock` | near-black slab; the "Extracted text" tab became a full-height wall of it |
+
+Four separate times, the same root cause. If a fifth turns up, the fix is the
+same shape — find the element, set `background` / `color` / `fill` to the
+relevant token with `!important`, and add it to this table:
+
+```javascript
+// in the browser console, in LIGHT mode, on the offending page
+[...document.querySelectorAll('*')]
+  .filter(e => {
+    const b = getComputedStyle(e).backgroundColor;
+    const m = b.match(/[0-9]+/g);
+    return m && m.length >= 3 && (+m[0] + +m[1] + +m[2]) < 120;
+  })
+  .map(e => e.closest('[data-testid]')?.getAttribute('data-testid'))
+  .filter(Boolean);
+```
+
+**Why not just unpin the base theme?** Removing `base = "dark"` would make
+Streamlit follow the OS preference, which the in-app Dark/Light control then
+fights — the two disagree on first paint and the page flashes. Pinning one base
+and swapping tokens is deliberate; this section is the cost of that choice,
+written down.
+
+---
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:
