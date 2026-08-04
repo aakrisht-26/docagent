@@ -468,6 +468,54 @@ a future reader can judge whether a dead one still matters.
 
 ---
 
+## 6. `config.toml` pins the base theme, and some widgets ignore our tokens
+
+**If a surface renders black-on-white in light mode, look here first.**
+
+`.streamlit/config.toml` pins `base = "dark"`. Light mode is then applied by
+swapping the design-token values in a `:root` block — see `_LIGHT_TOKENS` in
+`ui/app.py`. That works for everything the stylesheet paints, because those
+rules are written against `var(--token)`.
+
+It does **not** work for widgets Streamlit paints from its *own* theme config.
+Those read `secondaryBackgroundColor` / `textColor` straight out of the pinned
+dark base, so they stay dark no matter what the token block says. The symptom is
+always the same: a near-black slab or invisible text on a white page, in light
+mode only.
+
+**Known instances, all now pinned to tokens in `ui/styles/custom.css`:**
+
+| Widget | Test ID | Was |
+|---|---|---|
+| Chat input | `stChatInput` | `rgb(17,17,24)` container — a black bar under the chat |
+| Progress bar track | `stProgress` | black unfilled track; the fill also used the pinned `primaryColor` |
+| Status panel state icons | `stExpanderIconCheck` / `stExpanderIconError` | `rgb(241,245,249)` — the dark theme's text colour, invisible on white |
+| Code blocks | `stCodeBlock` | near-black slab; the "Extracted text" tab became a full-height wall of it |
+
+Four separate times, the same root cause. If a fifth turns up, the fix is the
+same shape — find the element, set `background` / `color` / `fill` to the
+relevant token with `!important`, and add it to this table:
+
+```javascript
+// in the browser console, in LIGHT mode, on the offending page
+[...document.querySelectorAll('*')]
+  .filter(e => {
+    const b = getComputedStyle(e).backgroundColor;
+    const m = b.match(/[0-9]+/g);
+    return m && m.length >= 3 && (+m[0] + +m[1] + +m[2]) < 120;
+  })
+  .map(e => e.closest('[data-testid]')?.getAttribute('data-testid'))
+  .filter(Boolean);
+```
+
+**Why not just unpin the base theme?** Removing `base = "dark"` would make
+Streamlit follow the OS preference, which the in-app Dark/Light control then
+fights — the two disagree on first paint and the page flashes. Pinning one base
+and swapping tokens is deliberate; this section is the cost of that choice,
+written down.
+
+---
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:
