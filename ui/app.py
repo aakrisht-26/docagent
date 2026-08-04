@@ -394,24 +394,12 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         is_youtube = youtube_url is not None
 
         if is_youtube:
-            # Backticks are load-bearing. Streamlit renders alert bodies as
-            # markdown with GFM autolinking, so interpolating a URL bare turned
-            # the rejected link into a live <a href> — an error message whose
-            # most prominent element was an invitation to click the very thing
-            # it was rejecting. Verified against this build: bare interpolation
-            # emits an anchor, backticked emits <code> and no anchor.
-            #
-            # This branch is defence in depth rather than the user-facing path:
-            # _render_upload() gates on extract_youtube_video_id() before a file
-            # entry is ever built, and every URL yielding an id also satisfies
-            # is_valid_youtube_url(), so a real user reaches the friendlier
-            # messages there instead.
-            if not is_valid_youtube_url(youtube_url):
-                st.error(
-                    f"Not a YouTube link: `{youtube_url}`",
-                    icon=":material/link_off:",
-                )
-                return
+            # No URL check here. _render_upload() only builds a youtube_url
+            # entry once extract_youtube_video_id() has returned an id, and
+            # AudioReaderSkill._process_youtube() re-checks the same way at the
+            # layer that actually consumes the URL. A third check in between
+            # was unreachable, weaker than both (domain-only), and covered by
+            # no test.
             file_path = Path(tmp_dir) / name
             file_path.touch()  # Create a placeholder file for path-based processing
         else:
