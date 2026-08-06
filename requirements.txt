@@ -51,11 +51,21 @@ sentence-transformers==5.4.0
 # to take it from there rather than picking the CUDA wheel off PyPI — an
 # --extra-index-url alone would leave the choice ambiguous. That index hosts
 # only torch-family packages, so it cannot shadow anything else here.
-# Version chosen for Python coverage, not novelty: 2.13.0+cpu publishes Linux
-# wheels for cp310 through cp315, so it resolves whichever interpreter
-# Community Cloud selects. Confirmed against the index listing.
+# The version is pinned to MATCH LOCAL (2.7.1), not to the newest available.
+# The 18/18 retrieval eval in tests/e2e/rag_eval/ was measured on 2.7.1, and
+# four of its margins sit between 0.028 and 0.047 — narrow enough that a
+# numerical shift across releases could flip a case with no visible symptom.
+# 2.7.1+cpu publishes Linux wheels for cp39 through cp313, which covers every
+# interpreter Community Cloud offers, so parity costs nothing here.
+#
+# Measured, so the risk is sized rather than assumed: running the same model on
+# GPU and on CPU at this version moves a similarity score by at most 1.6e-07,
+# against a narrowest real margin of 2.8e-02 — about five orders of magnitude
+# of headroom. Device is therefore not the risk; version drift would be, and
+# pinning removes it. Re-run tests/e2e/rag_eval/run_eval.py after any change to
+# this line; it costs nothing and prints the number.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.13.0+cpu ; sys_platform == "linux"
+torch==2.7.1+cpu ; sys_platform == "linux"
 
 # LLM Integration (xAI Grok / OpenAI compatible)
 openai>=1.12.0

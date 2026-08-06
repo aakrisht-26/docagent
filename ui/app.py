@@ -53,12 +53,38 @@ logger.info("Runtime: %s", "hosted (Community Cloud)" if HOSTED else "local")
 
 # Upload ceiling. Hosted runs on a ~1 GB container shared by every visitor, and
 # the memory cost of a document is dominated by OCR rendering pages to bitmaps,
-# so the ceiling is much lower there than on a developer machine. Enforced by
-# validate_file() after transfer — the browser-side limit lives in
-# .streamlit/config.toml, which is one committed file shared by both
-# environments and so cannot differ per deployment.
+# so the ceiling is much lower there than on a developer machine.
 HOSTED_MAX_UPLOAD_MB = 10
 MAX_UPLOAD_MB = HOSTED_MAX_UPLOAD_MB if HOSTED else _cfg.max_file_size_mb
+
+# Pages OCR'd per document when hosted. See the note in _get_agent(): this,
+# not the upload cap, is what actually bounds the memory spike.
+HOSTED_MAX_PDF_PAGES = 25
+
+if HOSTED:
+    # Push the limit to the BROWSER, so an oversized file is refused before it
+    # is transferred rather than after. There are two separate enforcement
+    # points in Streamlit and only one of them is reachable from here:
+    #
+    #   * tornado's max_buffer_size, set once in server.py when the process
+    #     binds, from .streamlit/config.toml. Community Cloud offers no way to
+    #     set environment variables or CLI flags before startup — secrets only
+    #     become env vars once something reads st.secrets, long after the
+    #     server is listening — and config.toml is one committed file serving
+    #     both environments. So that ceiling stays at the local 50 MB.
+    #
+    #   * file_uploader_proto.max_upload_size_mb, read from config on EVERY
+    #     render and sent to the client. Setting the option here therefore does
+    #     reach the browser, which refuses a larger file locally and never
+    #     starts the upload.
+    #
+    # Net effect: 10 MB is enforced client-side for any normal browser, 50 MB
+    # remains the hard tornado ceiling for a handcrafted request, and
+    # validate_file() still rejects anything that gets past both. Layered
+    # rather than airtight, and the layer that actually bounds the memory
+    # spike for real traffic is the browser one.
+    from streamlit import config as _st_config
+    _st_config.set_option("server.maxUploadSize", HOSTED_MAX_UPLOAD_MB)
 
 
 def _get_store() -> DocumentStore:
@@ -276,6 +302,22 @@ def _get_agent(summary_length: str = "Standard", summary_tone: str = "Profession
     agent_cfg = cfg.to_dict()
     agent_cfg["summarization"]["summary_length"] = summary_length
     agent_cfg["summarization"]["summary_tone"]   = summary_tone
+
+    if HOSTED:
+        # Page count, not file size, is what drives peak memory here. Measured
+        # on a scanned PDF with the OCR path active: a 50 MB / 40-page file
+        # peaks at 446 MB and a 10 MB / 40-page file at 447 MB — the byte size
+        # is almost irrelevant, because the cost is rendering each page to a
+        # bitmap for Tesseract. Roughly 315 MB of fixed OCR overhead plus about
+        # 2.4 MB per page.
+        #
+        # So the upload cap alone does not bound the spike it was lowered for;
+        # a 10 MB PDF can still carry hundreds of pages. This does bound it.
+        # 25 pages lands the worst case near 885 MB alongside the resident
+        # embedding stack, against a ~1 GB ceiling, and is still a substantial
+        # document for a demo. Text PDFs never reach the OCR path and cost far
+        # less. Local keeps the configured default of 500.
+        agent_cfg.setdefault("pdf", {})["max_pages"] = HOSTED_MAX_PDF_PAGES
 
     return DocumentAgent(config=agent_cfg)
 
