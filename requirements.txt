@@ -62,6 +62,15 @@ rich>=13.7.0
 # which made `pip install -r requirements.txt` fail outright on a fresh clone.
 yt-dlp>=2024.01.01
 
+# The second half of AudioReaderSkill._find_ffmpeg(): if no ffmpeg is on PATH,
+# it falls back to the binary bundled in this wheel. That fallback was dead on
+# any machine that had not installed this by hand — it was present in the
+# development environment but never declared, so a fresh clone got the PATH
+# branch or nothing. Declaring it means YouTube works after
+# `pip install -r requirements.txt` alone, with no system install and no admin
+# rights. Small (~20 MB) and pure-binary, so it costs little to carry.
+imageio-ffmpeg>=0.4.9
+
 # Testing
 pytest>=7.4.0
 pytest-mock>=3.11.0
