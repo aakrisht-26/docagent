@@ -28,18 +28,78 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from utils.config import load_config
+from utils.config import (
+    load_config, is_hosted, load_streamlit_secrets_into_env,
+)
 from utils.logger import setup_logging, get_logger
 from utils.file_handler import save_upload, cleanup_temp_dir, make_temp_dir, validate_file, is_valid_youtube_url
 from utils.document_store import DocumentStore
+
+# MUST run before load_config(). On Community Cloud the Groq keys arrive as
+# Streamlit secrets, and secrets only reach os.environ once something reads
+# st.secrets — which nothing did, so key resolution returned [] and every LLM
+# stage silently degraded. No-op locally, where .env has already loaded.
+_secrets_loaded = load_streamlit_secrets_into_env()
 
 # Load config & initialise logging once
 _cfg = load_config()
 setup_logging(level=_cfg.log_level, log_file=_cfg.log_file)
 logger = get_logger("ui.app")
 
-# Singleton document store (persists to ~/.docagent/history.db)
-_store = DocumentStore()
+HOSTED = is_hosted()
+if _secrets_loaded:
+    logger.info("Loaded %d value(s) from Streamlit secrets.", _secrets_loaded)
+logger.info("Runtime: %s", "hosted (Community Cloud)" if HOSTED else "local")
+
+# Upload ceiling. Hosted runs on a ~1 GB container shared by every visitor, and
+# the memory cost of a document is dominated by OCR rendering pages to bitmaps,
+# so the ceiling is much lower there than on a developer machine. Enforced by
+# validate_file() after transfer — the browser-side limit lives in
+# .streamlit/config.toml, which is one committed file shared by both
+# environments and so cannot differ per deployment.
+HOSTED_MAX_UPLOAD_MB = 10
+MAX_UPLOAD_MB = HOSTED_MAX_UPLOAD_MB if HOSTED else _cfg.max_file_size_mb
+
+
+def _get_store() -> DocumentStore:
+    """The history store for THIS visitor.
+
+    Community Cloud runs one container for everyone. A single shared
+    ~/.docagent/history.db therefore is not merely ephemeral — it is common to
+    all visitors, so one stranger's uploaded document would appear in another
+    stranger's sidebar, along with its extracted text and the ability to chat
+    over it. That is a live privacy leak for as long as the container runs.
+
+    Hosted therefore gets one SQLite file per browser session, under the
+    container's temp dir, keyed by a random id held in session_state. Sessions
+    cannot see each other, the feature still works within a visit, and it all
+    disappears with the container. Scoped rather than disabled because the
+    sidebar is part of what the demo is showing, and an always-empty one would
+    misrepresent the app.
+
+    Local behaviour is untouched: the shared, persistent ~/.docagent/history.db.
+    """
+    if not HOSTED:
+        return _local_store
+
+    store = st.session_state.get("_doc_store")
+    if store is None:
+        import tempfile
+        import uuid
+        session_id = st.session_state.get("_session_id")
+        if session_id is None:
+            session_id = uuid.uuid4().hex
+            st.session_state["_session_id"] = session_id
+        db_dir = Path(tempfile.gettempdir()) / "docagent-sessions" / session_id
+        store = DocumentStore(db_path=db_dir / "history.db")
+        st.session_state["_doc_store"] = store
+        logger.info("Created per-session history store for %s", session_id[:8])
+    return store
+
+
+# Local shared store. Built eagerly only when NOT hosted, so a hosted container
+# never creates the shared database file at all.
+_local_store = None if HOSTED else DocumentStore()
 
 
 # ── CSS injection ──────────────────────────────────────────────────────────────
@@ -153,13 +213,17 @@ def _render_sidebar() -> None:
         cfg_issues = _cfg.validate()
         try:
             st_limit = int(st.get_option("server.maxUploadSize"))
-            if st_limit != _cfg.max_file_size_mb:
+            # Hosted deliberately runs a lower ceiling than config.toml
+            # advertises, because config.toml is one committed file serving both
+            # environments. That divergence is intended, so it is not a
+            # misconfiguration to warn about — only a local mismatch is.
+            if not HOSTED and st_limit != MAX_UPLOAD_MB:
                 cfg_issues = cfg_issues + [
                     f"Upload limit mismatch: Streamlit accepts {st_limit} MB "
                     f"(server.maxUploadSize) but files over "
-                    f"{_cfg.max_file_size_mb} MB are rejected after upload "
+                    f"{MAX_UPLOAD_MB} MB are rejected after upload "
                     f"(app.max_file_size_mb). Set maxUploadSize in "
-                    f".streamlit/config.toml to {_cfg.max_file_size_mb}."
+                    f".streamlit/config.toml to {MAX_UPLOAD_MB}."
                 ]
         except Exception as exc:  # option unavailable in this Streamlit build
             logger.warning("Could not read server.maxUploadSize: %s", exc)
@@ -178,7 +242,7 @@ def _render_sidebar() -> None:
         # ── Recent documents ───────────────────────────────────────────
         st.markdown("**Recent Documents**")
         try:
-            recent = _store.list_recent(limit=10)
+            recent = _get_store().list_recent(limit=10)
             if not recent:
                 st.caption("No documents processed yet.")
             else:
@@ -187,14 +251,14 @@ def _render_sidebar() -> None:
                     subtext = f"{entry.domain} · {entry.word_count:,} words"
                     if st.button(label, key=f"hist_{entry.entry_id}",
                                  help=subtext, use_container_width=True):
-                        cached = _store.load(entry.entry_id)
+                        cached = _get_store().load(entry.entry_id)
                         if cached:
                             st.session_state["loaded_from_history"] = cached
                             st.rerun()
                 if recent:
                     if st.button("🗑 Clear history", use_container_width=True,
                                  key="clear_history"):
-                        _store.clear_all()
+                        _get_store().clear_all()
                         st.rerun()
         except Exception as exc:
             st.caption(f"History unavailable: {exc}")
@@ -254,7 +318,7 @@ def _render_upload() -> tuple[list, dict]:
                 label_visibility="visible",
                 help=(
                     "PDF, Excel (.xlsx / .xls), CSV, or Audio "
-                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {_cfg.max_file_size_mb} MB per file"
+                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {MAX_UPLOAD_MB} MB per file"
                 ),
             )
         else:
@@ -406,7 +470,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # Regular file upload
             file_bytes = file_data.get("bytes", b"")
             file_path = save_upload(file_bytes, name, tmp_dir)
-            err = validate_file(file_path, max_size_mb=_cfg.max_file_size_mb)
+            err = validate_file(file_path, max_size_mb=MAX_UPLOAD_MB)
             if err:
                 # Icon-led and typeless, like the URL rejections above — that
                 # is the whole visual distinction from the crash handler at the
@@ -525,7 +589,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 try:
                     raw_bytes = file_data.get("bytes")
                     with st.spinner(indexing_message):
-                        _store.save(result, raw_bytes=raw_bytes)
+                        _get_store().save(result, raw_bytes=raw_bytes)
                 except Exception as store_exc:
                     logger.warning(f"Could not save result to history: {store_exc}")
 

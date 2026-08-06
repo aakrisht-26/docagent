@@ -33,6 +33,30 @@ ftfy>=6.1.3
 # this is missing, so the rest of the pipeline does not depend on it.
 sentence-transformers==5.4.0
 
+# torch, CPU-only, on Linux ONLY.
+#
+# The default PyPI torch wheel for Linux is a CUDA build: 527 MB itself, plus
+# nvidia-cudnn/nccl/cusparselt/nvshmem and triton as hard dependencies under a
+# `platform_system == "Linux"` marker — about 1.5 GB downloaded and roughly
+# 3 GB unpacked, none of it usable on a CPU-only host. Those packages do not
+# exist on Windows or macOS, which is why a local install never sees them and
+# why this only became visible when targeting a Linux deployment.
+#
+# The marker below is what keeps local development untouched: on Windows and
+# macOS the line is skipped entirely and torch continues to arrive as a plain
+# transitive dependency of sentence-transformers, exactly as before. Verified
+# with `pip install --dry-run -r requirements.txt` on Windows: no change.
+#
+# The `+cpu` local version only exists on the PyTorch index, so pip is forced
+# to take it from there rather than picking the CUDA wheel off PyPI — an
+# --extra-index-url alone would leave the choice ambiguous. That index hosts
+# only torch-family packages, so it cannot shadow anything else here.
+# Version chosen for Python coverage, not novelty: 2.13.0+cpu publishes Linux
+# wheels for cp310 through cp315, so it resolves whichever interpreter
+# Community Cloud selects. Confirmed against the index listing.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu ; sys_platform == "linux"
+
 # LLM Integration (xAI Grok / OpenAI compatible)
 openai>=1.12.0
 
