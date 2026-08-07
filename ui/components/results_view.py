@@ -1285,6 +1285,17 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
         content = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", reply)
         _html(f'<div class="chat-bubble-bot">{content}</div>')
 
+        # Chat is the cheap operation per call but the easy one to repeat, so
+        # it is counted too — a visitor asking a hundred questions of one
+        # document never triggers an analyse and would otherwise be invisible.
+        # Imported here rather than at module scope: ui.app imports this module,
+        # so a top-level import would be circular.
+        try:
+            from ui.app import log_usage
+            log_usage("chat")
+        except Exception:  # never let telemetry break the answer
+            pass
+
     if history:
         if st.button("Clear chat", key=f"clear_chat_{fname}"):
             st.session_state[history_key] = []

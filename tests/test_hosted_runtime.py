@@ -117,5 +117,74 @@ class TestUploadCeiling(unittest.TestCase):
                         "hosted upload ceiling must be below the local one")
 
 
+
+class TestUsageAccounting(unittest.TestCase):
+    """The process-lifetime accumulator must survive per-run resets.
+
+    reset_usage() is called at the start of every pipeline run, so the existing
+    counter only ever describes the last document. Watching a shared API key
+    against a daily limit needs the figure that does not reset, and the two are
+    fed from the same call sites so they cannot drift apart.
+    """
+
+    def setUp(self):
+        import utils.llm_client as lc
+        self.lc = lc
+        self._saved_run = lc._USAGE
+        self._saved_total = lc._USAGE_TOTAL
+        lc._USAGE = lc.UsageTotals()
+        lc._USAGE_TOTAL = lc.UsageTotals()
+
+    def tearDown(self):
+        self.lc._USAGE = self._saved_run
+        self.lc._USAGE_TOTAL = self._saved_total
+
+    def _run(self, prompt, completion):
+        self.lc.reset_usage()
+        self.lc._USAGE.record_chat("m", prompt, completion)
+        self.lc._USAGE_TOTAL.record_chat("m", prompt, completion)
+
+    def test_per_run_counter_reflects_only_the_latest_run(self):
+        self._run(1000, 100)
+        self._run(2000, 200)
+        self.assertEqual(self.lc.get_usage().total_tokens, 2200)
+
+    def test_process_counter_accumulates_across_runs(self):
+        self._run(1000, 100)
+        self._run(2000, 200)
+        self._run(3000, 300)
+        self.assertEqual(self.lc.get_process_usage().total_tokens, 6600)
+        self.assertEqual(self.lc.get_process_usage().calls, 3)
+
+    def test_reset_usage_does_not_touch_the_process_counter(self):
+        self._run(500, 50)
+        before = self.lc.get_process_usage().total_tokens
+        self.lc.reset_usage()
+        self.assertEqual(self.lc.get_process_usage().total_tokens, before)
+        self.assertEqual(self.lc.get_usage().total_tokens, 0)
+
+    def test_uptime_is_positive(self):
+        self.assertGreater(self.lc.process_uptime_seconds(), 0)
+
+    def test_every_usage_site_feeds_both_counters(self):
+        """Guards the invariant directly: no _USAGE mutation without a twin.
+
+        If someone adds a fourth call site and updates only the per-run
+        counter, the process total silently under-reports and the deployment
+        stops being able to see how hard it is being hit.
+        """
+        import re
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "utils" / "llm_client.py").read_text(encoding="utf-8")
+        body = src.split("def reset_usage", 1)[1]  # skip the declarations above
+        run_sites = len(re.findall(r"(?<!_TOTAL)\b_USAGE\.(?:record_chat|cache_hits|transcriptions)", body))
+        total_sites = len(re.findall(r"\b_USAGE_TOTAL\.(?:record_chat|cache_hits|transcriptions)", body))
+        self.assertEqual(
+            run_sites, total_sites,
+            f"_USAGE mutated at {run_sites} site(s) but _USAGE_TOTAL at "
+            f"{total_sites}; every usage site must feed both counters",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

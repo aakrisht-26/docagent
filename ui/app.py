@@ -61,6 +61,75 @@ MAX_UPLOAD_MB = HOSTED_MAX_UPLOAD_MB if HOSTED else _cfg.max_file_size_mb
 # not the upload cap, is what actually bounds the memory spike.
 HOSTED_MAX_PDF_PAGES = 25
 
+
+def _session_tag() -> str:
+    """Short stable id for this browser session, for correlating log lines."""
+    import uuid
+    tag = st.session_state.get("_session_id")
+    if tag is None:
+        tag = uuid.uuid4().hex
+        st.session_state["_session_id"] = tag
+    return tag[:8]
+
+
+def log_usage(event: str) -> None:
+    """Emit one greppable usage line to stdout, which is what Cloud logs show.
+
+    Written for reading in the Community Cloud log viewer, which is an
+    undifferentiated text stream: one line, fixed `USAGE |` prefix so it can be
+    filtered, and no multi-line blocks that interleave badly under concurrency.
+
+    Two scopes, because they answer different questions:
+
+      session  how much this one visitor has consumed. Attributed by diffing
+               the process totals around the operation, so a run that overlaps
+               another session's run can cross-attribute. Good enough to spot
+               one visitor hammering it; not billing-grade.
+
+      process  totals since the container started. Exact, because every LLM
+               call feeds the same accumulator. This is the figure to watch
+               against a daily key limit, and the rate per hour is the part
+               that tells you whether a limit is coming.
+
+    Nothing here gates or blocks — it only reports.
+    """
+    from utils.llm_client import get_process_usage, process_uptime_seconds
+    from utils.logger import get_usage_logger
+
+    total = get_process_usage()
+    seen_calls = st.session_state.get("_usage_seen_calls", 0)
+    seen_tokens = st.session_state.get("_usage_seen_tokens", 0)
+
+    sess_calls = st.session_state.get("_usage_session_calls", 0) + (total.calls - seen_calls)
+    sess_tokens = st.session_state.get("_usage_session_tokens", 0) + (total.total_tokens - seen_tokens)
+    sess_events = st.session_state.get("_usage_session_events", 0) + 1
+
+    st.session_state["_usage_seen_calls"] = total.calls
+    st.session_state["_usage_seen_tokens"] = total.total_tokens
+    st.session_state["_usage_session_calls"] = sess_calls
+    st.session_state["_usage_session_tokens"] = sess_tokens
+    st.session_state["_usage_session_events"] = sess_events
+
+    uptime_s = process_uptime_seconds()
+    hours = uptime_s / 3600.0
+    # A rate extrapolated from the first few minutes is noise wearing the
+    # costume of a trend — one document in the first 30 seconds reads as
+    # three-quarters of a million tokens an hour. Withheld until the window is
+    # long enough for the number to mean something.
+    rate = f"{int(total.total_tokens / hours):,} tok/h" if uptime_s >= 600 else "rate n/a (<10m uptime)"
+
+    get_usage_logger().info(
+        "USAGE | session=%s | event=%s | "
+        "session: %d op(s), %d call(s), %s tok | "
+        "process: %d call(s), %d transcription(s), %s tok, %s cache hit(s) "
+        "in %.2fh | %s",
+        _session_tag(), event,
+        sess_events, sess_calls, f"{sess_tokens:,}",
+        total.calls, total.transcriptions, f"{total.total_tokens:,}", total.cache_hits,
+        hours, rate,
+    )
+
+
 if HOSTED:
     # Push the limit to the BROWSER, so an oversized file is refused before it
     # is transferred rather than after. There are two separate enforcement
@@ -601,6 +670,10 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:
             detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+
+        # Logged for every run, hosted or not. An analyse is by far the most
+        # expensive operation the app performs, so it is the one worth counting.
+        log_usage("analyze:youtube" if is_youtube else "analyze:file")
 
         # The panel is finalised further down, after indexing — the document is
         # not actually ready until its chunks are embedded, so calling the run
