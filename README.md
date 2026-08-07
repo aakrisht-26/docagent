@@ -150,6 +150,21 @@ streamlit run ui/app.py
 
 Open `http://localhost:8501` in your browser.
 
+### Deploying it publicly
+
+**[DEPLOYMENT.md](DEPLOYMENT.md)** covers Streamlit Community Cloud end to end:
+the setup steps, what goes in secrets, what `packages.txt` is for, why
+`requirements.txt` pins a CPU-only torch on Linux only, the measured memory
+limits and what happens when they are hit, and how to redeploy after a push.
+
+Hosted runs differ from local in three ways, all behind `is_hosted()`: history
+is scoped per browser session rather than shared, uploads are capped at 10 MB,
+and OCR is capped at 25 pages. Local development is unchanged.
+
+The deployment is open to anyone, which has consequences worth reading once —
+[docs/OPEN-DEPLOYMENT-RISKS.md](docs/OPEN-DEPLOYMENT-RISKS.md) sizes them
+against this app's own measurements.
+
 ### Document chat retrieval
 
 The Chat tab answers questions over one document. Which chunks reach the model is

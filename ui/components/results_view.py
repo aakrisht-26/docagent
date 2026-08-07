@@ -1217,7 +1217,26 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
         return
 
     st.markdown("### Ask questions about this document")
-    st.caption("Conversation is kept in memory while the page is open.")
+
+    # Name the retrieval method. It was logged but never shown, so a
+    # deployment without sentence-transformers answered from keyword overlap
+    # -- measured 13/18 on the eval set against 18/18 for embeddings -- and
+    # looked identical to one that had them. Silent degradation of answer
+    # quality is worse than a slower answer, so say which is running.
+    from utils import embeddings as _emb
+    if _emb.is_supported():
+        st.caption(
+            "Conversation is kept in memory while the page is open. "
+            f"Retrieval: semantic similarity (`{_emb.model_name()}`)."
+        )
+    else:
+        st.caption(
+            "Conversation is kept in memory while the page is open. "
+            "Retrieval: **keyword overlap** — the embedding model is not "
+            "installed here, so answers are drawn from word-overlap matches "
+            "rather than meaning. Scores 13/18 on the retrieval eval against "
+            "18/18 for embeddings."
+        )
 
     # Render chat history
     history = st.session_state[history_key]
@@ -1265,6 +1284,17 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
         history.append({"role": "assistant", "content": reply})
         content = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", reply)
         _html(f'<div class="chat-bubble-bot">{content}</div>')
+
+        # Chat is the cheap operation per call but the easy one to repeat, so
+        # it is counted too — a visitor asking a hundred questions of one
+        # document never triggers an analyse and would otherwise be invisible.
+        # Imported here rather than at module scope: ui.app imports this module,
+        # so a top-level import would be circular.
+        try:
+            from ui.app import log_usage
+            log_usage("chat")
+        except Exception:  # never let telemetry break the answer
+            pass
 
     if history:
         if st.button("Clear chat", key=f"clear_chat_{fname}"):

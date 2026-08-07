@@ -57,9 +57,21 @@ class UsageTotals:
 
 _USAGE = UsageTotals()
 
+# A second accumulator that is NEVER reset, so it measures the whole process
+# rather than the last pipeline run. On a public deployment the per-run figure
+# answers "what did that document cost"; this one answers "how hard is this
+# being hit", which is the question that matters when a shared API key is
+# approaching a daily limit. Both are fed from the same three call sites, so
+# they cannot drift apart.
+_USAGE_TOTAL = UsageTotals()
+_PROCESS_START = time.time()
+
 
 def reset_usage() -> None:
-    """Zero the per-run usage counters. Called at the start of a pipeline run."""
+    """Zero the per-run usage counters. Called at the start of a pipeline run.
+
+    Deliberately does NOT touch the process-lifetime totals.
+    """
     global _USAGE
     _USAGE = UsageTotals()
 
@@ -67,6 +79,16 @@ def reset_usage() -> None:
 def get_usage() -> UsageTotals:
     """Return the usage accumulated since the last `reset_usage()`."""
     return _USAGE
+
+
+def get_process_usage() -> UsageTotals:
+    """Return usage accumulated since the process started. Never reset."""
+    return _USAGE_TOTAL
+
+
+def process_uptime_seconds() -> float:
+    """Seconds since this process started, for rate-per-hour reporting."""
+    return time.time() - _PROCESS_START
 
 
 def estimate_cost_usd(usage: UsageTotals, pricing: Optional[Dict[str, Any]] = None) -> float:
@@ -787,6 +809,7 @@ class LLMClient:
             cached = self._cache.get(self.model, messages, temp, max_tokens)
             if cached is not None:
                 _USAGE.cache_hits += 1
+                _USAGE_TOTAL.cache_hits += 1
                 logger.debug("LLM cache hit — skipping API call")
                 return cached
 
@@ -809,6 +832,7 @@ class LLMClient:
             prompt_toks = int(getattr(usage, "prompt_tokens", 0) or 0)
             completion_toks = int(getattr(usage, "completion_tokens", 0) or 0)
             _USAGE.record_chat(self.model, prompt_toks, completion_toks)
+            _USAGE_TOTAL.record_chat(self.model, prompt_toks, completion_toks)
             logger.debug(
                 f"tokens: prompt={prompt_toks} completion={completion_toks} "
                 f"model={self.model}"
@@ -854,6 +878,7 @@ class LLMClient:
                     response_format=response_format,
                 )
             _USAGE.transcriptions += 1
+            _USAGE_TOTAL.transcriptions += 1
             text = response if isinstance(response, str) else getattr(response, "text", None)
             return text.strip() if isinstance(text, str) else None
 
