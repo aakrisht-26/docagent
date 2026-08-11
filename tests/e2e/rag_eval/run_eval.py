@@ -145,6 +145,34 @@ def classify_hit(case: dict, selected_sources: list, scores: dict,
     return "ranked"
 
 
+def answer_rank(case: dict, scores: dict) -> int:
+    """1-based rank of the best expected source, by score. 0 if it has none.
+
+    Why a second metric exists. The hit/miss headline is saturated: the
+    selector takes the top 3 plus first/last anchors, so on an 8-page document
+    it returns 4-5 of 8 pages and almost any question "hits". That measures the
+    selection budget, not the ranking. Rank is the part that actually moves
+    when chunking changes — and on the dense fixture it already varies while
+    hit/miss does not, so it discriminates without anyone inventing questions
+    designed to fail.
+
+    Reported alongside hit/miss rather than replacing it: hit/miss is what the
+    user experiences (was the answer in the context?), rank is what retrieval
+    quality actually is.
+    """
+    if not scores:
+        return 0
+    ordered = sorted(scores.items(), key=lambda kv: -kv[1])
+    positions = {src: i + 1 for i, (src, _) in enumerate(ordered)}
+    ranks = [positions.get(e, 0) for e in case["expected_sources"]]
+    ranks = [r for r in ranks if r > 0]
+    if not ranks:
+        return 0
+    # For a cross-boundary case every expected chunk is needed, so the honest
+    # figure is the worst of them; for the rest it is the best.
+    return max(ranks) if case.get("match") == "all" else min(ranks)
+
+
 def answer_hit(case: dict, reply: str) -> bool:
     """True if any expected fragment appears in the reply (case-insensitive)."""
     lowered = (reply or "").lower()
@@ -191,6 +219,7 @@ def main(argv: list) -> int:
             "n_chunks": len(chunks),
             "retrieval_hit": retrieval_hit(case, sources),
             "hit_kind": classify_hit(case, sources, scores, anchors),
+            "rank": answer_rank(case, scores),
             "method": method,
             "answer_hit": None,
         }
@@ -259,6 +288,11 @@ def main(argv: list) -> int:
         by_cat[r["category"]].append(r)
     for category in sorted(by_cat):
         summarise(category, by_cat[category])
+        rc = [r for r in by_cat[category] if r["rank"] > 0]
+        if rc:
+            t1 = sum(1 for r in rc if r["rank"] == 1)
+            mr = sum(r["rank"] for r in rc) / len(rc)
+            print(f"  {'':<34} rank#1 {t1}/{len(rc)}   mean rank {mr:.2f}")
 
     incidental = [r for r in meaningful if r["hit_kind"] == "incidental"]
     if incidental:
@@ -277,6 +311,15 @@ def main(argv: list) -> int:
     print(f"  retrieval method(s) used: {', '.join(methods)}")
     summarise("HEADLINE (meaningful fixtures)", meaningful)
     summarise("trivial fixtures (no signal)", [r for r in results if r["fixture"] in TRIVIAL])
+    # Rank-based figures. These are the ones that can still move once hit/miss
+    # saturates: on the dense fixture every case "hits" because the selector
+    # returns 4-5 of 8 pages, while the answering page's RANK varies from 1 to 3.
+    ranked_cases = [r for r in meaningful if r["rank"] > 0]
+    top1 = sum(1 for r in ranked_cases if r["rank"] == 1)
+    mean_rank = sum(r["rank"] for r in ranked_cases) / len(ranked_cases) if ranked_cases else 0.0
+    print(f"  {'answering chunk ranked #1':<34} "
+          f"{top1}/{len(ranked_cases)}   (mean rank {mean_rank:.2f})")
+
     anchor_slots = sum(len(r["anchors_in_selection"]) for r in meaningful)
     chosen_slots = sum(r["chosen_slots"] for r in meaningful)
     print(f"  {'slot accounting (meaningful)':<34} "
