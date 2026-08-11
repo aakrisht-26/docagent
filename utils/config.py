@@ -24,6 +24,68 @@ logger = logging.getLogger(__name__)
 # Load .env file if it exists
 load_dotenv()
 
+
+def load_streamlit_secrets_into_env() -> int:
+    """Copy Streamlit secrets into os.environ. Returns how many were copied.
+
+    On Streamlit Community Cloud there is no .env — configuration arrives as
+    `st.secrets`. Streamlit *does* mirror top-level scalar secrets into
+    os.environ, but only inside the lazy `_parse()` that runs on first access,
+    and nothing in this app reads st.secrets. Measured: importing streamlit
+    alone leaves GROQ_API_KEY absent from os.environ; touching st.secrets puts
+    it there. So without this call, resolve_groq_api_keys() returns [] on the
+    hosted deployment and every LLM stage silently degrades to extractive mode.
+
+    Deliberately tolerant. It is a no-op when streamlit is not installed, when
+    there is no secrets file (the normal local case, where .env has already
+    populated the environment), and when called outside a Streamlit runtime.
+    Existing environment variables win, so a local .env is never overridden by
+    a stray secrets file.
+    """
+    try:
+        import streamlit as st
+    except Exception:
+        return 0
+
+    try:
+        # .to_dict() forces the parse that performs the os.environ mirroring.
+        # Guarded because it raises when no secrets file exists at all.
+        secrets = st.secrets.to_dict()
+    except Exception:
+        return 0
+
+    copied = 0
+    for key, value in secrets.items():
+        if isinstance(value, (str, int, float)) and key not in os.environ:
+            os.environ[key] = str(value)
+            copied += 1
+    return copied
+
+
+def is_hosted() -> bool:
+    """True when running on Streamlit Community Cloud (or told it is).
+
+    Two signals, because each has a failure mode:
+
+    1. `DOCAGENT_HOSTED` — explicit, set as a Streamlit secret. Authoritative,
+       but only if whoever deploys remembers to set it.
+    2. The app living under `/mount/src`, which is where Community Cloud checks
+       a repo out. Undocumented and could change, exactly like the Streamlit
+       test IDs in DEPENDENCIES.md section 5 -- so it is a backstop, not the
+       primary signal.
+
+    Either one is enough. This gates privacy behaviour (per-visitor history),
+    so it fails toward the safer answer: a false positive costs a local user
+    persistent history for one session, while a false negative would show one
+    stranger's documents to another.
+    """
+    flag = os.environ.get("DOCAGENT_HOSTED", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    return str(Path(__file__).resolve()).replace("\\", "/").startswith("/mount/src")
+
 # Substrings that mark a value as an unedited placeholder rather than a real
 # key. Matched case-insensitively. These cover the shipped defaults in
 # configs/default.yaml ("PASTE_YOUR_GROQ_API_KEY_HERE",

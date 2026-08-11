@@ -1,0 +1,20 @@
+# apt packages for Streamlit Community Cloud.
+#
+# Community Cloud reads this file at build time and runs `apt-get install` on
+# every non-comment line, before installing requirements.txt. It has no effect
+# on local development — see DEPLOYMENT.md.
+#
+# Both entries below are SYSTEM BINARIES that no pip package can supply.
+
+# Converts the stream yt-dlp downloads into MP3 before transcription. Without
+# it, AudioReaderSkill._find_ffmpeg() falls through to the imageio-ffmpeg
+# wheel; with it, the faster PATH branch is used instead. Installs ffprobe
+# alongside ffmpeg, which yt-dlp also needs.
+ffmpeg
+
+# The OCR engine behind pytesseract, used by the PDF reader's third-tier
+# fallback for scanned pages with no text layer. Without it, a scanned PDF
+# yields no text at all. On Linux, PDFReaderSkill leaves tesseract_cmd unset
+# and pytesseract finds this on PATH; the hardcoded Windows path in that skill
+# is inside a platform guard and never runs here.
+tesseract-ocr

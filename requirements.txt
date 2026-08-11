@@ -33,6 +33,40 @@ ftfy>=6.1.3
 # this is missing, so the rest of the pipeline does not depend on it.
 sentence-transformers==5.4.0
 
+# torch, CPU-only, on Linux ONLY.
+#
+# The default PyPI torch wheel for Linux is a CUDA build: 527 MB itself, plus
+# nvidia-cudnn/nccl/cusparselt/nvshmem and triton as hard dependencies under a
+# `platform_system == "Linux"` marker — about 1.5 GB downloaded and roughly
+# 3 GB unpacked, none of it usable on a CPU-only host. Those packages do not
+# exist on Windows or macOS, which is why a local install never sees them and
+# why this only became visible when targeting a Linux deployment.
+#
+# The marker below is what keeps local development untouched: on Windows and
+# macOS the line is skipped entirely and torch continues to arrive as a plain
+# transitive dependency of sentence-transformers, exactly as before. Verified
+# with `pip install --dry-run -r requirements.txt` on Windows: no change.
+#
+# The `+cpu` local version only exists on the PyTorch index, so pip is forced
+# to take it from there rather than picking the CUDA wheel off PyPI — an
+# --extra-index-url alone would leave the choice ambiguous. That index hosts
+# only torch-family packages, so it cannot shadow anything else here.
+# The version is pinned to MATCH LOCAL (2.7.1), not to the newest available.
+# The 18/18 retrieval eval in tests/e2e/rag_eval/ was measured on 2.7.1, and
+# four of its margins sit between 0.028 and 0.047 — narrow enough that a
+# numerical shift across releases could flip a case with no visible symptom.
+# 2.7.1+cpu publishes Linux wheels for cp39 through cp313, which covers every
+# interpreter Community Cloud offers, so parity costs nothing here.
+#
+# Measured, so the risk is sized rather than assumed: running the same model on
+# GPU and on CPU at this version moves a similarity score by at most 1.6e-07,
+# against a narrowest real margin of 2.8e-02 — about five orders of magnitude
+# of headroom. Device is therefore not the risk; version drift would be, and
+# pinning removes it. Re-run tests/e2e/rag_eval/run_eval.py after any change to
+# this line; it costs nothing and prints the number.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.7.1+cpu ; sys_platform == "linux"
+
 # LLM Integration (xAI Grok / OpenAI compatible)
 openai>=1.12.0
 
@@ -61,6 +95,15 @@ rich>=13.7.0
 # pin `ffmpeg-python>=0.2.1` was unsatisfiable (0.2.0 is the newest release),
 # which made `pip install -r requirements.txt` fail outright on a fresh clone.
 yt-dlp>=2024.01.01
+
+# The second half of AudioReaderSkill._find_ffmpeg(): if no ffmpeg is on PATH,
+# it falls back to the binary bundled in this wheel. That fallback was dead on
+# any machine that had not installed this by hand — it was present in the
+# development environment but never declared, so a fresh clone got the PATH
+# branch or nothing. Declaring it means YouTube works after
+# `pip install -r requirements.txt` alone, with no system install and no admin
+# rights. Small (~20 MB) and pure-binary, so it costs little to carry.
+imageio-ffmpeg>=0.4.9
 
 # Testing
 pytest>=7.4.0

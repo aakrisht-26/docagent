@@ -117,3 +117,33 @@ def get_logger(name: str) -> logging.Logger:
     if name.startswith("docagent"):
         return logging.getLogger(name)
     return logging.getLogger(f"docagent.{name}")
+
+
+_USAGE_LOGGER_NAME = "docagent-usage"
+
+
+def get_usage_logger() -> logging.Logger:
+    """A logger whose records are never wrapped, for machine-readable lines.
+
+    The console handler is `rich`, which wraps to the terminal width. That is
+    right for prose but wrong for a single-line record meant to be grepped:
+    measured on a real hosted run, one usage line came out as four physical
+    lines, so `grep "USAGE |"` returned the prefix and left the token counts on
+    continuation lines. Under concurrent visitors those fragments would also
+    interleave with other output and become unattributable.
+
+    This logger therefore writes straight to stdout through a plain handler and
+    does not propagate, so the record survives as exactly one line. Community
+    Cloud shows the container's stdout, so that is what lands in the log
+    viewer. Deliberately separate from the "docagent" tree rather than a child
+    of it: a child would inherit the rich handler and wrap again.
+    """
+    logger = logging.getLogger(_USAGE_LOGGER_NAME)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s",
+                                               datefmt="%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    return logger

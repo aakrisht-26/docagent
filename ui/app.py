@@ -28,18 +28,173 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from utils.config import load_config
+from utils.config import (
+    load_config, is_hosted, load_streamlit_secrets_into_env,
+)
 from utils.logger import setup_logging, get_logger
 from utils.file_handler import save_upload, cleanup_temp_dir, make_temp_dir, validate_file, is_valid_youtube_url
 from utils.document_store import DocumentStore
+
+# MUST run before load_config(). On Community Cloud the Groq keys arrive as
+# Streamlit secrets, and secrets only reach os.environ once something reads
+# st.secrets — which nothing did, so key resolution returned [] and every LLM
+# stage silently degraded. No-op locally, where .env has already loaded.
+_secrets_loaded = load_streamlit_secrets_into_env()
 
 # Load config & initialise logging once
 _cfg = load_config()
 setup_logging(level=_cfg.log_level, log_file=_cfg.log_file)
 logger = get_logger("ui.app")
 
-# Singleton document store (persists to ~/.docagent/history.db)
-_store = DocumentStore()
+HOSTED = is_hosted()
+if _secrets_loaded:
+    logger.info("Loaded %d value(s) from Streamlit secrets.", _secrets_loaded)
+logger.info("Runtime: %s", "hosted (Community Cloud)" if HOSTED else "local")
+
+# Upload ceiling. Hosted runs on a ~1 GB container shared by every visitor, and
+# the memory cost of a document is dominated by OCR rendering pages to bitmaps,
+# so the ceiling is much lower there than on a developer machine.
+HOSTED_MAX_UPLOAD_MB = 10
+MAX_UPLOAD_MB = HOSTED_MAX_UPLOAD_MB if HOSTED else _cfg.max_file_size_mb
+
+# Pages OCR'd per document when hosted. See the note in _get_agent(): this,
+# not the upload cap, is what actually bounds the memory spike.
+HOSTED_MAX_PDF_PAGES = 25
+
+
+def _session_tag() -> str:
+    """Short stable id for this browser session, for correlating log lines."""
+    import uuid
+    tag = st.session_state.get("_session_id")
+    if tag is None:
+        tag = uuid.uuid4().hex
+        st.session_state["_session_id"] = tag
+    return tag[:8]
+
+
+def log_usage(event: str) -> None:
+    """Emit one greppable usage line to stdout, which is what Cloud logs show.
+
+    Written for reading in the Community Cloud log viewer, which is an
+    undifferentiated text stream: one line, fixed `USAGE |` prefix so it can be
+    filtered, and no multi-line blocks that interleave badly under concurrency.
+
+    Two scopes, because they answer different questions:
+
+      session  how much this one visitor has consumed. Attributed by diffing
+               the process totals around the operation, so a run that overlaps
+               another session's run can cross-attribute. Good enough to spot
+               one visitor hammering it; not billing-grade.
+
+      process  totals since the container started. Exact, because every LLM
+               call feeds the same accumulator. This is the figure to watch
+               against a daily key limit, and the rate per hour is the part
+               that tells you whether a limit is coming.
+
+    Nothing here gates or blocks — it only reports.
+    """
+    from utils.llm_client import get_process_usage, process_uptime_seconds
+    from utils.logger import get_usage_logger
+
+    total = get_process_usage()
+    seen_calls = st.session_state.get("_usage_seen_calls", 0)
+    seen_tokens = st.session_state.get("_usage_seen_tokens", 0)
+
+    sess_calls = st.session_state.get("_usage_session_calls", 0) + (total.calls - seen_calls)
+    sess_tokens = st.session_state.get("_usage_session_tokens", 0) + (total.total_tokens - seen_tokens)
+    sess_events = st.session_state.get("_usage_session_events", 0) + 1
+
+    st.session_state["_usage_seen_calls"] = total.calls
+    st.session_state["_usage_seen_tokens"] = total.total_tokens
+    st.session_state["_usage_session_calls"] = sess_calls
+    st.session_state["_usage_session_tokens"] = sess_tokens
+    st.session_state["_usage_session_events"] = sess_events
+
+    uptime_s = process_uptime_seconds()
+    hours = uptime_s / 3600.0
+    # A rate extrapolated from the first few minutes is noise wearing the
+    # costume of a trend — one document in the first 30 seconds reads as
+    # three-quarters of a million tokens an hour. Withheld until the window is
+    # long enough for the number to mean something.
+    rate = f"{int(total.total_tokens / hours):,} tok/h" if uptime_s >= 600 else "rate n/a (<10m uptime)"
+
+    get_usage_logger().info(
+        "USAGE | session=%s | event=%s | "
+        "session: %d op(s), %d call(s), %s tok | "
+        "process: %d call(s), %d transcription(s), %s tok, %s cache hit(s) "
+        "in %.2fh | %s",
+        _session_tag(), event,
+        sess_events, sess_calls, f"{sess_tokens:,}",
+        total.calls, total.transcriptions, f"{total.total_tokens:,}", total.cache_hits,
+        hours, rate,
+    )
+
+
+if HOSTED:
+    # Push the limit to the BROWSER, so an oversized file is refused before it
+    # is transferred rather than after. There are two separate enforcement
+    # points in Streamlit and only one of them is reachable from here:
+    #
+    #   * tornado's max_buffer_size, set once in server.py when the process
+    #     binds, from .streamlit/config.toml. Community Cloud offers no way to
+    #     set environment variables or CLI flags before startup — secrets only
+    #     become env vars once something reads st.secrets, long after the
+    #     server is listening — and config.toml is one committed file serving
+    #     both environments. So that ceiling stays at the local 50 MB.
+    #
+    #   * file_uploader_proto.max_upload_size_mb, read from config on EVERY
+    #     render and sent to the client. Setting the option here therefore does
+    #     reach the browser, which refuses a larger file locally and never
+    #     starts the upload.
+    #
+    # Net effect: 10 MB is enforced client-side for any normal browser, 50 MB
+    # remains the hard tornado ceiling for a handcrafted request, and
+    # validate_file() still rejects anything that gets past both. Layered
+    # rather than airtight, and the layer that actually bounds the memory
+    # spike for real traffic is the browser one.
+    from streamlit import config as _st_config
+    _st_config.set_option("server.maxUploadSize", HOSTED_MAX_UPLOAD_MB)
+
+
+def _get_store() -> DocumentStore:
+    """The history store for THIS visitor.
+
+    Community Cloud runs one container for everyone. A single shared
+    ~/.docagent/history.db therefore is not merely ephemeral — it is common to
+    all visitors, so one stranger's uploaded document would appear in another
+    stranger's sidebar, along with its extracted text and the ability to chat
+    over it. That is a live privacy leak for as long as the container runs.
+
+    Hosted therefore gets one SQLite file per browser session, under the
+    container's temp dir, keyed by a random id held in session_state. Sessions
+    cannot see each other, the feature still works within a visit, and it all
+    disappears with the container. Scoped rather than disabled because the
+    sidebar is part of what the demo is showing, and an always-empty one would
+    misrepresent the app.
+
+    Local behaviour is untouched: the shared, persistent ~/.docagent/history.db.
+    """
+    if not HOSTED:
+        return _local_store
+
+    store = st.session_state.get("_doc_store")
+    if store is None:
+        import tempfile
+        import uuid
+        session_id = st.session_state.get("_session_id")
+        if session_id is None:
+            session_id = uuid.uuid4().hex
+            st.session_state["_session_id"] = session_id
+        db_dir = Path(tempfile.gettempdir()) / "docagent-sessions" / session_id
+        store = DocumentStore(db_path=db_dir / "history.db")
+        st.session_state["_doc_store"] = store
+        logger.info("Created per-session history store for %s", session_id[:8])
+    return store
+
+
+# Local shared store. Built eagerly only when NOT hosted, so a hosted container
+# never creates the shared database file at all.
+_local_store = None if HOSTED else DocumentStore()
 
 
 # ── CSS injection ──────────────────────────────────────────────────────────────
@@ -153,13 +308,17 @@ def _render_sidebar() -> None:
         cfg_issues = _cfg.validate()
         try:
             st_limit = int(st.get_option("server.maxUploadSize"))
-            if st_limit != _cfg.max_file_size_mb:
+            # Hosted deliberately runs a lower ceiling than config.toml
+            # advertises, because config.toml is one committed file serving both
+            # environments. That divergence is intended, so it is not a
+            # misconfiguration to warn about — only a local mismatch is.
+            if not HOSTED and st_limit != MAX_UPLOAD_MB:
                 cfg_issues = cfg_issues + [
                     f"Upload limit mismatch: Streamlit accepts {st_limit} MB "
                     f"(server.maxUploadSize) but files over "
-                    f"{_cfg.max_file_size_mb} MB are rejected after upload "
+                    f"{MAX_UPLOAD_MB} MB are rejected after upload "
                     f"(app.max_file_size_mb). Set maxUploadSize in "
-                    f".streamlit/config.toml to {_cfg.max_file_size_mb}."
+                    f".streamlit/config.toml to {MAX_UPLOAD_MB}."
                 ]
         except Exception as exc:  # option unavailable in this Streamlit build
             logger.warning("Could not read server.maxUploadSize: %s", exc)
@@ -178,7 +337,7 @@ def _render_sidebar() -> None:
         # ── Recent documents ───────────────────────────────────────────
         st.markdown("**Recent Documents**")
         try:
-            recent = _store.list_recent(limit=10)
+            recent = _get_store().list_recent(limit=10)
             if not recent:
                 st.caption("No documents processed yet.")
             else:
@@ -187,14 +346,14 @@ def _render_sidebar() -> None:
                     subtext = f"{entry.domain} · {entry.word_count:,} words"
                     if st.button(label, key=f"hist_{entry.entry_id}",
                                  help=subtext, use_container_width=True):
-                        cached = _store.load(entry.entry_id)
+                        cached = _get_store().load(entry.entry_id)
                         if cached:
                             st.session_state["loaded_from_history"] = cached
                             st.rerun()
                 if recent:
                     if st.button("🗑 Clear history", use_container_width=True,
                                  key="clear_history"):
-                        _store.clear_all()
+                        _get_store().clear_all()
                         st.rerun()
         except Exception as exc:
             st.caption(f"History unavailable: {exc}")
@@ -212,6 +371,22 @@ def _get_agent(summary_length: str = "Standard", summary_tone: str = "Profession
     agent_cfg = cfg.to_dict()
     agent_cfg["summarization"]["summary_length"] = summary_length
     agent_cfg["summarization"]["summary_tone"]   = summary_tone
+
+    if HOSTED:
+        # Page count, not file size, is what drives peak memory here. Measured
+        # on a scanned PDF with the OCR path active: a 50 MB / 40-page file
+        # peaks at 446 MB and a 10 MB / 40-page file at 447 MB — the byte size
+        # is almost irrelevant, because the cost is rendering each page to a
+        # bitmap for Tesseract. Roughly 315 MB of fixed OCR overhead plus about
+        # 2.4 MB per page.
+        #
+        # So the upload cap alone does not bound the spike it was lowered for;
+        # a 10 MB PDF can still carry hundreds of pages. This does bound it.
+        # 25 pages lands the worst case near 885 MB alongside the resident
+        # embedding stack, against a ~1 GB ceiling, and is still a substantial
+        # document for a demo. Text PDFs never reach the OCR path and cost far
+        # less. Local keeps the configured default of 500.
+        agent_cfg.setdefault("pdf", {})["max_pages"] = HOSTED_MAX_PDF_PAGES
 
     return DocumentAgent(config=agent_cfg)
 
@@ -254,7 +429,7 @@ def _render_upload() -> tuple[list, dict]:
                 label_visibility="visible",
                 help=(
                     "PDF, Excel (.xlsx / .xls), CSV, or Audio "
-                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {_cfg.max_file_size_mb} MB per file"
+                    f"(MP3, WAV, M4A, FLAC, OGG, WebM) · max {MAX_UPLOAD_MB} MB per file"
                 ),
             )
         else:
@@ -406,7 +581,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # Regular file upload
             file_bytes = file_data.get("bytes", b"")
             file_path = save_upload(file_bytes, name, tmp_dir)
-            err = validate_file(file_path, max_size_mb=_cfg.max_file_size_mb)
+            err = validate_file(file_path, max_size_mb=MAX_UPLOAD_MB)
             if err:
                 # Icon-led and typeless, like the URL rejections above — that
                 # is the whole visual distinction from the crash handler at the
@@ -496,6 +671,10 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         if completed:
             detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
 
+        # Logged for every run, hosted or not. An analyse is by far the most
+        # expensive operation the app performs, so it is the one worth counting.
+        log_usage("analyze:youtube" if is_youtube else "analyze:file")
+
         # The panel is finalised further down, after indexing — the document is
         # not actually ready until its chunks are embedded, so calling the run
         # "complete" here would be premature on a first run.
@@ -525,7 +704,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 try:
                     raw_bytes = file_data.get("bytes")
                     with st.spinner(indexing_message):
-                        _store.save(result, raw_bytes=raw_bytes)
+                        _get_store().save(result, raw_bytes=raw_bytes)
                 except Exception as store_exc:
                     logger.warning(f"Could not save result to history: {store_exc}")
 
