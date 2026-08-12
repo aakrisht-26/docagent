@@ -182,12 +182,33 @@ class DocumentChatSkill(BaseSkill):
             return chunks[:3]
 
         order = sorted(range(len(chunks)), key=lambda i: scores[i], reverse=True)
-        top = [chunks[i] for i in order[:3]]
+
+        # Three slots means three distinct SOURCES, not three chunks.
+        #
+        # With page-level chunks these are the same thing and this loop is a
+        # no-op. With passages they are not: several passages of one page can
+        # sweep the top three, spending the whole budget on one source. That is
+        # not hypothetical — it cost the cross-boundary case dn-11, where the
+        # top three came back as pages 3, 3 and 8 and page 4 never got a slot,
+        # turning a hit into a miss while every other number improved.
+        #
+        # Taking each source's best passage keeps the context as wide as it was
+        # before while still ranking on the tighter passage match.
+        top = []
+        seen_sources = set()
+        for i in order:
+            source = chunks[i].get("page_or_sheet")
+            if source in seen_sources:
+                continue
+            seen_sources.add(source)
+            top.append(chunks[i])
+            if len(top) == 3:
+                break
 
         self.logger.info(
             f"Chunk retrieval via {method}: selected "
-            f"{[chunks[i].get('page_or_sheet') for i in order[:3]]} "
-            f"from {len(chunks)} chunk(s) "
+            f"{[c.get('page_or_sheet') for c in top]} "
+            f"from {len(chunks)} chunk(s) across {len(set(c.get('page_or_sheet') for c in chunks))} source(s) "
             f"(top score {scores[order[0]]:.3f})"
         )
 

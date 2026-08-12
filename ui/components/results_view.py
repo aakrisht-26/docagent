@@ -1194,10 +1194,15 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
     if chunks_key not in st.session_state:
         parsed_doc = st.session_state.get(f"parsed_doc_{fname}") or getattr(result, "parsed_document", None)
         if parsed_doc and hasattr(parsed_doc, "chunks"):
-            st.session_state[chunks_key] = [
+            # Passages for retrieval, same split DocumentStore indexes with, so
+            # a document answers identically whether it came from this session
+            # or from history. parsed_doc.chunks itself is untouched — the
+            # summary above this tab is still built from whole pages.
+            from utils.chunking import sub_chunk
+            st.session_state[chunks_key] = sub_chunk([
                 {"text": c.text, "page_or_sheet": c.page_or_sheet}
                 for c in parsed_doc.chunks
-            ]
+            ])
         else:
             raw = result.raw_text or ""
             st.session_state[chunks_key] = [

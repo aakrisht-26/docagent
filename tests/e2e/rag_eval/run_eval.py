@@ -70,6 +70,15 @@ def load_chunks(fixture: str, cfg: dict, registry: SkillRegistry) -> list:
         raise SystemExit(f"Could not parse {fixture}: {out.error}")
 
     chunks = [{"text": c.text, "page_or_sheet": c.page_or_sheet} for c in out.data.chunks]
+
+    # Retrieval operates on passages, not whole pages — same split the app
+    # indexes with, so the eval measures what ships. Set DOCAGENT_PASSAGE_WORDS=0
+    # to score page-level chunking instead, which is how the before/after
+    # comparison is produced.
+    if os.environ.get("DOCAGENT_PASSAGE_WORDS", "").strip() != "0":
+        from utils.chunking import sub_chunk
+        chunks = sub_chunk(chunks)
+
     _PARSE_CACHE[fixture] = chunks
     return chunks
 
@@ -105,7 +114,16 @@ def score_sources(question: str, chunks: list, chat) -> tuple:
     private copy would silently drift the moment retrieval changed.
     """
     scores, method = chat.score_chunks(question, chunks)
-    return {c["page_or_sheet"]: s for c, s in zip(chunks, scores)}, method
+    # A page can now contribute several passages, so a source's score is the
+    # BEST of its passages. The previous dict comprehension silently kept
+    # whichever passage happened to come last, which would have scored the
+    # ranking of an arbitrary fragment rather than of the page.
+    best: dict = {}
+    for chunk, score in zip(chunks, scores):
+        source = chunk["page_or_sheet"]
+        if source not in best or score > best[source]:
+            best[source] = score
+    return best, method
 
 
 def classify_hit(case: dict, selected_sources: list, scores: dict,

@@ -100,7 +100,15 @@ class DocumentStore:
                            # that produced them. Vectors are only comparable to
                            # vectors from the same model, so the name is stored
                            # with them and checked on load rather than trusted.
-                           "content_embeddings_b64", "embedding_model"):
+                           "content_embeddings_b64", "embedding_model",
+                           # How content_chunks_json was split, e.g.
+                           # "passage:100/20". Vectors are only comparable to
+                           # vectors built over the same text, so a change of
+                           # chunking invalidates them exactly as a change of
+                           # model does — and without this column that would be
+                           # undetectable. Rows written before sub-chunking have
+                           # NULL here, which reads as page-level.
+                           "chunk_scheme"):
                 if column not in existing:
                     conn.execute(f"ALTER TABLE history ADD COLUMN {column} TEXT")
 
@@ -136,11 +144,20 @@ class DocumentStore:
         # operate on an empty document.
         content_text = getattr(result, "raw_text", "") or ""
         parsed_doc = getattr(result, "parsed_document", None)
-        chunks = getattr(parsed_doc, "chunks", None) if parsed_doc else None
-        content_chunks_json = json.dumps(
-            [{"text": c.text, "page_or_sheet": c.page_or_sheet} for c in chunks],
-            ensure_ascii=False,
-        ) if chunks else None
+        page_chunks = getattr(parsed_doc, "chunks", None) if parsed_doc else None
+
+        # Split into passages for the RETRIEVAL index only. parsed_document is
+        # not modified, so summarisation continues to see whole pages — that is
+        # a separate pipeline path and it is working.
+        #
+        # Each passage keeps the page_or_sheet of the page it came from, so a
+        # citation still resolves to "Page 3".
+        from utils.chunking import scheme_name, sub_chunk
+        chunks = sub_chunk(
+            [{"text": c.text, "page_or_sheet": c.page_or_sheet} for c in page_chunks]
+        ) if page_chunks else None
+        chunk_scheme = scheme_name() if chunks else None
+        content_chunks_json = json.dumps(chunks, ensure_ascii=False) if chunks else None
 
         # Embed once, here, so a document reloaded from history is queryable
         # without paying the model cost again. Best-effort: if the model is
@@ -150,7 +167,7 @@ class DocumentStore:
         embedding_model = None
         if chunks:
             from utils import embeddings as _emb
-            matrix = _emb.encode([c.text for c in chunks])
+            matrix = _emb.encode([c["text"] for c in chunks])
             if matrix is not None and len(matrix) == len(chunks):
                 embeddings_b64 = _emb.to_blob(matrix)
                 embedding_model = _emb.model_name()
@@ -159,7 +176,7 @@ class DocumentStore:
             result.file_name, file_hash, result.file_type, result.doc_type,
             result.domain, result.word_count, len(result.questions),
             result.processing_time_ms, result_json, content_text,
-            content_chunks_json, embeddings_b64, embedding_model,
+            content_chunks_json, embeddings_b64, embedding_model, chunk_scheme,
         )
 
         with self._connect() as conn:
@@ -189,7 +206,8 @@ class DocumentStore:
                         domain = ?, word_count = ?, question_count = ?,
                         processing_time_ms = ?, result_json = ?, content_text = ?,
                         content_chunks_json = ?, content_embeddings_b64 = ?,
-                        embedding_model = ?, created_at = CURRENT_TIMESTAMP
+                        embedding_model = ?, chunk_scheme = ?,
+                        created_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
                     (*columns, entry_id),
@@ -205,8 +223,8 @@ class DocumentStore:
                     (file_name, file_hash, file_type, doc_type, domain,
                      word_count, question_count, processing_time_ms, result_json,
                      content_text, content_chunks_json,
-                     content_embeddings_b64, embedding_model)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     content_embeddings_b64, embedding_model, chunk_scheme)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 columns,
             )
@@ -270,7 +288,7 @@ class DocumentStore:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT result_json, content_text, content_chunks_json, "
-                "content_embeddings_b64, embedding_model "
+                "content_embeddings_b64, embedding_model, chunk_scheme "
                 "FROM history WHERE id = ?",
                 (entry_id,),
             ).fetchone()
@@ -295,17 +313,35 @@ class DocumentStore:
         # stored vectors came from a different model, or when the counts do not
         # line up — in each case chat re-embeds or falls back, rather than
         # comparing vectors that are not comparable.
-        self._attach_embeddings(data, row[3], row[4], entry_id)
+        self._attach_embeddings(data, row[3], row[4], entry_id, row[5])
         return data
 
     @staticmethod
     def _attach_embeddings(data: Dict[str, Any], blob: Optional[str],
-                           stored_model: Optional[str], entry_id: int) -> None:
+                           stored_model: Optional[str], entry_id: int,
+                           stored_scheme: Optional[str] = None) -> None:
         chunks = data.get("content_chunks") or []
         if not blob or not chunks:
             return
 
         from utils import embeddings as _emb
+        from utils.chunking import scheme_name
+
+        # Chunking is as much a part of a vector's identity as the model is: a
+        # vector describes a specific piece of text, and re-splitting the
+        # document changes which text that is. A row written under page-level
+        # chunking (NULL scheme) or under different passage settings is
+        # therefore ignored here rather than compared, and chat falls back to
+        # keyword overlap for that row until it is re-analysed.
+        current_scheme = scheme_name()
+        if (stored_scheme or "page") != current_scheme:
+            logger.info(
+                f"DocumentStore: entry #{entry_id} was indexed as "
+                f"'{stored_scheme or 'page'}' but '{current_scheme}' is active; "
+                "ignoring stored vectors. Re-analyse the document to refresh it."
+            )
+            return
+
         if stored_model and stored_model != _emb.model_name():
             logger.info(
                 f"DocumentStore: entry #{entry_id} was embedded with "
