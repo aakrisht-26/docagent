@@ -101,18 +101,35 @@ document a dot product is exact and instant.
 - **Vectors persist** in `history.db` (`content_embeddings_b64`) with the model
   name, so history reloads do not re-embed. Vectors from a different model are
   ignored rather than compared.
-- `_select_chunks()` still takes the top 3 plus first/last **anchors** and caps
-  at `_MAX_CONTEXT_CHARS`. Only the *scoring* changed.
+- **Retrieval ranks over passages, not pages.** `utils/chunking.sub_chunk()`
+  splits each page or sheet into overlapping ~100-word passages for the
+  retrieval index only. `ParsedDocument.chunks` is untouched, so summarisation
+  still sees whole pages. Every passage keeps its `page_or_sheet`, so citations
+  still resolve to "Page 3".
+- `_select_chunks()` takes the top 3 plus first/last **anchors** and caps at
+  `_MAX_CONTEXT_CHARS`. Its three slots are three distinct **sources**, not
+  three chunks — with passages, several fragments of one page would otherwise
+  sweep the budget and displace a page that is genuinely needed.
 
-Retrieval is measured, not assumed: **18/18** on the eval set against 10/18 for
-the original keyword approach. Score it with
-`python tests/e2e/rag_eval/run_eval.py` (no API calls), or `--keyword` for the
-fallback alone. Method and per-case results in `tests/e2e/rag_eval/RESULTS.md`.
+Retrieval is measured, not assumed. On the current eval set (33 meaningful
+cases): **33/33 retrieved, 28/33 ranked first**, mean rank 1.18. Page-level
+chunking scores the same 33/33 but 25/33 ranked first — sub-chunking improves
+*ranking*, not recall. The keyword fallback scores 27/33 with mean rank 3.09.
+Score it with `python tests/e2e/rag_eval/run_eval.py` (no API calls), or
+`--keyword` for the fallback alone. Full method, per-case flips and costs in
+`docs/retrieval-sub-chunking.md`; the earlier embeddings-vs-keyword experiment
+is in `tests/e2e/rag_eval/RESULTS.md`.
 
-**If you change the model**, stored vectors become incomparable. `MODEL_NAME` in
-`utils/embeddings.py` is recorded per row, so old rows are skipped and
-re-embedded rather than silently mis-scored — but re-run the eval, since the
-three narrowest margins are near-identical sibling sheets at ~0.03.
+**If you change the model OR the chunking**, stored vectors become
+incomparable — a vector describes specific text, so re-splitting invalidates it
+exactly as changing the model does. `MODEL_NAME` and `chunk_scheme` are both
+recorded per row and checked on load, so stale rows are skipped and fall back to
+keyword until re-analysed. Re-run the eval after either change.
+
+**The embedding model truncates at 256 tokens**, silently. Anything longer is
+cut before embedding with no warning. This is the main reason passages exist:
+5 of the 8 pages in `sample_dense_manual.pdf` exceeded it, so page-level
+embedding was ranking most of that document from a lossy copy.
 
 ### UI
 

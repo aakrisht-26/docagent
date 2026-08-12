@@ -1225,7 +1225,7 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
 
     # Name the retrieval method. It was logged but never shown, so a
     # deployment without sentence-transformers answered from keyword overlap
-    # -- measured 13/18 on the eval set against 18/18 for embeddings -- and
+    # -- measured 27/33 on the eval set against 33/33 for embeddings -- and
     # looked identical to one that had them. Silent degradation of answer
     # quality is worse than a slower answer, so say which is running.
     from utils import embeddings as _emb
@@ -1239,8 +1239,8 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
             "Conversation is kept in memory while the page is open. "
             "Retrieval: **keyword overlap** — the embedding model is not "
             "installed here, so answers are drawn from word-overlap matches "
-            "rather than meaning. Scores 13/18 on the retrieval eval against "
-            "18/18 for embeddings."
+            "rather than meaning. Scores 27/33 on the retrieval eval against "
+            "33/33 for embeddings."
         )
 
     # Render chat history
