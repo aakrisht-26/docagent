@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -191,10 +192,63 @@ def answer_rank(case: dict, scores: dict) -> int:
     return max(ranks) if case.get("match") == "all" else min(ranks)
 
 
+def _normalise_digits(text: str) -> str:
+    """Lowercase, and strip the commas inside numbers.
+
+    The check is a substring match, so it was scoring FORMATTING as well as
+    correctness. `lg-xls-03` is the worked example: the expected fragment is
+    "21,500,000" and the model answered "21500000" — the same number, marked
+    wrong. That flipped the moment the context gained source labels and the
+    model started echoing the sheet's own unpunctuated figures, which would
+    have read as a quality regression caused by labelling. It was not.
+    """
+    return re.sub(r"(?<=\d),(?=\d)", "", (text or "").lower())
+
+
 def answer_hit(case: dict, reply: str) -> bool:
     """True if any expected fragment appears in the reply (case-insensitive)."""
-    lowered = (reply or "").lower()
-    return any(str(f).lower() in lowered for f in case.get("expected_answer_contains", []))
+    lowered = _normalise_digits(reply)
+    return any(_normalise_digits(str(f)) in lowered
+               for f in case.get("expected_answer_contains", []))
+
+
+_CITE_RE = re.compile(r"\bpages?\s+(\d+)|\bp\.?\s*(\d+)\b", re.IGNORECASE)
+
+
+def cited_pages(reply: str) -> list:
+    """Page numbers the model claims in its own prose.
+
+    Distinct from `used_pages`, which the SKILL computes from what it selected.
+    This reads what the model actually told the user, which is what a reader
+    believes. The two only agree by luck unless the context is labelled — the
+    system prompt asks the model to "cite page numbers" while the context is
+    assembled as bare text joined by `---`, carrying no page numbers at all.
+    """
+    if not reply:
+        return []
+    out = []
+    for m in _CITE_RE.finditer(reply):
+        out.append(int(m.group(1) or m.group(2)))
+    return sorted(set(out))
+
+
+def citation_verdict(case: dict, reply: str) -> str:
+    """'correct' | 'wrong' | 'none' — for INTEGER-sourced cases only.
+
+    Sheet-named sources are excluded: a workbook answer cites "Q3 Revenue",
+    not a page number, and the regex would score it as no citation at all
+    rather than as a citation of a different kind.
+
+    'wrong' is the one that matters. A confidently cited page the answer did
+    not come from is worse than no citation, because it looks verifiable.
+    """
+    expected = [e for e in case["expected_sources"] if isinstance(e, int)]
+    if not expected:
+        return "n/a"
+    claimed = cited_pages(reply)
+    if not claimed:
+        return "none"
+    return "correct" if any(c in expected for c in claimed) else "wrong"
 
 
 def main(argv: list) -> int:
@@ -240,6 +294,7 @@ def main(argv: list) -> int:
             "rank": answer_rank(case, scores),
             "method": method,
             "answer_hit": None,
+            "citation": None,
         }
 
         if with_answers:
@@ -250,6 +305,7 @@ def main(argv: list) -> int:
                 "domain": "General",
             }))
             record["answer_hit"] = answer_hit(case, out.data["reply"]) if out.success else False
+            record["citation"] = citation_verdict(case, out.data["reply"]) if out.success else "none"
             record["error"] = None if out.success else out.error
 
         results.append(record)
@@ -337,6 +393,17 @@ def main(argv: list) -> int:
     mean_rank = sum(r["rank"] for r in ranked_cases) / len(ranked_cases) if ranked_cases else 0.0
     print(f"  {'answering chunk ranked #1':<34} "
           f"{top1}/{len(ranked_cases)}   (mean rank {mean_rank:.2f})")
+
+    # Citation correctness, from the model's own prose rather than from what
+    # the selector chose. 'wrong' is the number that matters: a confidently
+    # cited page the answer did not come from looks verifiable and is not.
+    cited = [r for r in meaningful if r.get("citation") not in (None, "n/a")]
+    if cited:
+        ok = sum(1 for r in cited if r["citation"] == "correct")
+        wrong = sum(1 for r in cited if r["citation"] == "wrong")
+        none = sum(1 for r in cited if r["citation"] == "none")
+        print(f"  {'prose citations (page-sourced)':<34} "
+              f"correct {ok}/{len(cited)}   WRONG {wrong}   none {none}")
 
     anchor_slots = sum(len(r["anchors_in_selection"]) for r in meaningful)
     chosen_slots = sum(r["chosen_slots"] for r in meaningful)
