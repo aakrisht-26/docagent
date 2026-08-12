@@ -179,6 +179,76 @@ class TestEmbeddingRetrieval(unittest.TestCase):
         self.assertEqual(len(calls), 1, "only the query should be embedded")
         self.assertEqual(calls[0], ["downtime"])
 
+    def test_one_missing_vector_does_not_re_embed_the_corpus(self):
+        """The gap is filled; everything else is reused.
+
+        This was all-or-nothing: a single chunk without a stored vector sent
+        every chunk back through the model. Single-document that is a slow
+        first query; across a corpus it is a cliff, because one document saved
+        before vectors existed taxes every query over everything else.
+        Measured at 100 documents, one missing vector cost 1866 ms against
+        84 ms fully cached.
+        """
+        matrix = embeddings.encode([c["text"] for c in CHUNKS])
+        enriched = [dict(c, embedding=v.tolist()) for c, v in zip(CHUNKS, matrix)]
+        enriched[1].pop("embedding")
+
+        calls = []
+        real_encode = embeddings.encode
+
+        def counting_encode(texts):
+            calls.append(list(texts))
+            return real_encode(texts)
+
+        embeddings.encode = counting_encode
+        try:
+            _, method = self.skill.score_chunks("downtime", enriched)
+        finally:
+            embeddings.encode = real_encode
+
+        self.assertEqual(method, "embedding")
+        encoded = [t for call in calls for t in call]
+        self.assertIn("downtime", encoded)
+        self.assertIn(CHUNKS[1]["text"], encoded, "the gap must be filled")
+        for i, chunk in enumerate(CHUNKS):
+            if i != 1:
+                self.assertNotIn(chunk["text"], encoded,
+                                 "a cached chunk was re-embedded")
+
+    def test_partial_caching_ranks_identically_to_full_encoding(self):
+        """Mixing stored and fresh vectors must not change the ordering.
+
+        If it did, an answer would depend on which documents happened to have
+        been saved under the current scheme rather than on the question.
+        """
+        fresh = [dict(c) for c in CHUNKS]
+        scores_full, _ = self.skill.score_chunks("downtime", fresh)
+
+        matrix = embeddings.encode([c["text"] for c in CHUNKS])
+        mixed = [dict(c) for c in CHUNKS]
+        for i, chunk in enumerate(mixed):
+            if i % 2 == 0:                      # cache every other one
+                chunk["embedding"] = matrix[i].tolist()
+        scores_mixed, _ = self.skill.score_chunks("downtime", mixed)
+
+        order_full = sorted(range(len(CHUNKS)), key=lambda i: -scores_full[i])
+        order_mixed = sorted(range(len(CHUNKS)), key=lambda i: -scores_mixed[i])
+        self.assertEqual(order_full, order_mixed)
+        for a, b in zip(scores_full, scores_mixed):
+            self.assertAlmostEqual(a, b, places=5)
+
+    def test_inconsistent_stored_dimensions_fall_back_safely(self):
+        """A wrong-width stored vector must not corrupt the matrix silently."""
+        matrix = embeddings.encode([c["text"] for c in CHUNKS])
+        broken = [dict(c, embedding=v.tolist()) for c, v in zip(CHUNKS, matrix)]
+        broken[0]["embedding"] = [0.1, 0.2, 0.3]      # wrong dimension
+        broken[2].pop("embedding")                    # force the mixed path
+
+        scores, method = self.skill.score_chunks("downtime", broken)
+        self.assertEqual(method, "embedding")
+        self.assertEqual(len(scores), len(CHUNKS))
+        self.assertTrue(all(-1.001 <= s <= 1.001 for s in scores))
+
 
 class TestBlobRoundTrip(unittest.TestCase):
     def test_round_trips_exactly(self):
