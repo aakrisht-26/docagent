@@ -241,3 +241,222 @@ LARGE_XLSX_SHEETS = {
          ["Tier 3", 211, 3.6], ["Tier 4", 587, 1.2]],
     ),
 }
+
+
+# ── Dense multi-topic PDF: (heading, body) per page ──────────────────────────
+#
+# WHY THIS FIXTURE EXISTS
+#
+# The 20-page fixture above averages 46 words per page, one topic each. At that
+# size a page already IS a passage, so splitting it into smaller passages can
+# only be a no-op — which makes it structurally incapable of showing whether
+# sub-chunking helps or hurts. It scores 18/18 and cannot move.
+#
+# These pages are the opposite: ~214 words each (4.6x the fixture above), and
+# every page carries six unrelated policy topics. That is the condition the
+# sub-chunking
+# claim is actually about — "a page can hold several unrelated facts, and
+# retrieving the whole page dilutes the match". If the claim is right it should
+# show up here; if it does not show up here, it does not show up anywhere.
+#
+# Three deliberate difficulties, mirroring the fixture above:
+#
+# 1. DILUTION — the answer to each question is one or two sentences inside a
+#    page of six unrelated topics, so whole-page embedding averages the answer
+#    together with several hundred words that have nothing to do with it.
+#
+# 2. TOPICAL SIBLINGS — expenses appear on three pages (account setup, travel
+#    caps, purchase thresholds). All three are plausibly "about expenses" and
+#    only one carries any given figure.
+#
+# 3. CROSS-PAGE — the equipment loss policy opens at the foot of page 3 and its
+#    excess figures land on page 4, so neither page answers on its own.
+#
+# Every figure appears exactly once in the document, so a retrieval hit is
+# unambiguous.
+
+DENSE_PDF_TITLE = "Ardwick Logistics — Staff Operations Manual"
+
+DENSE_PDF_PAGES = [
+    # 1
+    ("Section A — Joining the Company",
+     "New starter registration. Every new employee completes registration with the "
+     "people team before their first shift. Registration requires proof of right to "
+     "work, a bank mandate and an emergency contact. "
+     "Site access badges. Access badges are issued by reception on the first morning "
+     "and must be worn visibly inside operational areas. A lost badge carries a "
+     "replacement charge of 15 pounds. Badges deactivate after ninety days of non-use. "
+     "Vehicle parking. Staff parking is allocated by depot and is not transferable "
+     "between sites. The Ardwick site holds 240 marked bays, of which 26 are reserved "
+     "for visitors and 12 for accessible parking. Overnight parking requires written "
+     "approval from the depot manager. "
+     "Canteen and refreshments. The canteen operates from 06:00 to 19:00 on weekdays "
+     "and 07:00 to 14:00 on Saturdays. Hot food service stops thirty minutes before "
+     "closing. Vending machines in the transport office run continuously. "
+     "Network accounts. IT accounts are created from the registration record and are "
+     "usually active within one working day. Initial passwords are issued verbally by "
+     "the service desk and changed at first sign-in. Accounts dormant for sixty days "
+     "are suspended pending manager confirmation. "
+     "Expense account setup. An expense account is opened alongside the network "
+     "account. Opening the account does not itself authorise any spending, and the "
+     "authorisation limits are set out later in this manual. The first expense claim "
+     "made by a new starter is reviewed manually."),
+
+    # 2
+    ("Section B — Travel and Subsistence",
+     "Booking channel. All business travel is booked through the nominated travel "
+     "desk. Bookings made outside that channel are reimbursed only where the traveller "
+     "can show the desk was unavailable and the journey could not be deferred. Rail is "
+     "the default mode for domestic journeys under four hours. "
+     "Subsistence allowance. The daily subsistence allowance is 38 pounds for domestic "
+     "travel and 61 pounds for international travel. It is paid for each full day away "
+     "and halved for a day of departure or return. "
+     "Private mileage. Where a private vehicle is used for a business journey the "
+     "mileage reimbursement rate is 45 pence per mile for the first ten thousand miles "
+     "in a year and 25 pence per mile thereafter. A passenger supplement of 5 pence "
+     "per mile applies for each colleague carried. Journeys between home and the "
+     "normal place of work are not reimbursable. "
+     "Accommodation ceilings. Hotel spend is capped at 140 pounds per night in London "
+     "and 95 pounds per night elsewhere in the United Kingdom. Rates above the ceiling "
+     "require prior written approval. "
+     "Travel documentation. Employees travelling internationally hold a valid passport "
+     "with at least six months remaining. The company meets the cost of business visas "
+     "but not of passport renewal. "
+     "Travel insurance. Corporate travel insurance covers booked business travel "
+     "automatically. Cover does not extend to leisure days added either side of a trip "
+     "unless declared to the travel desk in advance."),
+
+    # 3
+    ("Section C — Equipment and Systems",
+     "Standard issue. Office-based staff are issued a laptop and a docking station. "
+     "Operational staff are issued a handheld terminal. Equipment remains company "
+     "property and is returned on the final day of employment. "
+     "Refresh cycle. Laptops are replaced on a four year cycle and handheld terminals "
+     "on a three year cycle. Replacement outside the cycle requires a fault report "
+     "from the service desk. Withdrawn devices are wiped and either resold or recycled "
+     "through an accredited contractor. "
+     "Mobile telephones. A company mobile is provided to roles with an on-call "
+     "obligation. Personal use is permitted within reason. The monthly data allowance "
+     "is 40 gigabytes, and usage beyond that is recharged to the department rather "
+     "than to the individual. "
+     "Software requests. Requests for software outside the standard build go to the "
+     "service desk and require line manager approval. Licences are assigned to the "
+     "individual and reclaimed when the individual leaves. "
+     "Printing. Printing is charged to departmental cost centres at 4 pence per mono "
+     "page and 19 pence per colour page. Jobs left unclaimed for 24 hours are deleted. "
+     "Loss and damage. Where company equipment is lost or damaged the employee reports "
+     "it to the service desk within one working day. The company may recover a "
+     "contribution towards replacement where the loss resulted from negligence rather "
+     "than ordinary wear. The contribution is not automatic and depends on the age of "
+     "the device; the amounts recovered are set out in the following section."),
+
+    # 4
+    ("Section D — Recovery Amounts and Working Time",
+     "Equipment loss excess. Continuing from the previous section, the contribution "
+     "recovered for a negligent loss is 120 pounds for a laptop, 75 pounds for a "
+     "handheld terminal and 45 pounds for a mobile telephone. Nothing is recovered "
+     "where the device is more than three years old, and nothing is recovered for a "
+     "first incident in any rolling three year period. "
+     "Standard hours. Full time hours are 37.5 per week for office roles and 42 per "
+     "week for operational roles, exclusive of unpaid breaks. The reference period for "
+     "averaging working time is seventeen weeks. "
+     "Overtime. Overtime is paid at time and a quarter on weekdays and time and a half "
+     "on Sundays and public holidays. Overtime is authorised in advance by the depot "
+     "manager, and unauthorised hours are not paid. "
+     "Rest breaks. A rest break of thirty minutes applies to any shift exceeding six "
+     "hours. Drivers are additionally subject to statutory tachograph rules, which "
+     "take precedence wherever they are more restrictive than this manual. "
+     "Shift swaps. Swaps between colleagues are permitted where both hold the relevant "
+     "competence and the swap is recorded in the rota system before the shift begins. "
+     "Time recording. Hours are recorded through the depot terminal at the start and "
+     "end of each shift. A missed clocking is corrected by the supervisor and "
+     "confirmed by the employee within five working days."),
+
+    # 5
+    ("Section E — Absence and Leave",
+     "Annual leave entitlement. The standard entitlement is 25 days per year plus "
+     "public holidays, rising to 28 days after five years of continuous service. "
+     "Entitlement is pro-rated for part time staff and the leave year runs from the "
+     "first of April. "
+     "Carry over. A maximum of five days may be carried into the following leave year "
+     "and must be taken by the thirtieth of June. Carry over beyond five days is "
+     "granted only where leave was refused for operational reasons. "
+     "Sickness absence. Absence is reported to the line manager by telephone before "
+     "the start of the shift. Self certification covers the first seven calendar days "
+     "and beyond that a fit note is required. Company sick pay is paid at full rate "
+     "for up to twelve weeks in a rolling year, subject to length of service. "
+     "Parental leave. Maternity, paternity, adoption and shared parental leave follow "
+     "statutory entitlement, with an enhanced company element of twelve weeks at full "
+     "pay for the primary carer after two years of service. "
+     "Bereavement. Paid bereavement leave of five days is available on the death of an "
+     "immediate family member and one day for a wider relative. "
+     "Unpaid sabbatical. A sabbatical of between one and six months may be requested "
+     "after four years of service. Sabbaticals are unpaid, preserve continuity of "
+     "service, and are granted at the discretion of the divisional director."),
+
+    # 6
+    ("Section F — Performance and Development",
+     "Review cycle. Formal performance reviews are held twice a year, in April and "
+     "October. Each review records objectives, evidence against them and a development "
+     "plan. Interim conversations are expected monthly but are not recorded centrally. "
+     "Rating scale. Performance is rated on a four point scale: exceptional, strong, "
+     "effective and developing. Ratings are moderated across each division before "
+     "release so that standards are comparable between depots. "
+     "Promotion. Promotion is considered once a year following the April cycle. A case "
+     "requires two consecutive ratings of strong or above and a vacancy at the target "
+     "grade. Acting-up arrangements are capped at nine months. "
+     "Training budget. The annual training budget is 900 pounds per employee for "
+     "professional development, held at departmental level. Statutory and safety "
+     "training is funded separately and does not draw on this budget. "
+     "Performance improvement. Where performance is rated developing for two "
+     "consecutive cycles a formal improvement plan of up to twelve weeks is opened. "
+     "The plan sets measurable outcomes and is reviewed fortnightly. "
+     "Appeals. An employee may appeal a rating within ten working days of release. "
+     "Appeals are heard by a manager one level above the reviewer and outside the "
+     "immediate reporting line."),
+
+    # 7
+    ("Section G — Security and Information",
+     "Password standards. Passwords are at least fourteen characters and are not "
+     "rotated on a schedule, in line with current guidance. Reuse of a password across "
+     "company and personal services is prohibited. "
+     "Multi-factor authentication. Multi-factor authentication is mandatory for all "
+     "remote access and for any administrative account. Hardware tokens are issued to "
+     "roles handling payment data. "
+     "Data classification. Information is classified as public, internal, confidential "
+     "or restricted. Restricted material may not be removed from company premises or "
+     "systems under any circumstances. Confidential material may be taken off site "
+     "only on encrypted company equipment. "
+     "Incident reporting. Suspected security incidents are reported to the service "
+     "desk immediately and in any case within one hour of discovery. Reporting in good "
+     "faith is never itself a disciplinary matter. "
+     "Clear desk. Desks are clear of confidential material at the end of each day. "
+     "Printed confidential material is disposed of in the secure bins provided rather "
+     "than in general waste. "
+     "Visitors. Visitors sign in at reception, are issued a temporary badge and are "
+     "escorted at all times within operational areas. Visitor badges expire at the end "
+     "of the day of issue."),
+
+    # 8
+    ("Section H — Purchasing and Suppliers",
+     "Authorisation thresholds. Purchase orders up to 2,500 pounds are authorised by "
+     "the line manager. Between 2,500 and 25,000 pounds authorisation rests with the "
+     "divisional director. Above 25,000 pounds board approval is required. Splitting a "
+     "purchase to stay below a threshold is treated as a disciplinary matter. "
+     "Supplier onboarding. New suppliers are onboarded by procurement following "
+     "financial and compliance checks. Onboarding takes fifteen working days on "
+     "average. No order may be placed with a supplier that has not completed "
+     "onboarding. "
+     "Contract terms. Standard payment terms are sixty days from invoice date. "
+     "Deviation from standard terms requires procurement approval and is recorded "
+     "against the supplier record. "
+     "Invoice handling. Invoices are matched against the purchase order and the goods "
+     "receipt before payment. A mismatch of more than two percent is referred back to "
+     "the raising department. "
+     "Disputes. A disputed invoice is placed on hold and escalated to procurement "
+     "within five working days. Payment of the undisputed portion continues in the "
+     "meantime. "
+     "Single supplier risk. Where a category has only one qualified supplier, "
+     "procurement records the exposure on the risk register and reviews it quarterly. "
+     "The register is presented to the board twice a year."),
+]

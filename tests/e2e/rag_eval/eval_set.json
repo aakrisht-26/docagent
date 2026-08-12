@@ -6,7 +6,9 @@
       "direct": "The answering chunk shares obvious wording with the question.",
       "vocab_overlap": "A distractor chunk shares more surface words with the question than the chunk that actually answers it.",
       "cross_boundary": "The answer needs two chunks; neither is sufficient alone.",
-      "synonym": "The question shares no content word with the answering chunk."
+      "synonym": "The question shares no content word with the answering chunk.",
+      "dilution": "The answering sentence sits inside a page covering several unrelated topics, so a whole-page embedding averages it with material that has nothing to do with the question.",
+      "topical_sibling": "Two or more pages are plausibly on-topic for the question, but only one carries the figure being asked for."
     },
     "trivial_fixtures": [
       "sample_report.pdf",
@@ -15,161 +17,558 @@
     ],
     "trivial_note": "These three fixtures have only 2 chunks each and the selector returns top-3 plus first/last anchors, so it returns the whole document for any query. Retrieval accuracy on them is 100% by construction and carries no signal. They are kept to prove the eval harness agrees with reality, and are reported separately."
   },
-
   "cases": [
     {
-      "id": "lg-pdf-01", "fixture": "sample_large_report.pdf", "category": "direct",
+      "id": "lg-pdf-01",
+      "fixture": "sample_large_report.pdf",
+      "category": "direct",
       "question": "How many rigid trucks are in the fleet?",
-      "expected_sources": [3], "match": "any",
-      "expected_answer_contains": ["154"]
+      "expected_sources": [
+        3
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "154"
+      ]
     },
     {
-      "id": "lg-pdf-02", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "id": "lg-pdf-02",
+      "fixture": "sample_large_report.pdf",
+      "category": "vocab_overlap",
       "question": "What was the average maintenance cost per vehicle at the Southern depot?",
-      "expected_sources": [6], "match": "any",
-      "expected_answer_contains": ["10,178"],
+      "expected_sources": [
+        6
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "10,178"
+      ],
       "note": "Page 4 repeats 'average maintenance cost per vehicle' and every depot name more often than page 6, but holds no figure."
     },
     {
-      "id": "lg-pdf-03", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "id": "lg-pdf-03",
+      "fixture": "sample_large_report.pdf",
+      "category": "vocab_overlap",
       "question": "What was the average maintenance cost per vehicle at the Eastern depot?",
-      "expected_sources": [7], "match": "any",
-      "expected_answer_contains": ["7,887"]
+      "expected_sources": [
+        7
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "7,887"
+      ]
     },
     {
-      "id": "lg-pdf-04", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "id": "lg-pdf-04",
+      "fixture": "sample_large_report.pdf",
+      "category": "vocab_overlap",
       "question": "How many workshop visits did the Northern depot complete?",
-      "expected_sources": [5], "match": "any",
-      "expected_answer_contains": ["1,284"]
+      "expected_sources": [
+        5
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "1,284"
+      ]
     },
     {
-      "id": "lg-pdf-05", "fixture": "sample_large_report.pdf", "category": "cross_boundary",
+      "id": "lg-pdf-05",
+      "fixture": "sample_large_report.pdf",
+      "category": "cross_boundary",
       "question": "How many Tier 1 incidents were recorded, and what was the mean time to closure?",
-      "expected_sources": [12, 13], "match": "all",
-      "expected_answer_contains": ["19", "23.4"],
+      "expected_sources": [
+        12,
+        13
+      ],
+      "match": "all",
+      "expected_answer_contains": [
+        "19",
+        "23.4"
+      ],
       "note": "Counts are on page 12, closure timings on page 13."
     },
     {
-      "id": "lg-pdf-06", "fixture": "sample_large_report.pdf", "category": "cross_boundary",
+      "id": "lg-pdf-06",
+      "fixture": "sample_large_report.pdf",
+      "category": "cross_boundary",
       "question": "Which depot had the most Tier 1 incidents, and how long did the longest case stay open?",
-      "expected_sources": [12, 13], "match": "all",
-      "expected_answer_contains": ["96"]
+      "expected_sources": [
+        12,
+        13
+      ],
+      "match": "all",
+      "expected_answer_contains": [
+        "96"
+      ]
     },
     {
-      "id": "lg-pdf-07", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "id": "lg-pdf-07",
+      "fixture": "sample_large_report.pdf",
+      "category": "synonym",
       "question": "How much time were lorries unavailable for work?",
-      "expected_sources": [17], "match": "any",
-      "expected_answer_contains": ["41,300"],
+      "expected_sources": [
+        17
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "41,300"
+      ],
       "note": "Page 17 says 'off-road hours'; the question shares no content word with it."
     },
     {
-      "id": "lg-pdf-08", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "id": "lg-pdf-08",
+      "fixture": "sample_large_report.pdf",
+      "category": "synonym",
       "question": "What percentage of lorry crew resigned?",
-      "expected_sources": [10], "match": "any",
-      "expected_answer_contains": ["14.2"],
+      "expected_sources": [
+        10
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "14.2"
+      ],
       "note": "Page 10 says 'attrition' and 'voluntary departures'."
     },
     {
-      "id": "lg-pdf-09", "fixture": "sample_large_report.pdf", "category": "synonym",
+      "id": "lg-pdf-09",
+      "fixture": "sample_large_report.pdf",
+      "category": "synonym",
       "question": "How long must the business wait after ordering a prime mover?",
-      "expected_sources": [18], "match": "any",
-      "expected_answer_contains": ["94"],
+      "expected_sources": [
+        18
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "94"
+      ],
       "note": "Page 18 says 'lead time from requisition to delivery' for 'tractor units'."
     },
     {
-      "id": "lg-pdf-10", "fixture": "sample_large_report.pdf", "category": "vocab_overlap",
+      "id": "lg-pdf-10",
+      "fixture": "sample_large_report.pdf",
+      "category": "vocab_overlap",
       "question": "What was the pick accuracy at the Riverside warehouse?",
-      "expected_sources": [14], "match": "any",
-      "expected_answer_contains": ["99.31"],
+      "expected_sources": [
+        14
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "99.31"
+      ],
       "note": "Page 15 (Kingsford) is near-identical in vocabulary."
     },
     {
-      "id": "lg-pdf-11", "fixture": "sample_large_report.pdf", "category": "direct",
+      "id": "lg-pdf-11",
+      "fixture": "sample_large_report.pdf",
+      "category": "direct",
       "question": "How many pallet movements did the Kingsford warehouse handle?",
-      "expected_sources": [15], "match": "any",
-      "expected_answer_contains": ["287,000"]
+      "expected_sources": [
+        15
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "287,000"
+      ]
     },
     {
-      "id": "lg-pdf-12", "fixture": "sample_large_report.pdf", "category": "direct",
+      "id": "lg-pdf-12",
+      "fixture": "sample_large_report.pdf",
+      "category": "direct",
       "question": "What is the principal risk for the coming year?",
-      "expected_sources": [20], "match": "any",
-      "expected_answer_contains": ["refrigeration"]
+      "expected_sources": [
+        20
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "refrigeration"
+      ]
     },
     {
-      "id": "lg-xls-01", "fixture": "sample_large_sales.xlsx", "category": "vocab_overlap",
+      "id": "lg-xls-01",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "vocab_overlap",
       "question": "What was the revenue per consignment for North in Q3?",
-      "expected_sources": ["Q3 Revenue"], "match": "any",
-      "expected_answer_contains": ["1163", "1,163"],
+      "expected_sources": [
+        "Q3 Revenue"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "1163",
+        "1,163"
+      ],
       "note": "The 'Cost Definitions' sheet repeats the exact phrase for every quarter and region but holds no figure."
     },
     {
-      "id": "lg-xls-02", "fixture": "sample_large_sales.xlsx", "category": "vocab_overlap",
+      "id": "lg-xls-02",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "vocab_overlap",
       "question": "What was the revenue per consignment for West in Q1?",
-      "expected_sources": ["Q1 Revenue"], "match": "any",
-      "expected_answer_contains": ["1050", "1,050"]
+      "expected_sources": [
+        "Q1 Revenue"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "1050",
+        "1,050"
+      ]
     },
     {
-      "id": "lg-xls-03", "fixture": "sample_large_sales.xlsx", "category": "cross_boundary",
+      "id": "lg-xls-03",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "cross_boundary",
       "question": "What was the combined North revenue across Q3 and Q4?",
-      "expected_sources": ["Q3 Revenue", "Q4 Revenue"], "match": "all",
-      "expected_answer_contains": ["21,500,000", "21.5"]
+      "expected_sources": [
+        "Q3 Revenue",
+        "Q4 Revenue"
+      ],
+      "match": "all",
+      "expected_answer_contains": [
+        "21,500,000",
+        "21.5"
+      ]
     },
     {
-      "id": "lg-xls-04", "fixture": "sample_large_sales.xlsx", "category": "synonym",
+      "id": "lg-xls-04",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "synonym",
       "question": "How much was spent on diesel bought under contract?",
-      "expected_sources": ["Energy Spend"], "match": "any",
-      "expected_answer_contains": ["9,880,360", "9880360"],
+      "expected_sources": [
+        "Energy Spend"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "9,880,360",
+        "9880360"
+      ],
       "note": "The sheet says 'Propulsion, contracted', never 'diesel' or 'fuel'."
     },
     {
-      "id": "lg-xls-05", "fixture": "sample_large_sales.xlsx", "category": "direct",
+      "id": "lg-xls-05",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "direct",
       "question": "How many drivers are in the East division?",
-      "expected_sources": ["Headcount"], "match": "any",
-      "expected_answer_contains": ["265"]
+      "expected_sources": [
+        "Headcount"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "265"
+      ]
     },
     {
-      "id": "lg-xls-06", "fixture": "sample_large_sales.xlsx", "category": "adversarial_sibling",
+      "id": "lg-xls-06",
+      "fixture": "sample_large_sales.xlsx",
+      "category": "adversarial_sibling",
       "question": "In the second quarter, how many consignments did the East region deliver?",
-      "expected_sources": ["Q2 Revenue"], "match": "any",
-      "expected_answer_contains": ["5590", "5,590"],
+      "expected_sources": [
+        "Q2 Revenue"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "5590",
+        "5,590"
+      ],
       "note": "Deliberately hostile. The quarter is written as 'second quarter', never as 'Q2', so the literal sheet label gives no help — the keyword tokenizer fix cannot rescue this one. The four quarterly sheets are otherwise near-identical in wording, and the embedding margins on the existing quarterly cases were the three narrowest in the set (0.028-0.037). This case exists to find out whether that thin edge survives when the quarter is only implied."
     },
-
     {
-      "id": "sm-pdf-01", "fixture": "sample_report.pdf", "category": "direct",
+      "id": "sm-pdf-01",
+      "fixture": "sample_report.pdf",
+      "category": "direct",
       "question": "What was the MTBF improvement between Q2 and Q3?",
-      "expected_sources": [1], "match": "any",
-      "expected_answer_contains": ["690"]
+      "expected_sources": [
+        1
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "690"
+      ]
     },
     {
-      "id": "sm-pdf-02", "fixture": "sample_report.pdf", "category": "direct",
+      "id": "sm-pdf-02",
+      "fixture": "sample_report.pdf",
+      "category": "direct",
       "question": "What is the principal risk for Q4?",
-      "expected_sources": [2], "match": "any",
-      "expected_answer_contains": ["LIDAR"]
+      "expected_sources": [
+        2
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "LIDAR"
+      ]
     },
     {
-      "id": "sm-scan-01", "fixture": "sample_scanned.pdf", "category": "direct",
+      "id": "sm-scan-01",
+      "fixture": "sample_scanned.pdf",
+      "category": "direct",
       "question": "How much did engineering headcount grow?",
-      "expected_sources": [1], "match": "any",
-      "expected_answer_contains": ["51"]
+      "expected_sources": [
+        1
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "51"
+      ]
     },
     {
-      "id": "sm-scan-02", "fixture": "sample_scanned.pdf", "category": "direct",
+      "id": "sm-scan-02",
+      "fixture": "sample_scanned.pdf",
+      "category": "direct",
       "question": "How long is the buffer stock held for?",
-      "expected_sources": [2], "match": "any",
-      "expected_answer_contains": ["6-week", "6 week", "six"]
+      "expected_sources": [
+        2
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "6-week",
+        "6 week",
+        "six"
+      ]
     },
     {
-      "id": "sm-xls-01", "fixture": "sample_sales.xlsx", "category": "direct",
+      "id": "sm-xls-01",
+      "fixture": "sample_sales.xlsx",
+      "category": "direct",
       "question": "What was the EMEA revenue for Orion Controller?",
-      "expected_sources": ["Q3 Sales"], "match": "any",
-      "expected_answer_contains": ["483800", "483,800"]
+      "expected_sources": [
+        "Q3 Sales"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "483800",
+        "483,800"
+      ]
     },
     {
-      "id": "sm-xls-02", "fixture": "sample_sales.xlsx", "category": "direct",
+      "id": "sm-xls-02",
+      "fixture": "sample_sales.xlsx",
+      "category": "direct",
       "question": "How many open roles does Engineering have?",
-      "expected_sources": ["Headcount"], "match": "any",
-      "expected_answer_contains": ["6"]
+      "expected_sources": [
+        "Headcount"
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "6"
+      ]
+    },
+    {
+      "id": "dn-01",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "How much is charged for a replacement access badge?",
+      "expected_sources": [
+        1
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "15"
+      ],
+      "note": "Page 1 also covers registration, parking, canteen, IT accounts and expense setup."
+    },
+    {
+      "id": "dn-02",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "What is the mileage rate for using my own car on business?",
+      "expected_sources": [
+        2
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "45"
+      ],
+      "note": "Page 2 also covers booking, subsistence, hotels, passports and insurance."
+    },
+    {
+      "id": "dn-03",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "How much mobile data is included each month?",
+      "expected_sources": [
+        3
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "40"
+      ],
+      "note": "Page 3 also covers issue, refresh, software, printing and loss."
+    },
+    {
+      "id": "dn-04",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "How many weeks of company sick pay are paid at full rate?",
+      "expected_sources": [
+        5
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "twelve",
+        "12"
+      ],
+      "note": "Page 5 also covers annual leave, carry over, parental, bereavement, sabbatical."
+    },
+    {
+      "id": "dn-05",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "What is the annual training budget per employee?",
+      "expected_sources": [
+        6
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "900"
+      ],
+      "note": "Page 6 also covers review cycle, ratings, promotion, improvement, appeals."
+    },
+    {
+      "id": "dn-06",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "dilution",
+      "question": "What are the standard payment terms for suppliers?",
+      "expected_sources": [
+        8
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "sixty",
+        "60"
+      ],
+      "note": "Page 8 also covers thresholds, onboarding, invoices, disputes, risk."
+    },
+    {
+      "id": "dn-07",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "topical_sibling",
+      "question": "What is the nightly hotel spending limit in London?",
+      "expected_sources": [
+        2
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "140"
+      ],
+      "note": "Competing: p1 expense account setup, p8 purchase authorisation."
+    },
+    {
+      "id": "dn-08",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "topical_sibling",
+      "question": "Who signs off a purchase of ten thousand pounds?",
+      "expected_sources": [
+        8
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "divisional director",
+        "director"
+      ],
+      "note": "Competing: p2 travel approval, p1 expense account setup."
+    },
+    {
+      "id": "dn-09",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "topical_sibling",
+      "question": "What is the daily allowance when travelling abroad?",
+      "expected_sources": [
+        2
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "61"
+      ],
+      "note": "Competing: p1 canteen, p4 overtime rates."
+    },
+    {
+      "id": "dn-10",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "cross_boundary",
+      "question": "If I negligently lose a company laptop, what do I have to pay and when is nothing recovered?",
+      "expected_sources": [
+        3,
+        4
+      ],
+      "match": "all",
+      "expected_answer_contains": [
+        "120"
+      ],
+      "note": "Policy and conditions on p3, the amounts on p4."
+    },
+    {
+      "id": "dn-11",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "cross_boundary",
+      "question": "What is the process and the charge when equipment is damaged through negligence?",
+      "expected_sources": [
+        3,
+        4
+      ],
+      "match": "all",
+      "expected_answer_contains": [
+        "120",
+        "75",
+        "45"
+      ],
+      "note": "Reporting duty on p3, recovery amounts on p4."
+    },
+    {
+      "id": "dn-12",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "synonym",
+      "question": "How long can a login sit unused before it stops working?",
+      "expected_sources": [
+        1
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "sixty",
+        "60"
+      ],
+      "note": "Answer says 'accounts dormant for sixty days are suspended'."
+    },
+    {
+      "id": "dn-13",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "synonym",
+      "question": "What happens to printouts nobody collects?",
+      "expected_sources": [
+        3
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "24"
+      ],
+      "note": "Answer says 'jobs left unclaimed for 24 hours are deleted'."
+    },
+    {
+      "id": "dn-14",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "synonym",
+      "question": "How long do I have to challenge my review score?",
+      "expected_sources": [
+        6
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "ten",
+        "10"
+      ],
+      "note": "Answer says 'appeal a rating within ten working days'."
+    },
+    {
+      "id": "dn-15",
+      "fixture": "sample_dense_manual.pdf",
+      "category": "adversarial_sibling",
+      "question": "What is the excess charged for losing a handheld terminal?",
+      "expected_sources": [
+        4
+      ],
+      "match": "any",
+      "expected_answer_contains": [
+        "75"
+      ],
+      "note": "p3 mentions handheld terminals repeatedly (issue, refresh cycle) but holds no figure; the amount is only on p4."
     }
   ]
 }

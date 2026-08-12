@@ -266,9 +266,44 @@ def build_large_excel() -> Path:
     return out
 
 
+def build_dense_pdf() -> Path:
+    """An 8-page PDF whose pages each carry six unrelated topics.
+
+    The other large fixture averages 46 words per page with one topic each, so
+    a page is already passage-sized there and sub-chunking cannot change the
+    outcome either way. These pages average ~214 words across six unrelated
+    subjects, which is the condition under which retrieving a whole page
+    plausibly dilutes the match. See fixture_content.py for the design.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
+                                    Spacer)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "rag_eval"))
+    from fixture_content import DENSE_PDF_PAGES, DENSE_PDF_TITLE
+
+    out = SAMPLES / "sample_dense_manual.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(out), pagesize=LETTER)
+
+    story = []
+    for index, (heading, body) in enumerate(DENSE_PDF_PAGES):
+        if index == 0:
+            story.append(Paragraph(DENSE_PDF_TITLE, styles["Title"]))
+            story.append(Spacer(1, 12))
+        story.append(Paragraph(heading, styles["Heading1"]))
+        story.append(Paragraph(body, styles["BodyText"]))
+        if index != len(DENSE_PDF_PAGES) - 1:
+            story.append(PageBreak())   # one section per page, so page == chunk
+
+    doc.build(story)
+    return out
+
+
 if __name__ == "__main__":
     for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf(),
-                 build_large_pdf(), build_large_excel()):
+                 build_large_pdf(), build_large_excel(), build_dense_pdf()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")

@@ -104,10 +104,11 @@ only on the PyTorch index, so pip is forced to take it from there. An
 ambiguous.
 
 **Why 2.7.1 specifically.** It matches the version used locally. The retrieval
-eval scores 18/18, and four of its margins sit between 0.028 and 0.047 — narrow
-enough that numerical drift across releases could flip a case silently. Newer
-wheels exist; parity is worth more than novelty here. If you ever change this
-line, re-run the eval (below) — it is free.
+eval scores 33/33 retrieved and 28/33 ranked first, and four of its margins sit
+between 0.028 and 0.047 — narrow enough that numerical drift across releases
+could flip a case silently. Newer wheels exist; parity is worth more than
+novelty here. If you ever change this line, re-run the eval (below) — it is
+free.
 
 ### `packages.txt`
 
@@ -213,10 +214,11 @@ Free and worth doing after any dependency change:
 python tests/e2e/rag_eval/run_eval.py
 ```
 
-Expect **18/18** on the meaningful fixtures. If it has dropped, the torch pin
-is the first suspect: embedding values can shift across releases and four
-margins sit between 0.028 and 0.047. Running it against whatever Cloud actually
-installed is the only way to see the real number.
+Expect **33/33 retrieved, 28/33 ranked first** on the meaningful fixtures. If
+either has dropped, the torch pin is the first suspect: embedding values can
+shift across releases and four margins sit between 0.028 and 0.047. Running it
+against whatever Cloud actually installed is the only way to see the real
+number.
 
 ```bash
 # Everything else, locally.

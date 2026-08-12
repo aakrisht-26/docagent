@@ -1,10 +1,18 @@
 # RAG retrieval: embeddings vs keyword overlap
 
-Reproduce with:
-
-```bash
-python tests/e2e/rag_eval/run_eval.py
-```
+> **This document is a historical record of one experiment**, on the 18-case
+> eval set as it stood at the time. It answers "were embeddings worth adopting
+> over keyword overlap?" — and the tokenizer finding in it still matters.
+>
+> It is **not** the current retrieval numbers. The eval set has since grown to
+> 33 meaningful cases, and retrieval now ranks over passages rather than whole
+> pages. For current figures and the sub-chunking comparison, see
+> [`docs/retrieval-sub-chunking.md`](../../../docs/retrieval-sub-chunking.md).
+>
+> Running `run_eval.py` today therefore prints different totals to the ones
+> below, because it is scoring a larger set under different chunking. To
+> reproduce the numbers *in this document* you would need the eval set and
+> chunking as of the RAG-retrieval branch.
 
 Retrieval scoring makes no API calls. The baseline figures come from
 [`BASELINE.md`](BASELINE.md).
