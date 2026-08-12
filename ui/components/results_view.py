@@ -1194,10 +1194,15 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
     if chunks_key not in st.session_state:
         parsed_doc = st.session_state.get(f"parsed_doc_{fname}") or getattr(result, "parsed_document", None)
         if parsed_doc and hasattr(parsed_doc, "chunks"):
-            st.session_state[chunks_key] = [
+            # Passages for retrieval, same split DocumentStore indexes with, so
+            # a document answers identically whether it came from this session
+            # or from history. parsed_doc.chunks itself is untouched — the
+            # summary above this tab is still built from whole pages.
+            from utils.chunking import sub_chunk
+            st.session_state[chunks_key] = sub_chunk([
                 {"text": c.text, "page_or_sheet": c.page_or_sheet}
                 for c in parsed_doc.chunks
-            ]
+            ])
         else:
             raw = result.raw_text or ""
             st.session_state[chunks_key] = [
@@ -1220,7 +1225,7 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
 
     # Name the retrieval method. It was logged but never shown, so a
     # deployment without sentence-transformers answered from keyword overlap
-    # -- measured 13/18 on the eval set against 18/18 for embeddings -- and
+    # -- measured 27/33 on the eval set against 33/33 for embeddings -- and
     # looked identical to one that had them. Silent degradation of answer
     # quality is worse than a slower answer, so say which is running.
     from utils import embeddings as _emb
@@ -1234,8 +1239,8 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
             "Conversation is kept in memory while the page is open. "
             "Retrieval: **keyword overlap** — the embedding model is not "
             "installed here, so answers are drawn from word-overlap matches "
-            "rather than meaning. Scores 13/18 on the retrieval eval against "
-            "18/18 for embeddings."
+            "rather than meaning. Scores 27/33 on the retrieval eval against "
+            "33/33 for embeddings."
         )
 
     # Render chat history

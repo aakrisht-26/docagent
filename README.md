@@ -30,7 +30,7 @@ More, including before-and-after comparisons of every surface in both themes:
 - **Multi-Key API Resilience** — Round-robin rotation across multiple Groq API keys with automatic rate-limit (HTTP 429) recovery and retry logic.
 - **Advanced Adaptive OCR** — OpenCV-driven pipeline using Gaussian equalisation and adaptive thresholding to extract text from scanned or photographed PDFs with poor lighting.
 - **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial) document table extraction as structured HTML, preventing garbled text from complex layouts.
-- **Multi-Turn Document Chat** — Semantic Q&A: chunks are retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Falls back to keyword overlap when the model is unavailable. Measured **18/18** retrieval on the eval set, against 10/18 for the original keyword approach ([details](tests/e2e/rag_eval/RESULTS.md)).
+- **Multi-Turn Document Chat** — Semantic Q&A over overlapping ~100-word passages, retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Citations still resolve to the original page or sheet. Falls back to keyword overlap when the model is unavailable. Measured **33/33 retrieved, 28/33 ranked first** on the eval set ([details](docs/retrieval-sub-chunking.md)).
 - **Natural Language Document Editing** — Describe edits in plain English; the LLM rewrites the document or applies structured JSON operations to Excel sheets.
 - **Form Filling** — Paste answers to extracted questions; DocAgent compiles the completed form as a downloadable PDF.
 - **Glassmorphic Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
@@ -195,9 +195,31 @@ Chunk retrieval via keyword_overlap: selected [9, 13, 18] from 20 chunk(s) (top 
 
 #### Measured retrieval accuracy
 
-18 question/expected-source pairs over the fixtures, scored on whether the chunk
-holding the answer was **ranked** into the selected set. Full method and
-per-case results in [`tests/e2e/rag_eval/RESULTS.md`](tests/e2e/rag_eval/RESULTS.md).
+**Current numbers, 33 meaningful cases.** Retrieval ranks over overlapping
+~100-word passages rather than whole pages; see
+[`docs/retrieval-sub-chunking.md`](docs/retrieval-sub-chunking.md) for the
+parameter sweep, the per-case flips and the costs.
+
+| Method | chunking | retrieved | ranked #1 | mean rank |
+|---|---|---|---|---|
+| **Embeddings (current)** | **passages** | **33/33** | **28/33** | **1.18** |
+| Embeddings | whole pages | 33/33 | 25/33 | 1.27 |
+| Keyword fallback | passages | 27/33 | 17/33 | 3.09 |
+| Keyword fallback | whole pages | 29/33 | 16/33 | 3.06 |
+
+Sub-chunking improves **ranking, not recall** — page-level chunking already put
+the answer in the context on every case. Three cases moved from rank 2 to rank 1
+and none regressed. It also fixes a silent truncation bug: the embedding model
+cuts input at 256 tokens, and 5 of the 8 pages in the dense fixture exceeded
+that, so whole-page embedding was ranking them from a lossy copy.
+
+---
+
+The table below is the earlier **embeddings-versus-keyword** experiment, on the
+18-case set as it stood at the time. It is kept because it answers a different
+question — whether embeddings were worth adopting at all — and because the
+tokenizer finding in it still matters. Full method and per-case results in
+[`tests/e2e/rag_eval/RESULTS.md`](tests/e2e/rag_eval/RESULTS.md).
 
 | Method | ranked | PDF | Workbook |
 |---|---|---|---|
