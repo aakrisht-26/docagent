@@ -319,11 +319,87 @@ pre-warm the cache deliberately:
 python -c "from utils import embeddings; embeddings.encode(['warm up'])"
 ```
 
+### The model silently truncates at 256 tokens
+
+**This is the one behaviour in this section most likely to cost you something
+without your noticing.**
+
+`all-MiniLM-L6-v2` has `max_seq_length = 256`. Anything longer is **cut before
+it is embedded**. There is no exception, no warning in the app's logs, and no
+indication in the returned vector that anything was dropped — the tail of the
+text simply does not exist as far as retrieval is concerned.
+
+**The symptom is degraded ranking, not an error.** A chunk whose second half was
+discarded still gets a perfectly valid-looking vector; it just describes half a
+document. Retrieval then ranks it on material it can no longer see, so the
+answer sits lower than it should or loses to a shorter chunk that happens to be
+fully visible. Nothing anywhere reports a problem.
+
+Measured on the eval fixtures, which is how it was found at all:
+
+| fixture | words/page | max tokens/page | pages over the 256 limit |
+|---|---|---|---|
+| `sample_dense_manual.pdf` | ~222 | 282 | **5 of 8** |
+| `sample_large_report.pdf` | ~46 | 110 | 0 of 20 |
+
+So most of the dense fixture was being ranked from a lossy copy of its own text,
+while the older fixture never came close to the limit — which is exactly why the
+problem stayed invisible for as long as it did.
+
+**This is part of why the shipped passage size is what it is.** The default in
+`utils/chunking.py` is 100 words with 20 words of overlap. That figure was
+chosen by a retrieval sweep (see
+[`docs/retrieval-sub-chunking.md`](docs/retrieval-sub-chunking.md)), but it is
+also **bounded from above by this limit rather than by retrieval quality alone**.
+At the measured ratio of ~1.21 tokens per word on these fixtures, 100 words is
+about 120 tokens — comfortably inside the window with room for word-heavy or
+non-English text. The ceiling expressed in words is roughly **212**, so a
+passage size much above ~150 starts risking truncation on dense text even though
+the sweep shows larger passages are not much worse for ranking.
+
+Sizes are specified in words rather than tokens on purpose: tokenising at index
+time would make chunking depend on the embedding model being installed, and the
+keyword fallback has to work without it. The trade is that the word→token ratio
+is an estimate, which is another reason for headroom rather than a size that
+only just fits.
+
+#### If you change the model, re-derive this
+
+**A different model has a different limit, and nothing in the code discovers it
+for you.** `max_seq_length` varies widely — 256 here, 512 for many BERT-family
+encoders, 8192 for some newer long-context embedding models. Swapping the model
+without revisiting the passage size gets you one of two silent outcomes:
+
+* a **smaller** limit than the passages you are producing — truncation returns,
+  with the same invisible symptom; or
+* a **much larger** limit — no breakage, but the passage size is now tuned for a
+  constraint that no longer exists, and you may be splitting more finely than
+  you need to.
+
+The check takes a moment and needs no fixtures:
+
+```python
+from utils import embeddings
+m = embeddings._get_model()
+print(m.max_seq_length)                       # the hard ceiling, in tokens
+print(len(m.tokenizer.encode("your text")))   # what a given chunk actually costs
+```
+
+Then re-run `python tests/e2e/rag_eval/run_eval.py` (free, no API calls) and
+sweep `DOCAGENT_PASSAGE_WORDS` around the new ceiling. Note that changing the
+model **also** invalidates every stored vector: `MODEL_NAME` and `chunk_scheme`
+are both recorded per row in `history.db` and checked on load, so stale rows are
+skipped rather than mis-compared — but they retrieve by keyword until the
+document is re-analysed.
+
 ### If you want it gone
 
 Retrieval degrades rather than breaks. Uninstalling it leaves chat working on
-keyword overlap at **13/18** on the eval set instead of 18/18 — the loss is
-concentrated in synonym-phrased questions, which drop to 0/4. Verify with:
+keyword overlap at **27/33 retrieved and 17/33 ranked first**, against 33/33 and
+28/33 with embeddings — and mean rank falls from 1.18 to 3.09, which is the
+figure that best captures how much worse the ordering gets. The loss is
+concentrated in synonym-phrased questions, where no amount of word overlap
+helps. Verify with:
 
 ```bash
 python tests/e2e/rag_eval/run_eval.py --keyword
