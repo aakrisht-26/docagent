@@ -72,8 +72,8 @@ class DocumentChatSkill(BaseSkill):
             )
 
         # Select most relevant chunks
-        selected_chunks = self._select_chunks(user_message, chunks)
-        used_pages = [c["page_or_sheet"] for c in selected_chunks if c.get("page_or_sheet")]
+        selected_chunks, ranked_chunks = self._select_with_roles(user_message, chunks)
+        used_pages = self._citable_sources(ranked_chunks, selected_chunks)
 
         context_text = self._format_context(selected_chunks)
 
@@ -206,6 +206,57 @@ class DocumentChatSkill(BaseSkill):
         ]
         return scores, "keyword_overlap"
 
+    def _citable_sources(self, ranked: List[Dict], selected: List[Dict]) -> List:
+        """Sources worth showing the user, in rank order and deduplicated.
+
+        Takes the RANKED subset, not everything sent to the model. Anchors are
+        appended to every selection regardless of the question, so listing them
+        attributes the answer to pages that were never chosen for it — a
+        one-page fact rendered as "Sources: 3, 5, 7, 1, 20", where 1 and 20 are
+        merely the document's first and last chunks.
+
+        The role has to come from the selector rather than be re-derived here.
+        A chunk can be both the top match and positionally first, and treating
+        "is an anchor position" as "was only an anchor" dropped page 1 from
+        `dn-01` — the very page the answer came from.
+
+        Deduplicated because with passages several fragments of one page can be
+        selected, and "Page 3, Page 3" is noise.
+
+        Falls back to the full selection when nothing was ranked — a document
+        short enough that the anchors are the whole of it. They genuinely are
+        where the answer came from then, and an empty source line would be less
+        honest rather than more.
+        """
+        if not ranked:
+            ranked = selected
+
+        seen = set()
+        sources = []
+        for chunk in ranked:
+            source = chunk.get("page_or_sheet")
+            if source in (None, "") or source in seen:
+                continue
+            seen.add(source)
+            sources.append(source)
+        return sources
+
+    @staticmethod
+    def anchor_chunks(chunks: List[Dict]) -> List[Dict]:
+        """The first and last chunk, which `_select_chunks` always appends.
+
+        Structural padding, not a retrieval decision — they are added whatever
+        the question is, to give the model the document's opening and closing
+        context. Defined once here because two callers need the same answer:
+        the selector, which adds them, and `execute()`, which must keep them
+        out of the citation list.
+        """
+        if not chunks:
+            return []
+        if len(chunks) == 1:
+            return [chunks[0]]
+        return [chunks[0], chunks[-1]]
+
     @staticmethod
     def source_label(chunk: Dict) -> str:
         """Human-readable origin of a chunk: 'Page 3' or 'Sheet: Q3 Revenue'."""
@@ -253,7 +304,24 @@ class DocumentChatSkill(BaseSkill):
         return "\n\n---\n\n".join(parts)
 
     def _select_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
-        """Return the top 3 most relevant chunks plus first + last (deduped).
+        """The chunks handed to the model: top 3 by relevance, plus anchors.
+
+        Thin wrapper over `_select_with_roles`, kept because the retrieval eval
+        and older callers want just the list.
+        """
+        return self._select_with_roles(query, chunks)[0]
+
+    def _select_with_roles(self, query: str, chunks: List[Dict]) -> tuple:
+        """(selected, ranked) — everything sent to the model, and the subset of
+        it that EARNED its place.
+
+        The two differ by the anchors, and the difference has to be reported
+        rather than re-derived. A chunk can be both the top-ranked result and
+        positionally first in the document; re-deriving anchors by position
+        would drop it from the citation list even though the answer came from
+        it. That was a real bug, caught by checking the narrowed citations
+        against the model's own prose on `dn-01`, where page 1 is both the best
+        match and the opening chunk.
 
         Ranking is by embedding similarity when available and by keyword overlap
         otherwise. The top-3 count, the first/last anchors and the context cap
@@ -261,7 +329,7 @@ class DocumentChatSkill(BaseSkill):
         changes *what* is chosen but not *how many* slots there are.
         """
         if not chunks:
-            return []
+            return [], []
 
         scores, method = self.score_chunks(query, chunks)
         self._last_retrieval_method = method
@@ -273,7 +341,8 @@ class DocumentChatSkill(BaseSkill):
                 f"Chunk retrieval via {method}: no chunk scored above zero; "
                 f"falling back to the first {min(3, len(chunks))} chunk(s)."
             )
-            return chunks[:3]
+            head = chunks[:3]
+            return head, head
 
         order = sorted(range(len(chunks)), key=lambda i: scores[i], reverse=True)
 
@@ -307,11 +376,7 @@ class DocumentChatSkill(BaseSkill):
         )
 
         # Always include structural anchors (first and last chunk)
-        anchors = []
-        if chunks[0] not in top:
-            anchors.append(chunks[0])
-        if len(chunks) > 1 and chunks[-1] not in top:
-            anchors.append(chunks[-1])
+        anchors = [a for a in self.anchor_chunks(chunks) if a not in top]
 
         # Merge and cap at _MAX_CONTEXT_CHARS
         result: List[Dict] = []
@@ -323,7 +388,12 @@ class DocumentChatSkill(BaseSkill):
             result.append(chunk)
             total_chars += text_len
 
-        return result if result else chunks[:1]
+        if not result:
+            fallback = chunks[:1]
+            return fallback, fallback
+        # `ranked` is intersected with `result` because the context cap can drop
+        # a ranked chunk; a chunk that never reached the model must not be cited.
+        return result, [c for c in result if any(c is t for t in top)]
 
     @staticmethod
     def _tokenize(text: str) -> set:

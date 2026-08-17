@@ -122,5 +122,92 @@ class TestContextTruncation(unittest.TestCase):
         self.assertNotIn("[Page 2]", context)
 
 
+
+class TestCitableSources(unittest.TestCase):
+    """`used_pages` must name what the answer came from, not everything sent.
+
+    Anchors are appended to every selection whatever the question is, so
+    listing them attributed a one-page fact to five pages: "Sources: 3, 5, 7,
+    1, 20", where 1 and 20 are merely the document's first and last chunks.
+    That made the line the UI shows less accurate than the model's own prose.
+    """
+
+    def setUp(self):
+        self.skill = _skill()
+
+    def test_anchors_are_not_cited(self):
+        ranked = [{"text": "answer", "page_or_sheet": 5}]
+        selected = ranked + [{"text": "opening", "page_or_sheet": 1},
+                             {"text": "closing", "page_or_sheet": 20}]
+        self.assertEqual(self.skill._citable_sources(ranked, selected), [5])
+
+    def test_a_chunk_that_is_both_top_ranked_and_first_is_still_cited(self):
+        """The bug this file's sibling change was built to avoid.
+
+        On eval case dn-01 the answer is on page 1, which is also the opening
+        chunk. Deciding "is an anchor" by POSITION dropped it from the citation
+        list — the one page the answer actually came from.
+        """
+        first = {"text": "answer", "page_or_sheet": 1}
+        ranked = [first]
+        selected = [first, {"text": "closing", "page_or_sheet": 8}]
+        self.assertEqual(self.skill._citable_sources(ranked, selected), [1])
+
+    def test_rank_order_is_preserved(self):
+        ranked = [{"text": "a", "page_or_sheet": 6},
+                  {"text": "b", "page_or_sheet": 2},
+                  {"text": "c", "page_or_sheet": 3}]
+        self.assertEqual(self.skill._citable_sources(ranked, ranked), [6, 2, 3])
+
+    def test_repeated_sources_are_deduplicated(self):
+        """Several passages of one page must not read as several sources."""
+        ranked = [{"text": "a", "page_or_sheet": 3},
+                  {"text": "b", "page_or_sheet": 3},
+                  {"text": "c", "page_or_sheet": 5}]
+        self.assertEqual(self.skill._citable_sources(ranked, ranked), [3, 5])
+
+    def test_sheet_names_are_citable(self):
+        ranked = [{"text": "a", "page_or_sheet": "Q3 Revenue"}]
+        self.assertEqual(self.skill._citable_sources(ranked, ranked), ["Q3 Revenue"])
+
+    def test_missing_sources_are_skipped_not_rendered_as_blanks(self):
+        ranked = [{"text": "a", "page_or_sheet": None},
+                  {"text": "b"},
+                  {"text": "c", "page_or_sheet": 4}]
+        self.assertEqual(self.skill._citable_sources(ranked, ranked), [4])
+
+    def test_nothing_ranked_falls_back_to_the_selection(self):
+        """A document so short the anchors are all of it still gets a source.
+
+        An empty source line would be less honest, not more: those chunks
+        really are where the answer came from.
+        """
+        selected = [{"text": "only", "page_or_sheet": 1}]
+        self.assertEqual(self.skill._citable_sources([], selected), [1])
+
+    def test_selector_reports_roles_consistently(self):
+        """`_select_chunks` must stay the flat list its callers expect."""
+        chunks = [{"text": f"passage about depot maintenance {i}",
+                   "page_or_sheet": i} for i in range(1, 9)]
+        selected, ranked = self.skill._select_with_roles("maintenance", chunks)
+        self.assertEqual(self.skill._select_chunks("maintenance", chunks), selected)
+        for chunk in ranked:
+            self.assertIn(chunk, selected, "a ranked chunk must have been sent")
+        self.assertLessEqual(len(ranked), len(selected))
+
+    def test_a_ranked_chunk_dropped_by_the_context_cap_is_not_cited(self):
+        """Cite only what reached the model.
+
+        The cap can drop a ranked chunk; citing it anyway would name a source
+        the model never saw.
+        """
+        chunks = [{"text": "maintenance spend " + "x" * 4000, "page_or_sheet": i}
+                  for i in range(1, 6)]
+        selected, ranked = self.skill._select_with_roles("maintenance spend", chunks)
+        for chunk in ranked:
+            self.assertIn(chunk, selected)
+        sources = self.skill._citable_sources(ranked, selected)
+        selected_sources = {c["page_or_sheet"] for c in selected}
+        self.assertTrue(set(sources).issubset(selected_sources))
 if __name__ == "__main__":
     unittest.main(verbosity=2)
