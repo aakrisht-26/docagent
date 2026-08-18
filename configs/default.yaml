@@ -30,6 +30,20 @@ groq:
   # Retrieval figures in the docs are model-independent (no LLM call), but every
   # ANSWER and CITATION figure names the model it was measured on. Re-run the
   # eval if you change this line.
+  #
+  # IT IS ROUGHLY 4x SLOWER PER CALL than the 70b, because it reasons before it
+  # answers. Measured end to end: a summary went from about 2s to 12-18s, the
+  # pdf e2e stage takes 11s and the 20-page report 91s (61s of that in
+  # summarisation). Free-tier keys also carry an 8,000 tokens-per-minute limit,
+  # which a large document now brushes against; the client parks a throttled key
+  # and rotates, so this shows up as headroom warnings rather than failures.
+  #
+  # MAX_TOKENS INCLUDES REASONING TOKENS. That is the trap this model brings:
+  # a budget sized against the ANSWER can be entirely consumed before the answer
+  # starts, and the API reports finish_reason "length" with empty content. Sizes
+  # measured on a real 20-page document: classification needs ~16 content tokens
+  # but the budget must clear ~200 total; the summarisation map step needs ~943;
+  # the reduce step ~2604. Never size a budget from the expected reply alone.
   model: "openai/gpt-oss-120b"
   timeout_seconds: 180
   temperature: 0.15

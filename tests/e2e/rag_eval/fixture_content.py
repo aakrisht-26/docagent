@@ -460,3 +460,63 @@ DENSE_PDF_PAGES = [
      "procurement records the exposure on the risk register and reviews it quarterly. "
      "The register is presented to the board twice a year."),
 ]
+
+
+# ── Questionnaire fixture: the case the LLM blend exists for ─────────────────
+#
+# Every other fixture is a normal document, so `question_extraction` and the
+# `0.7 * llm_score + 0.3 * heuristic` blend had never run end to end. That gap
+# is why an 80-token budget could disable LLM classification for a whole model
+# migration without a single number moving.
+#
+# The design constraint is precise: this must be a form that the HEURISTIC
+# under-scores. If the regex patterns caught it, the LLM term would be
+# redundant and the fixture would pass whether or not the blend worked.
+#
+# So it deliberately avoids every strong cue in _Q_SIGNALS: no "Question 1:",
+# no "survey" / "questionnaire" / "form" keyword, no Likert wording, no "check
+# all that apply", no underscore fill-ins, no "please select", no yes/no pairs.
+# It reads as prose instructions, which is how a great many real intake forms
+# are actually written.
+#
+# Measured: heuristic scores 0.000 (normal_document, below the 0.4 threshold),
+# the LLM returns p(questionnaire) 0.96, and the blend lands at 0.672
+# (questionnaire). Discard the LLM result and this document silently stops
+# being a questionnaire, which is exactly what the eval needs to catch.
+
+QUESTIONNAIRE_PDF_TITLE = "Ardwick Logistics — Supplier Onboarding Record"
+
+QUESTIONNAIRE_PDF_PAGES = [
+    # 1
+    ("Supplier Onboarding Record",
+     "Complete every section before returning this record to the procurement team. "
+     "Entries that are left blank will delay onboarding, which takes fifteen working "
+     "days once a complete record is received.\n\n"
+     "Section 1 — Organisation\n"
+     "State the registered legal name of your organisation.\n"
+     "State the company registration number and the country of incorporation.\n"
+     "Give the trading address, and the registered address where it differs.\n"
+     "Name the individual who will act as the primary commercial contact.\n\n"
+     "Section 2 — Financial standing\n"
+     "State your annual turnover for the two most recent financial years.\n"
+     "Describe any material change in ownership during that period.\n"
+     "Confirm the payment terms your organisation is able to accept. Standard terms "
+     "are sixty days from invoice date."),
+
+    # 2
+    ("Supplier Onboarding Record (continued)",
+     "Section 3 — Capability\n"
+     "Describe the goods or services your organisation would supply under this "
+     "agreement, and the volumes you can sustain in a normal quarter.\n"
+     "Identify the sites from which those goods or services would be delivered.\n"
+     "State the lead time you would commit to for a standard order.\n"
+     "Describe your escalation route when a committed lead time cannot be met.\n\n"
+     "Section 4 — Compliance\n"
+     "Confirm that your organisation holds current employers liability cover, and "
+     "state the insured amount.\n"
+     "Describe how your organisation verifies the right to work of its staff.\n"
+     "Summarise your policy on subcontracting, and name any subcontractor you would "
+     "expect to use on this account.\n"
+     "State whether your organisation has been subject to an enforcement action by a "
+     "regulator in the last five years, and describe the circumstances."),
+]

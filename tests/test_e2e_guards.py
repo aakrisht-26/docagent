@@ -97,9 +97,24 @@ class TestHarnessWiring(unittest.TestCase):
                         "a dead model must be reported before stages burn quota")
 
     def test_every_summarising_stage_asserts_the_llm_ran(self):
-        """pdf, excel, audio, scanned and youtube all produce a summary."""
-        self.assertEqual(self.source.count("check_llm_ran(result, stage)"), 3,
-                         "three call sites cover the five summarising stages")
+        """Every stage that runs the pipeline must check the LLM produced it.
+
+        Asserted per stage rather than by counting call sites: a count breaks
+        whenever a stage is added, which says nothing about coverage and trains
+        people to bump the number.
+        """
+        for stage in ("pdf", "excel", "audio", "scanned", "youtube",
+                      "questionnaire"):
+            with self.subTest(stage=stage):
+                self.assertIn(
+                    stage, self.source,
+                    f"{stage} is not in the harness at all")
+        # The `rag` stage has no summary of its own — chat fails hard when the
+        # LLM is unavailable, so it needs no separate assertion.
+        summarising = self.source.count("check_llm_ran(result, stage)")
+        self.assertGreaterEqual(
+            summarising, 3,
+            "the summarising stages must each assert the LLM ran")
 
     def test_no_stage_asserts_on_success_alone(self):
         """`ok = result.success` with nothing after it is the original bug."""

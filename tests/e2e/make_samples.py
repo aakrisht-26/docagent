@@ -301,9 +301,46 @@ def build_dense_pdf() -> Path:
     return out
 
 
+def build_questionnaire_pdf() -> Path:
+    """A form the HEURISTIC does not recognise, so only the LLM blend can.
+
+    Every other fixture is a normal document, so question_extraction and the
+    `0.7 * llm_score + 0.3 * heuristic` blend had never run end to end. See the
+    note above QUESTIONNAIRE_PDF_PAGES for why it is written in prose rather
+    than with the usual form furniture.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
+                                    Spacer)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "rag_eval"))
+    from fixture_content import QUESTIONNAIRE_PDF_PAGES, QUESTIONNAIRE_PDF_TITLE
+
+    out = SAMPLES / "sample_questionnaire.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(out), pagesize=LETTER)
+
+    story = []
+    for index, (heading, body) in enumerate(QUESTIONNAIRE_PDF_PAGES):
+        if index == 0:
+            story.append(Paragraph(QUESTIONNAIRE_PDF_TITLE, styles["Title"]))
+            story.append(Spacer(1, 12))
+        story.append(Paragraph(heading, styles["Heading1"]))
+        for line in body.splitlines():
+            if line.strip():
+                story.append(Paragraph(line, styles["BodyText"]))
+        if index != len(QUESTIONNAIRE_PDF_PAGES) - 1:
+            story.append(PageBreak())
+
+    doc.build(story)
+    return out
+
+
 if __name__ == "__main__":
     for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf(),
-                 build_large_pdf(), build_large_excel(), build_dense_pdf()):
+                 build_large_pdf(), build_large_excel(), build_dense_pdf(),
+                 build_questionnaire_pdf()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")

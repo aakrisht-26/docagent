@@ -285,6 +285,22 @@ is missing, the secret name is wrong. It must be exactly `GROQ_API_KEY` (or
 `DOCAGENT_HOSTED` is not set and the `/mount/src` backstop did not fire. Set it
 in secrets. Confirm with `Runtime: hosted (Community Cloud)` in the log.
 
+**Everything is slower than it used to be.**
+Expected. `openai/gpt-oss-120b` reasons before it answers and is roughly **4x
+slower per call** than the retired `llama-3.3-70b-versatile`. Measured:
+
+| | 70b | gpt-oss-120b |
+|---|---|---|
+| a typical summary | ~2s | **12-18s** |
+| `e2e.py pdf`, end to end | — | 11s |
+| a 20-page report, end to end | — | 91s (61s in summarisation) |
+
+Free-tier keys also carry an **8,000 tokens-per-minute** limit alongside the
+daily one, and a large document now brushes against it. The client parks a
+throttled key and rotates to the next, so this surfaces as `tokens/min headroom
+low` warnings rather than failures — but with a single key it would be a stall.
+Configure several keys via `GROQ_API_KEYS` for anything beyond casual use.
+
 **Summaries are short and flat, and the method reads `extractive`.**
 The LLM is not running. Two causes, and they need different fixes. If the log
 shows `No API key found`, the secret did not arrive — see above. If it shows
