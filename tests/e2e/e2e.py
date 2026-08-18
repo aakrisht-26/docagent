@@ -78,7 +78,7 @@ from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402
 from utils.config import load_config  # noqa: E402
 
-STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag")
+STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag", "questionnaire")
 
 
 def _agent_config() -> dict:
@@ -240,6 +240,52 @@ def run_stage(stage: str) -> int:
             ok = False
         elif result.word_count < 100:
             print(f"  FAIL: OCR returned only {result.word_count} words; expected >= 100.")
+            ok = False
+
+    elif stage == "questionnaire":
+        # The only fixture that exercises LLM classification END TO END.
+        #
+        # Every other document here is a normal_document, so the questionnaire
+        # branch of the pipeline — the `0.7 * llm_score + 0.3 * heuristic` blend
+        # and the `question_extraction` stage it gates — had no coverage at all.
+        # That gap is why an 80-token classifier budget could disable LLM
+        # classification across a model migration without a number moving.
+        #
+        # The fixture is written so the HEURISTIC does not recognise it: it
+        # scores 0.000, below the 0.4 threshold. Only the LLM term carries it
+        # over. So if the LLM result is ever discarded again — a budget too
+        # small, a parse change, a model swap — this stage fails, and it fails
+        # on the thing a user would actually notice: no questions extracted.
+        result = agent.run(_require(SAMPLES / "sample_questionnaire.pdf"))
+        show(result)
+        ok = result.success and check_llm_ran(result, stage)
+
+        print(f"  CLASSIFY    : doc_type={result.doc_type!r} "
+              f"method={result.classification_method!r} "
+              f"conf={result.classification_confidence:.3f} "
+              f"domain={result.domain!r}")
+        print(f"  QUESTIONS   : {len(result.questions)} "
+              f"({result.question_extraction_method})")
+
+        if result.doc_type != "questionnaire":
+            print(f"  FAIL: [{stage}] classified as {result.doc_type!r}.\n"
+                  f"        This fixture scores 0.000 on heuristics by design, so\n"
+                  f"        only the LLM blend can classify it. Getting\n"
+                  f"        'normal_document' means the LLM result was DISCARDED —\n"
+                  f"        check the log for a truncation or parse warning.")
+            ok = False
+        elif not result.classification_method.startswith("hybrid_"):
+            print(f"  FAIL: [{stage}] method is {result.classification_method!r}, "
+                  f"not hybrid_*.\n"
+                  f"        The heuristic cannot reach this verdict alone, so a\n"
+                  f"        non-hybrid method means the blend did not run.")
+            ok = False
+        elif not result.questions:
+            print(f"  FAIL: [{stage}] classified as a questionnaire but extracted "
+                  f"no questions.\n"
+                  f"        The planner gates question_extraction on doc_type, so "
+                  f"this is\n        the extraction step failing, not the "
+                  f"classifier.")
             ok = False
 
     elif stage == "youtube":

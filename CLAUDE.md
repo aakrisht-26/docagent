@@ -73,6 +73,45 @@ All inter-component communication uses typed dataclasses from `core/models.py`. 
 
 `utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`openai/gpt-oss-120b`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
 
+### Token budgets and reasoning models
+
+`openai/gpt-oss-120b` reasons before it answers, and **`max_tokens` covers the
+reasoning as well as the reply**. A budget sized against the expected answer can
+therefore be consumed before the answer begins: the API returns
+`finish_reason: "length"` with **empty content**, which `chat()` reports as
+`None` — indistinguishable, until recently, from the model simply failing.
+
+That is not hypothetical. `_llm_classify` asked for 80 tokens for a 25-token
+JSON reply, got `reasoning_tokens: 78`, and LLM classification was silently off
+for an entire model migration. Domain fell back to `General`, which gates
+`structure_recognition`, and the questionnaire blend lost its LLM term.
+
+- **Never size a budget from the expected reply.** Measured on a real 20-page
+  document: classification needs ~16 content tokens but ~200 total; the
+  summarisation map step ~943; the reduce step ~2604.
+- **`chat()` now warns** on `finish_reason: "length"`, distinguishing "no
+  content, budget too small" from "truncated partial answer", and exposes
+  `_last_finish_reason`. It still returns `Optional[str]`: four call sites treat
+  falsy as a hard error and three use it as a deliberate fallback, so raising
+  would break the fallbacks.
+- **It is ~4x slower per call** than the retired 70b — summaries went from ~2s
+  to 12-18s — and free-tier keys have an 8,000 TPM limit a large document now
+  brushes. Use several keys via `GROQ_API_KEYS`.
+- **Summary length presets carry a reasoning allowance.** The numbers in
+  `_LENGTH_CONFIGS` are CONTENT budgets; `_with_reasoning_room()` adds 1024 at
+  the call so a preset delivers the length it names. Reasoning does not scale
+  with input (a 5.5x range of prompt sizes moved it from 45 to 42 tokens) but
+  does scale with the directive (Standard 34, Exhaustive 902), and it is noisy
+  run to run — hence a flat constant clearing the worst observation rather than
+  a fitted curve.
+- **Groq refuses, it does not truncate.** prompt + `max_tokens` over the
+  per-minute limit returns 413, so the allowance is clamped to
+  `_PROVIDER_REQUEST_CEILING`. Measured across eight keys: 5000 accepted by
+  seven, 8000 refused by six, 9024 refused by all. "Exhaustive" (8000) already
+  exceeded the free tier before the allowance existed; the clamp stops it being
+  made worse. Whether 8000 is the right number for that preset is a product
+  question, not a bug.
+
 ### Hybrid Classification
 
 `DocumentClassifierSkill` uses two phases:

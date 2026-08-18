@@ -793,6 +793,11 @@ class LLMClient:
 
     # ── Public operations ─────────────────────────────────────────────────────
 
+    #: finish_reason from the most recent completion. Exposed for callers that
+    #: want to tell "the model had nothing to say" from "we did not give it room
+    #: to say it"; `chat()` itself returns None for both.
+    _last_finish_reason: Optional[str] = None
+
     def chat(
         self,
         messages: List[Dict[str, str]],
@@ -841,7 +846,48 @@ class LLMClient:
             if not response.choices:
                 logger.warning("Groq API returned an empty choices array.")
                 return None
-            content = response.choices[0].message.content
+
+            choice = response.choices[0]
+            content = choice.message.content
+            self._last_finish_reason = getattr(choice, "finish_reason", None)
+
+            # Truncation is a DISTINCT failure and has to be loud.
+            #
+            # The return contract stays Optional[str] deliberately: of the eight
+            # call sites, four treat a falsy reply as a hard error and three use
+            # it as a legitimate fallback signal (structured_extraction drops to
+            # regex, question_extraction returns no questions, the classifier
+            # drops to heuristics). Raising here would turn three working
+            # fallbacks into crashes. So the fix is to make the reason visible,
+            # not to change what is returned.
+            #
+            # Why it matters: a reasoning model spends a variable prefix of the
+            # budget thinking, so an under-sized max_tokens produces
+            # finish_reason "length" with EMPTY content. That is not the model
+            # failing, it is us asking for less room than it needs, and the two
+            # were indistinguishable to every caller. An 80-token classifier
+            # budget disabled LLM classification across a whole model migration
+            # without a single warning.
+            if self._last_finish_reason == "length":
+                details = getattr(getattr(response, "usage", None),
+                                  "completion_tokens_details", None)
+                reasoning = getattr(details, "reasoning_tokens", None)
+                detail = f", {reasoning} of them reasoning" if reasoning else ""
+                if not content:
+                    logger.warning(
+                        f"LLM produced NO CONTENT: the {max_tokens}-token budget "
+                        f"was consumed before the answer began{detail} "
+                        f"(model={self.model}, finish_reason=length). This is a "
+                        f"budget that is too small, not a model failure — raise "
+                        f"max_tokens at the call site."
+                    )
+                else:
+                    logger.warning(
+                        f"LLM reply was TRUNCATED at the {max_tokens}-token "
+                        f"budget{detail} (model={self.model}). The caller "
+                        f"received a partial answer."
+                    )
+
             return content.strip() if content else None
 
         result = self._run_with_rotation(_do, what="chat")
