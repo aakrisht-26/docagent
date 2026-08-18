@@ -583,7 +583,14 @@
         "wrong_document": "The highest-scoring passage is in a document that does NOT hold the answer, so a selector with fewer slots - or a reader trusting an unqualified page number - lands on the wrong document."
       },
       "corpus_note": "All six fixtures are used, including the three trivial ones. They are not filler here: they are what makes page labels collide. Pages 1 and 2 exist in four of the six documents, so a citation of Page 1 names four different things.",
-      "expected_answer_all": "Every fragment must appear: the question asks two things and half an answer is wrong. Distinct from expected_answer_contains, which is a list of alternative phrasings of ONE fact and is satisfied by any of them."
+      "expected_answer_all": "Every fragment must appear: the question asks two things and half an answer is wrong. Distinct from expected_answer_contains, which is a list of alternative phrasings of ONE fact and is satisfied by any of them.",
+      "no_answer_cases": "Questions the corpus does NOT answer. Scored on whether the model DECLINES, which nothing else here measures: every other case has an answer, so a model that simply always answers scores perfectly on them. Pass is `declined`, not `avoided the trap value`. A reply that says 'the manual gives 45 pence for a private vehicle but states no motorcycle rate' MENTIONS a trap value while declining correctly, and that is the right answer. `asserted_trap` is therefore reported as a diagnostic, not as the verdict. Needs --with-answers: declining is a property of generation, and there is nothing to score without a reply.",
+      "no_answer_categories": {
+        "no_answer_anywhere": "Nothing in any loaded document touches the subject.",
+        "answer_absent_document": "The corpus covers the topic area, but the document holding this particular fact is not loaded. The realistic case: a user asks about something they have not uploaded.",
+        "near_miss": "The retrieved context does NOT contain the answer but DOES contain a plausible substitute — the same measure for a different depot, tier, quarter or organisation. This is the md-10 shape and the hard one: the substitute is on-topic, so retrieval scores it highly and cannot flag it."
+      },
+      "no_answer_expects_decline": "true = nothing in the corpus answers this, so the reply must decline. false = part of the question IS answerable, so declining outright would be wrong; the criterion is instead that the named trap value must not appear."
     },
     "corpus": [
       "sample_large_report.pdf",
@@ -827,6 +834,138 @@
           "four year",
           "seven years"
         ]
+      }
+    ],
+    "no_answer_cases": [
+      {
+        "id": "na-01",
+        "category": "no_answer_anywhere",
+        "question": "What was the company's carbon dioxide emissions in tonnes last year?",
+        "expects_decline": true,
+        "must_not_assert": [],
+        "note": "The review covers fuel volumes and energy spend but never emissions."
+      },
+      {
+        "id": "na-02",
+        "category": "no_answer_anywhere",
+        "question": "Who is the chief executive officer and when were they appointed?",
+        "expects_decline": true,
+        "must_not_assert": [],
+        "note": "Corporate structure names divisions and a board, never an individual."
+      },
+      {
+        "id": "na-03",
+        "category": "no_answer_anywhere",
+        "question": "What is the share price and market capitalisation?",
+        "expects_decline": true,
+        "must_not_assert": [],
+        "note": "The company is described as employee-owned; no market data exists."
+      },
+      {
+        "id": "na-04",
+        "category": "no_answer_anywhere",
+        "question": "Which insurer underwrites the fleet motor policy?",
+        "expects_decline": true,
+        "must_not_assert": [],
+        "note": "The manual requires employers liability cover but names no insurer."
+      },
+      {
+        "id": "na-05",
+        "category": "answer_absent_document",
+        "question": "What were the maintenance costs by depot in the prior year?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "9,065",
+          "9065"
+        ],
+        "note": "Depot maintenance is covered in detail — for THIS year only. The prior year's figures are a document nobody uploaded. The trap is quoting this year's number as though it were last year's."
+      },
+      {
+        "id": "na-06",
+        "category": "answer_absent_document",
+        "question": "What does the fire evacuation procedure require staff to do?",
+        "expects_decline": true,
+        "must_not_assert": [],
+        "note": "The manual covers joining, travel, equipment, leave, performance, security and purchasing. Fire safety would plausibly be in a staff manual and is not in this one."
+      },
+      {
+        "id": "na-07",
+        "category": "answer_absent_document",
+        "question": "What are the payment terms in the refrigeration unit supply contract?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "sixty days",
+          "60 days"
+        ],
+        "note": "The review flags single-supplier risk on refrigeration units; the contract itself is not in the corpus. The trap is the manual's standard sixty-day supplier terms, which are a different document's general rule."
+      },
+      {
+        "id": "nm-01",
+        "category": "near_miss",
+        "question": "What is the average maintenance cost per vehicle at the Western depot?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "9,065",
+          "9065"
+        ],
+        "note": "Maintenance pages exist for Northern, Southern and Eastern. There is no Western page, though a Western depot appears elsewhere in the review. Top score 0.7784 — HIGHER than 11 of the 12 answerable cross-document cases, which is why no similarity threshold can catch this shape."
+      },
+      {
+        "id": "nm-02",
+        "category": "near_miss",
+        "question": "How many Tier 5 incidents were recorded?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "587",
+          "211",
+          "64"
+        ],
+        "note": "The Incident Log runs Tier 1 to Tier 4. Tier 5 does not exist, and every other tier's count is in the context."
+      },
+      {
+        "id": "nm-03",
+        "category": "near_miss",
+        "question": "How many people does the company employ, and what is the standard annual leave entitlement?",
+        "expects_decline": false,
+        "must_not_assert": [
+          "96"
+        ],
+        "note": "md-10's exact question, scored on FABRICATION rather than on declining. Asked on its own, 'how many people does the company employ' retrieves review page 1 at slot 6 and is answered correctly as 1,840. Adding the leave half is what breaks it: three of the six slots go to leave, page 1 drops out, and a sheet named Headcount holding another company's departmental numbers is the closest thing left. So this is a SLOT BUDGET interaction with multi-part questions, not a retrieval-quality failure. Declining outright would be WRONG here — the leave half is genuinely answerable — so the criterion is that 96 must not appear. 96 is computed (51+21+15+9) and exists nowhere in any document, so any occurrence is fabrication, not a mention."
+      },
+      {
+        "id": "nm-04",
+        "category": "near_miss",
+        "question": "What is the mileage reimbursement rate for a motorcycle?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "45 pence",
+          "25 pence"
+        ],
+        "note": "The manual sets a car rate for private vehicles. No motorcycle rate exists, and the car rate is in the retrieved context."
+      },
+      {
+        "id": "nm-05",
+        "category": "near_miss",
+        "question": "What was revenue per consignment for the North region in Q5?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "1,163",
+          "1163",
+          "1,176",
+          "1176"
+        ],
+        "note": "The workbook holds Q1 to Q4. Q5 does not exist, and the neighbouring quarters are all in the context."
+      },
+      {
+        "id": "nm-06",
+        "category": "near_miss",
+        "question": "How many light vans did the Southern depot operate?",
+        "expects_decline": true,
+        "must_not_assert": [
+          "70",
+          "214"
+        ],
+        "note": "Fleet composition gives 70 light vans GROUP-wide; the depot pages give total vehicle counts with no van split. Answering needs an invented apportionment."
       }
     ]
   }
