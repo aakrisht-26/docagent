@@ -346,7 +346,17 @@ class SummarizationSkill(BaseSkill):
                 ),
             }],
             temperature=0.1,
-            max_tokens=800,
+            # Measured on the four largest real chunks of sample_large_report:
+            # reasoning 88-297 tokens, content 134-252, worst total 549. 800 was
+            # safe, but only at 69% utilisation, and reasoning varied more than
+            # threefold across chunks — a denser section could exceed it.
+            #
+            # The failure mode is why the margin matters: this method's caller
+            # does `if s: chunk_summaries.append(s)`, so a truncated chunk is
+            # silently DROPPED and the summary is quietly missing a section
+            # rather than erroring. Truncation is now logged by the client, but
+            # room not to truncate beats a warning about having done.
+            max_tokens=1200,
         )
 
     def _call_reduce(
