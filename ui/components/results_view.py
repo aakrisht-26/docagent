@@ -1221,7 +1221,68 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
         )
         return
 
-    st.markdown("### Ask questions about this document")
+    st.markdown("### Ask questions")
+
+    # Scope. Defaults to this document, so the tab behaves exactly as it always
+    # has until someone chooses otherwise — the corpus path is opt-in, not a
+    # replacement.
+    scope_key = f"chat_scope_{fname}"
+    scope = st.radio(
+        "Search scope",
+        ("This document", "All documents in history"),
+        key=scope_key,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    multi_doc = scope.startswith("All")
+
+    active_chunks = st.session_state[chunks_key]
+    if multi_doc:
+        from utils.document_store import DocumentStore
+        from skills.document_chat_skill import MAX_CORPUS_DOCUMENTS
+        try:
+            corpus = DocumentStore().load_corpus()
+        except Exception as exc:                       # noqa: BLE001
+            st.warning(f"Could not read the document history: {exc}")
+            corpus = None
+
+        if not corpus or not corpus["chunks"]:
+            st.info(
+                "No stored documents to search yet. Analyse a document and it "
+                "joins the corpus automatically."
+            )
+            active_chunks = st.session_state[chunks_key]
+            multi_doc = False
+        else:
+            active_chunks = corpus["chunks"]
+            docs = corpus["documents"]
+
+            # Which documents are ranked by MEANING and which are not. A
+            # document whose stored vectors are unusable — different embedding
+            # model, or a chunk scheme that predates passages — still answers,
+            # but its gaps are embedded on demand. Left invisible, a corpus
+            # could quietly be half keyword-matched.
+            unsearchable = [d for d in docs if not d["searchable"]]
+            st.caption(
+                f"Searching **{len(docs)}** document(s), "
+                f"{len(active_chunks)} passages."
+                + (f" Capped at {MAX_CORPUS_DOCUMENTS}; older documents are "
+                   f"outside this answer." if corpus["truncated"] else "")
+            )
+            with st.expander(
+                f"Documents in scope ({len(docs) - len(unsearchable)}/{len(docs)} "
+                f"pre-indexed)", expanded=False
+            ):
+                for d in docs:
+                    mark = "indexed" if d["searchable"] else (
+                        f"will be embedded on first use ({d['vectors']}/{d['chunks']})")
+                    st.markdown(f"- `{d['document']}` — {d['chunks']} passages, {mark}")
+                if corpus["skipped"]:
+                    st.markdown(
+                        "\nNot searchable — saved before document text was stored, "
+                        "so they hold no content to answer from:\n"
+                        + "\n".join(f"- `{n}`" for n in corpus["skipped"])
+                    )
 
     # Name the retrieval method. It was logged but never shown, so a
     # deployment without sentence-transformers answered from keyword overlap
@@ -1274,16 +1335,24 @@ def _render_chat_tab(result: PipelineResult, fname: str) -> None:
             skill = DocumentChatSkill(config=cfg.to_dict())
             out = skill.safe_execute(SkillInput(data={
                 "user_message":         user_input.strip(),
-                "document_chunks":      st.session_state[chunks_key],
+                "document_chunks":      active_chunks,
                 "conversation_history": history[:-1],
                 "domain":               result.domain,
             }))
 
         if out.success and out.data:
             reply = out.data.get("reply", "I could not find an answer.")
-            used_pages = out.data.get("used_pages", [])
-            if used_pages:
-                reply += f"\n\n*Sources: {', '.join(str(p) for p in used_pages)}*"
+            # `used_sources` carries the document alongside the page, which is
+            # the whole point across a corpus: "Page 3" names four different
+            # files in a six-document history. Falls back to the bare list only
+            # if an older skill build did not supply it.
+            used_sources = out.data.get("used_sources") or []
+            if used_sources:
+                labels = [s["label"] for s in used_sources]
+            else:
+                labels = [str(p) for p in out.data.get("used_pages", [])]
+            if labels:
+                reply += f"\n\n*Sources: {'; '.join(labels)}*"
         else:
             reply = f"Error: {out.error or 'Unknown error'}"
         history.append({"role": "assistant", "content": reply})

@@ -4,7 +4,7 @@ Configuration management for DocAgent.
 Environment Variable Overrides (all optional):
     DOCAGENT_MAX_FILE_MB    : int
     GROQ_API_KEY            : str  (Groq API Key)
-    DOCAGENT_GROQ_MODEL     : str  (e.g. llama-3.3-70b-versatile)
+    DOCAGENT_GROQ_MODEL     : str  (e.g. openai/gpt-oss-120b)
 """
 
 from __future__ import annotations
@@ -198,7 +198,7 @@ class GroqConfig:
     api_keys: str = ""
     api_key: str = "" # Keep for backward compatibility
     base_url: str = "https://api.groq.com/openai/v1"
-    model: str = "llama-3.3-70b-versatile"
+    model: str = "openai/gpt-oss-120b"
     timeout_seconds: int = 180
     temperature: float = 0.15
     #: Rates for the per-run cost ESTIMATE only; not billed figures.
@@ -373,7 +373,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             api_keys       = os.getenv("GROQ_API_KEYS", gro_r.get("api_keys", "")),
             api_key        = os.getenv("GROQ_API_KEY", gro_r.get("api_key", "")),
             base_url       = os.getenv("DOCAGENT_GROQ_URL", gro_r.get("base_url", "https://api.groq.com/openai/v1")),
-            model          = os.getenv("DOCAGENT_GROQ_MODEL", gro_r.get("model", "llama-3.3-70b-versatile")),
+            model          = os.getenv("DOCAGENT_GROQ_MODEL", gro_r.get("model", "openai/gpt-oss-120b")),
             timeout_seconds= int(os.getenv("DOCAGENT_GROQ_TIMEOUT", gro_r.get("timeout_seconds", 180))),
             temperature    = float(gro_r.get("temperature", 0.15)),
             pricing        = dict(gro_r.get("pricing") or {}),

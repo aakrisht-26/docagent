@@ -37,7 +37,7 @@ class PipelineResult:
 
     # ── Analysis Outputs ─────────────────────────────────────────────────
     summary: str
-    summary_method: str                 # "llm_single" | "llm_map_reduce" | "extractive"
+    summary_method: str                 # "llm_single_<provider>" | "llm_map_reduce_<provider>" | "extractive" | "skipped" | "none"
     questions: List[str]
     question_extraction_method: str     # "regex" | "llm" | "hybrid" | "skipped" | "none"
 

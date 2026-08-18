@@ -1,0 +1,315 @@
+# Chat across a corpus
+
+How asking one question of every document in history works, what it measurably
+does, and — at more length — what it does not.
+
+Scored with:
+
+```bash
+python tests/e2e/rag_eval/run_eval.py --multi                 # free, no API calls
+python tests/e2e/rag_eval/run_eval.py --multi --with-answers  # 13 LLM calls
+```
+
+---
+
+## What changed
+
+Chat was scoped to one document. It can now search everything in history, and
+cite the document as well as the page.
+
+Retrieval was never the weak part. Handed all six eval fixtures at once, the
+**old single-document selector already ranked the answering passage for 11 of
+13** cross-document questions. Embedding similarity separates these documents
+well; both deliberately planted wrong-document traps were ranked correctly.
+
+What it could not do was say **where** an answer came from.
+
+| | before | after |
+|---|---|---|
+| retrieval, ranked slots | 11/13 | **12/13** |
+| present only as a structural anchor | 1/13 | **0/13** |
+| citations naming their document | 0/13 | **13/13** |
+| citations that cannot be resolved to a file | 11/13 | **0/13** |
+| replies naming a document in their prose | 0/13 | **13/13** |
+| documents sent to the model with no ranked slot | 14 | **0** |
+
+Two defects, both measured before being fixed.
+
+**The dedupe key.** Slots were deduplicated by page label, so page 3 of the
+operations review and page 3 of the staff manual were one source and the loser
+was unreachable *at any rank*. On `md-13` that discarded the third-highest
+scoring passage in the corpus (0.4495) in favour of the fourth (0.3701). The key
+is now `(document, page)`.
+
+**The citation.** Every citation was a bare number. 11 of 13 citation lists
+named a page that existed in more than one file; pages 1 and 2 each named four
+of the six documents. That is not a weaker citation, it is a wrong one.
+
+Labels now read `report.pdf, Page 3`, and `used_sources` carries the document
+and the page as separate fields so the UI, the model's prose and the eval all
+describe a source the same way.
+
+---
+
+## Is it worse than single-document chat?
+
+**Yes, measurably.** Cross-corpus retrieval is harder and the numbers say so.
+
+| | single-document | cross-document |
+|---|---|---|
+| answering source ranked #1 | 28/33 (85%) | **7/13 (54%)** |
+| mean rank | 1.18 | **2.15** |
+| worst rank | 3 | **10** |
+
+Mean rank nearly doubles and the rank-1 rate falls by thirty points. The worst
+case moves from rank 3 — comfortably inside any slot budget — to rank 10, which
+is outside it.
+
+**Read that with one caveat.** These are different question sets, and the
+cross-document cases were written to be hard: topical siblings where two
+documents are plausible, and traps where the best-scoring passage is in the
+wrong file. A like-for-like comparison would need the same questions asked both
+ways, which the fixtures do not support. The direction and rough magnitude are
+trustworthy; the exact ratio is not.
+
+---
+
+## The limitation worth knowing: `md-10`
+
+This case illustrates what the system does and does not guarantee better than
+any passing number, so it is documented rather than carried quietly.
+
+**Question.** "How many people does the company employ, and what is the standard
+annual leave entitlement?"
+
+The headcount — 1,840 — is on page 1 of the operations review. Page 2
+(Corporate Structure) outranks it for that question, and page 1 lands at **rank
+10** with a score of 0.2826 against 0.5042 at the top. It is outside the six
+slots. Retrieval fails.
+
+What happens next is the part that matters. The model does not say it could not
+find the figure. It answers from the nearest plausible document — summing a
+two-row sheet in the trivial sales workbook:
+
+> Adding these gives **96 employees** in the company as of Q3
+> [**sample_sales.xlsx, Sheet: Headcount**]
+
+The citation is **honest**: that number really does come from that sheet. The
+answer is **wrong**: 96 is a fragment of an unrelated fixture, not the company
+headcount.
+
+Reproducible, **0/5 across five trials**.
+
+So the guarantee this work provides is narrower than it looks:
+
+- **Guaranteed:** a citation names the document and page the text actually came
+  from. Every one of the 13 cases resolves to exactly one file. There are no
+  fabricated citations and no ambiguous ones.
+- **Not guaranteed:** that the cited passage answers the question. A citation
+  attests to *provenance*, not to *correctness*.
+
+A confidently cited wrong document was the failure mode this work set out to
+prevent, and it is prevented — the model no longer cites a page that could be
+any of four files. But a **correctly cited wrong answer** is still reachable,
+and this change does not address it. Retrieval failing quietly is one problem; a
+model that will not say "not found" with six plausible excerpts in front of it is
+a different one, and it is untouched.
+
+---
+
+## Slots, and what they are actually worth
+
+Six slots instead of three, and no anchors. The honest accounting:
+
+| slots | ranked |
+|---|---|
+| 3 | 12/13 |
+| 4 | 12/13 |
+| 5 | 12/13 |
+| 6 *(shipped)* | 12/13 |
+| 8 | 12/13 |
+| 10 | 13/13 |
+| 12 | 13/13 |
+
+**The extra slots buy nothing measurable on this eval set.** The whole
+11/13 → 12/13 improvement comes from the `(document, page)` key, which rescues
+`md-13` at any slot count. Three slots would score the same.
+
+They are kept because dropping anchors freed the budget — anchors were measured
+consuming 14% of the context on every query, on documents nobody asked about —
+and because a corpus answer should be able to draw on more than three
+documents. That is a design judgement, not a measured gain, and it is recorded
+as one.
+
+Ten slots would fix `md-10`. It is not the default because that is tuning to a
+single case, and the underlying problem is a passage at rank 10, which more
+slots paper over rather than solve.
+
+---
+
+## Latency and memory against document count
+
+Measured on the real fixtures replicated under distinct names, warm (vectors
+already stored), three questions × three runs each.
+
+| documents | passages | vectors | RSS | select, mean | p95 |
+|---|---|---|---|---|---|
+| 1 | 53 | 0.1 MB | 932 MB | 22 ms | 23 ms |
+| 3 | 159 | 0.2 MB | 938 MB | 23 ms | 23 ms |
+| 10 | 530 | 0.8 MB | 938 MB | 32 ms | 33 ms |
+| **25** *(cap)* | **1325** | **2.0 MB** | **939 MB** | **51 ms** | **52 ms** |
+| 50 | 2650 | 4.1 MB | 939 MB | 97 ms | 113 ms |
+| 100 | 5300 | 8.1 MB | 940 MB | 177 ms | 198 ms |
+| 200 | 10600 | 16.3 MB | 926 MB | 334 ms | 362 ms |
+
+Latency is **linear at roughly 1.6 ms per document** and memory is **flat**.
+Vectors are 2 MB at the cap and 16 MB at 200 documents, against a ~643 MB
+steady state — they are not the constraint and were never going to be. RSS here
+includes the eval harness; the figure to read is that it does not move with
+document count.
+
+Cold path, where a document's stored vectors are unusable and its passages must
+be embedded on demand:
+
+| documents | passages | first query |
+|---|---|---|
+| 1 | 53 | 290 ms |
+| 5 | 265 | 396 ms |
+| 10 | 530 | 664 ms |
+| 25 | 1325 | 1594 ms |
+
+That is a once-per-document cost, and only for documents stored under a
+different embedding model or chunk scheme. The UI names which documents those
+are rather than leaving the slowdown unexplained.
+
+### Where it stops being usable
+
+**Not on latency and not on memory.** At 200 documents a query still selects in
+a third of a second, next to an LLM call that takes several seconds. Vectors at
+that size are 16 MB.
+
+**It stops on answer quality, and it does so long before either.** Six slots is
+already only 10% of a 6-document, 61-passage corpus, and `md-10` fails *there* —
+at six documents, not twenty-five. Every document added pushes a correct
+passage further down a list that is still read six deep. The failure is silent:
+the answer arrives fluent and correctly cited.
+
+The cap is **25 documents**, and it is a limit on answer quality, not on
+resources. It is set where a corpus is still small enough that six slots can
+plausibly represent it, and it is documented so it can be raised deliberately
+rather than drifted past. Raise it and the `md-10` failure mode gets more
+common, not less.
+
+---
+
+## The eval matcher: an audit
+
+`answer_hit` compares expected fragments against the model's reply. It was
+corrected three times while measuring this work, and **each correction raised a
+number**. That pattern is worth auditing rather than trusting, so here it is in
+full.
+
+| # | correction | cases affected | before → after |
+|---|---|---|---|
+| 1 | strip commas inside numbers | `lg-xls-03` | single-doc answers 32/33 → **33/33** |
+| 2 | fold Unicode lookalikes (U+202F, U+2011, …) | `md-01`, `md-04`, `md-11` | multi-doc answers 9/13 → **12/13** |
+| 3 | treat `four-year` and `four year` as equal | `md-13` | multi-doc answers 11/13 → **12/13** |
+
+In every case the reply was inspected before the matcher was touched, and in
+every case the reply was **verifiably correct**:
+
+- `lg-xls-03` answered `$21,500,000`; the fixture expected `21,500,000` and the
+  model had written `21500000`.
+- `md-01` answered "45 pence per mile" with a **narrow no-break space** (U+202F)
+  between "45" and "pence".
+- `md-13` answered "a four‑year cycle" with a **non-breaking hyphen** (U+2011).
+
+The fixtures were left alone and the matcher was changed, on the grounds that
+how a model punctuates a correct figure is not the thing under test.
+
+### The asymmetry, stated plainly
+
+**Every one of those three corrections is monotonic in the same direction.**
+Each collapses a distinction, so each can only turn a non-match into a match.
+None can turn a match into a non-match. A matcher built only from such rules
+**can only ever move scores up**, and no amount of care in applying them changes
+that. This was verified rather than assumed.
+
+That is a structural property, not a caveat, and it needed a counterweight.
+
+### The fourth correction, which moves numbers down
+
+Auditing for the opposite failure found a real one. The comparison was a plain
+substring test, which has no boundaries:
+
+- expecting `19` matched **`1987`** — the incorporation year, on page 2 of the
+  same fixture
+- expecting `94` matched **`1.94`** — the maintenance spend, on page 5
+- expecting `51` matched **`151`**
+
+Across both eval sets: **212 constructible false positives, of which 127 were
+reachable from figures that genuinely appear in the corpus.** A wrong answer
+containing the right digits would have scored as correct.
+
+`_contains` now requires a numeric fragment not to be flanked by digits, and a
+word fragment not to be flanked by word characters — with the period rule
+narrowed to decimal points only, so `19. Next` still matches while `19.4` does
+not. Reachable false positives: **127 → 0**.
+
+**This is the test of whether the first three corrections were self-serving.**
+Tightening the matcher in the opposite direction moved **no headline number**:
+
+| | before tightening | after tightening |
+|---|---|---|
+| single-doc answers | 33/33 | **33/33** |
+| single-doc citations | 27/27 correct, 0 wrong | **27/27 correct, 0 wrong** |
+| multi-doc answers | 12/13 | **12/13** |
+
+### Can remaining upward-only asymmetry be ruled out?
+
+**No, and it should not be claimed.**
+
+The normalisation layer is still monotonic by construction: comma stripping,
+Unicode folding and hyphen/space equivalence each only ever collapse
+distinctions. Boundary checking constrains *where* a match may occur, not how
+permissively the two strings are folded before comparing. So a future
+normalisation would again be able to raise scores and not lower them.
+
+What can be said is narrower and worth stating exactly:
+
+- The known unbounded-substring hazard is closed, measured 127 → 0 on the
+  current fixtures.
+- Closing it changed no headline number, which is evidence the earlier
+  corrections were not inflating results.
+- The audit is reproducible, and every clause of the matcher is covered by
+  tests in `tests/test_rag_eval.py` — including six that assert the matcher
+  *rejects* things.
+
+None of that amounts to a guarantee. A substring-based matcher with a
+permissive normalisation layer is a blunt instrument, and its bias has a
+direction. Treat `33/33` as "no case is obviously wrong", not as proof that
+every answer is right.
+
+---
+
+## Design notes
+
+**Mode comes from the chunks, not a caller flag.** Single-document chunks are
+`{"text", "page_or_sheet"}` and carry no `document` key, so a single-document
+conversation cannot take the corpus path by accident. Single-document behaviour
+is unchanged and re-verified: 33/33 retrieved, 28/33 ranked first, 33/33
+answers, 27/27 correct citations.
+
+**No vector database.** Numpy over the stored vectors, exactly as before. Gaps
+are embedded on demand, per chunk rather than per document.
+
+**Summarisation is untouched.**
+
+**Duplicate file names are disambiguated by entry id.** Two history rows can
+carry the same name, which would recreate the ambiguity the document tag exists
+to remove, one level up.
+
+**Which documents are searchable is surfaced.** A document stored under an
+older embedding model or a different chunk scheme has its vectors ignored rather
+than compared, and its passages embedded on demand. The UI says which documents
+those are instead of quietly answering worse.

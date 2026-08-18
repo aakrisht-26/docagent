@@ -60,7 +60,15 @@ torch download for a while.
 ### 5. Check it came up correctly
 
 In the app: upload `tests/e2e/samples/sample_report.pdf`. You should get a
-summary with page citations and a confidence around 96%.
+multi-paragraph summary with page citations, and the sidebar should report the
+summary method as `llm_single_groq`.
+
+**Check the method, not the confidence.** An earlier version of this step said
+to expect "a confidence around 96%". That fixture actually classifies as
+`normal_document` at confidence 0.00, and does so with the LLM disabled too, so
+the number was never evidence the deploy worked. The summary method is: it is
+`extractive` whenever the LLM did not run, which is exactly the failure this
+step needs to catch.
 
 In the log (**Manage app**), confirm three lines:
 
@@ -214,7 +222,9 @@ Free and worth doing after any dependency change:
 python tests/e2e/rag_eval/run_eval.py
 ```
 
-Expect **33/33 retrieved, 28/33 ranked first** on the meaningful fixtures. If
+Expect **33/33 retrieved, 28/33 ranked first** on the meaningful fixtures.
+These are LLM-independent — the eval makes no API call, so they do not move when
+the Groq model changes, and a drop means the embedding path really did change. If
 either has dropped, the torch pin is the first suspect: embedding values can
 shift across releases and four margins sit between 0.028 and 0.047. Running it
 against whatever Cloud actually installed is the only way to see the real
@@ -274,6 +284,21 @@ is missing, the secret name is wrong. It must be exactly `GROQ_API_KEY` (or
 **The sidebar shows other people's documents.**
 `DOCAGENT_HOSTED` is not set and the `/mount/src` backstop did not fire. Set it
 in secrets. Confirm with `Runtime: hosted (Community Cloud)` in the log.
+
+**Summaries are short and flat, and the method reads `extractive`.**
+The LLM is not running. Two causes, and they need different fixes. If the log
+shows `No API key found`, the secret did not arrive — see above. If it shows
+`404 ... model_not_found`, the key is fine and the **model** is gone: Groq
+retires models on notice, and it retired the previous default,
+`llama-3.3-70b-versatile`, on 17 June 2026. Nothing raises when this happens.
+Every stage falls back to extractive and the app keeps serving, which is right
+for a visitor and means a dead model can sit in a deployment unnoticed for as
+long as nobody reads a summary closely.
+
+Check <https://console.groq.com/docs/deprecations>, then set `groq.model` in
+`configs/default.yaml` or add `DOCAGENT_GROQ_MODEL` to the secrets.
+`python tests/e2e/e2e.py pdf` refuses to start against an unreachable model, so
+run it before redeploying.
 
 **Scanned PDFs produce no text.**
 `tesseract-ocr` missing from `packages.txt`, or the file was edited without a

@@ -32,6 +32,7 @@ More, including before-and-after comparisons of every surface in both themes:
 - **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial) document table extraction as structured HTML, preventing garbled text from complex layouts.
 - **Multi-Turn Document Chat** — Semantic Q&A over overlapping ~100-word passages, retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Citations still resolve to the original page or sheet. Falls back to keyword overlap when the model is unavailable. Measured **33/33 retrieved, 28/33 ranked first** on the eval set ([details](docs/retrieval-sub-chunking.md)).
 - **Natural Language Document Editing** — Describe edits in plain English; the LLM rewrites the document or applies structured JSON operations to Excel sheets.
+- **Cross-Document Chat** — Ask one question of everything in history, with citations that name the document as well as the page. Retrieval keys on `(document, page)`, so two files with a page 3 stay distinct. Capped at 25 documents, and the cap is about answer quality rather than resources. Cross-corpus retrieval is measurably harder than single-document — mean rank 2.15 vs 1.18 — and the honest limits, including a case that answers from the wrong document with a correct citation, are in [docs/multi-document-chat.md](docs/multi-document-chat.md).
 - **Form Filling** — Paste answers to extracted questions; DocAgent compiles the completed form as a downloadable PDF.
 - **Glassmorphic Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
 
@@ -207,6 +208,12 @@ parameter sweep, the per-case flips and the costs.
 | Keyword fallback | passages | 27/33 | 17/33 | 3.09 |
 | Keyword fallback | whole pages | 29/33 | 16/33 | 3.06 |
 
+Every figure in this table is produced without an API call, so it measures the
+embedding model and the chunking, not the Groq model, and does not move when
+that changes. The LLM-dependent figures — answer and citation correctness — are
+**33/33 answers, 27/27 correct prose citations with 0 wrong**, measured on
+`openai/gpt-oss-120b`.
+
 Sub-chunking improves **ranking, not recall** — page-level chunking already put
 the answer in the context on every case. Three cases moved from rank 2 to rank 1
 and none regressed. It also fixes a silent truncation bug: the embedding model
@@ -332,7 +339,7 @@ the full annotated list.
 | `DOCAGENT_DEBUG` | Re-raise pipeline errors instead of catching them | false |
 | `DOCAGENT_GROQ_ENABLED` | Set false to disable all LLM calls | true |
 | `DOCAGENT_GROQ_URL` | OpenAI-compatible endpoint | https://api.groq.com/openai/v1 |
-| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
+| `DOCAGENT_GROQ_MODEL` | LLM model name | openai/gpt-oss-120b |
 | `DOCAGENT_GROQ_TIMEOUT` | Per-request timeout in seconds | 180 |
 
 ---
@@ -478,7 +485,7 @@ class MySkill(BaseSkill):
 
 | Component | Technology |
 |---|---|
-| LLM / Chat | Groq Cloud (llama-3.3-70b-versatile) |
+| LLM / Chat | Groq Cloud (openai/gpt-oss-120b) |
 | Transcription | Groq Whisper (whisper-large-v3) |
 | YouTube Download | yt-dlp |
 | Audio Conversion | pydub + ffmpeg |

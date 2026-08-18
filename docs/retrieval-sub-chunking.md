@@ -33,7 +33,9 @@ had.
 
 ## Results
 
-Same eval set, same questions, only the chunking changed.
+Same eval set, same questions, only the chunking changed. No API call is
+involved in any row, so none of these numbers depends on which Groq model is
+configured — they moved only with the chunking, which is the point.
 
 | setting | hit | rank #1 | mean rank | index chunks |
 |---|---|---|---|---|

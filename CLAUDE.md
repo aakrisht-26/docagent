@@ -71,7 +71,7 @@ All inter-component communication uses typed dataclasses from `core/models.py`. 
 
 ### LLM Client
 
-`utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`llama-3.3-70b-versatile`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
+`utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`openai/gpt-oss-120b`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
 
 ### Hybrid Classification
 
@@ -111,6 +111,21 @@ document a dot product is exact and instant.
   three chunks — with passages, several fragments of one page would otherwise
   sweep the budget and displace a page that is genuinely needed.
 
+**Chat spans one document or the whole corpus.** Mode is derived from the
+chunks, never from a caller flag: single-document chunks carry no `document`
+key. Across a corpus the selector keys on `(document, page)` — a bare page label
+conflates files and made one passage unreachable at any rank — drops anchors,
+and spends 6 slots. Labels become `report.pdf, Page 3`, and `used_sources`
+carries document and page as separate fields.
+
+Measured on 13 cross-document cases: retrieval 11/13 → **12/13**, citations
+naming their document 0/13 → **13/13**, unresolvable citations 11/13 → **0/13**.
+Cross-corpus retrieval is **meaningfully worse than single-document** — mean
+rank 2.15 against 1.18, ranked first 54% against 85% — and one case answers
+confidently from the wrong document with a correct citation. Both are
+quantified in `docs/multi-document-chat.md`, which is the thing to read before
+raising `MAX_CORPUS_DOCUMENTS` (25).
+
 Retrieval is measured, not assumed. On the current eval set (33 meaningful
 cases): **33/33 retrieved, 28/33 ranked first**, mean rank 1.18. Page-level
 chunking scores the same 33/33 but 25/33 ranked first — sub-chunking improves
@@ -119,6 +134,16 @@ Score it with `python tests/e2e/rag_eval/run_eval.py` (no API calls), or
 `--keyword` for the fallback alone. Full method, per-case flips and costs in
 `docs/retrieval-sub-chunking.md`; the earlier embeddings-vs-keyword experiment
 is in `tests/e2e/rag_eval/RESULTS.md`.
+
+**Which figures depend on the LLM.** Every retrieval number above is produced
+without an API call — verified by scoring identically with
+`DOCAGENT_GROQ_ENABLED=false` — so it is a property of the embedding model and
+the chunking, and the Groq model can change without invalidating it. The
+figures that *do* depend on the LLM are answer and citation correctness
+(`--with-answers`), and those name their model: **33/33 answers and 27/27
+correct prose citations, 0 wrong, on `openai/gpt-oss-120b`**. The same
+citation figure on the previous default, `llama-3.3-70b-versatile`, was also
+27/27 before Groq retired it on 17 June 2026.
 
 **If you change the model OR the chunking**, stored vectors become
 incomparable — a vector describes specific text, so re-splitting invalidates it

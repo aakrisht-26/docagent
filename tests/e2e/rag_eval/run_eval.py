@@ -20,16 +20,25 @@ Usage:
     python tests/e2e/rag_eval/run_eval.py --keyword       # force the fallback path
     python tests/e2e/rag_eval/run_eval.py --with-answers  # also scores answers
     python tests/e2e/rag_eval/run_eval.py --json          # machine-readable
+    python tests/e2e/rag_eval/run_eval.py --multi          # the CROSS-DOCUMENT set
 
 `--keyword` disables embeddings for the run so the keyword fallback can be
 measured on its own. That path serves every query whenever the model is
 missing, so its score matters independently of the embedding score.
+
+`--multi` scores the `multi_doc` block instead: one question against all six
+fixtures concatenated. It is a separate run rather than extra cases because a
+multi-document source is a (document, page) PAIR while a single-document source
+is a bare page label, and because the single-document headline is quoted across
+sessions and must stay comparable. Both sets share the fixtures, the selector
+and the scoring helpers, so neither can drift away from the code that ships.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -191,10 +200,442 @@ def answer_rank(case: dict, scores: dict) -> int:
     return max(ranks) if case.get("match") == "all" else min(ranks)
 
 
+# Typography a model emits where a fixture wrote plain ASCII. Each of these
+# breaks a substring match while changing nothing a reader would notice.
+_UNICODE_LOOKALIKES = {
+    " ": " ", " ": " ", " ": " ", " ": " ",  # fixed spaces
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+}
+
+
+def _normalise_for_match(text: str) -> str:
+    """Fold away formatting so the check scores correctness, not typography.
+
+    Lowercases, strips the commas inside numbers, and maps Unicode lookalikes
+    onto their ASCII equivalents.
+
+    Every clause here was added because a CORRECT answer was being marked wrong:
+
+      commas       `lg-xls-03` expects "21,500,000"; the model wrote
+                   "21500000" after the context gained source labels and it
+                   began echoing the sheet's own unpunctuated figures. That
+                   would have read as labelling causing a regression.
+      U+202F       `md-01` answered "45 pence per mile" with a NARROW NO-BREAK
+                   SPACE between "45" and "pence". Three of the thirteen
+                   cross-document cases were scored as answer failures on this
+                   alone, which would have made cross-corpus answering look
+                   materially worse than it is.
+
+    Fixing the matcher rather than the fixtures is deliberate: the fixture states
+    the fact, and how a model chooses to punctuate it is not the thing under
+    test.
+    """
+    text = (text or "").lower()
+    for bad, good in _UNICODE_LOOKALIKES.items():
+        text = text.replace(bad, good)
+    text = re.sub(r"(?<=\d),(?=\d)", "", text)
+    # A hyphen between words is the same word pair as a space between them.
+    # Applied to BOTH sides, so "four-year" and "four year" compare equal
+    # whichever way round the fixture and the model happen to write them.
+    text = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", text)
+    return re.sub(r"\s+", " ", text)
+
+
+def _contains(reply: str, fragment: Any) -> bool:
+    """Is `fragment` present in `reply` as a WHOLE value?
+
+    A plain substring test has no boundaries, and that cuts the opposite way to
+    every normalisation above: it makes WRONG answers pass. Expecting "19"
+    matched "1987" — a real figure, the incorporation year, sitting on page 2 of
+    the same fixture. Expecting "94" matched "1.94". Auditing the two eval sets
+    found 127 such collisions reachable from figures that genuinely appear in
+    the corpus.
+
+    So a numeric fragment must not be flanked by more digits, and a word
+    fragment must not be flanked by more word characters. This is the one
+    change to the matcher that can move a score DOWN, which is why it is here:
+    the folding above earns its keep only if the comparison it feeds is sound.
+    """
+    needle = _normalise_for_match(str(fragment))
+    if not needle:
+        return False
+    haystack = _normalise_for_match(reply)
+
+    # A period is only a boundary problem when it is a DECIMAL POINT, i.e. when
+    # a digit sits on its far side. Excluding every adjacent period instead
+    # rejected "19. Next", where the period ends a sentence.
+    left = r"(?<!\d)(?<!\d\.)" if needle[0].isdigit() else r"(?<!\w)"
+    right = r"(?!\d)(?!\.\d)" if needle[-1].isdigit() else r"(?!\w)"
+    return re.search(left + re.escape(needle) + right, haystack) is not None
+
+
 def answer_hit(case: dict, reply: str) -> bool:
-    """True if any expected fragment appears in the reply (case-insensitive)."""
-    lowered = (reply or "").lower()
-    return any(str(f).lower() in lowered for f in case.get("expected_answer_contains", []))
+    """Did the reply contain the expected fact? (case-insensitive)
+
+    Two fields, because a two-fact answer and a one-fact answer with two
+    spellings are different things and one list cannot mean both:
+
+      expected_answer_contains  ANY of these — alternative phrasings of ONE
+                                fact. `lg-xls-03` lists "21,500,000" and
+                                "21.5" because the model may write either.
+      expected_answer_all       EVERY one of these — genuinely separate facts.
+                                Half an answer to a two-part question is a
+                                wrong answer.
+
+    `match` is deliberately not consulted here: it constrains SOURCES, not
+    prose. Reading it as a conjunction over `expected_answer_contains` marked
+    two fully correct replies wrong — `lg-pdf-05` answered "Nineteen ... 23.4
+    days" and was failed for not writing the digits "19".
+    """
+    required = case.get("expected_answer_all")
+    if required:
+        return all(_contains(reply, f) for f in required)
+
+    return any(_contains(reply, f)
+               for f in case.get("expected_answer_contains", []))
+
+
+_CITE_RE = re.compile(r"\bpages?\s+(\d+)|\bp\.?\s*(\d+)\b", re.IGNORECASE)
+
+
+def cited_pages(reply: str) -> list:
+    """Page numbers the model claims in its own prose.
+
+    Distinct from `used_pages`, which the SKILL computes from what it selected.
+    This reads what the model actually told the user, which is what a reader
+    believes. The two only agree by luck unless the context is labelled — the
+    system prompt asks the model to "cite page numbers" while the context is
+    assembled as bare text joined by `---`, carrying no page numbers at all.
+    """
+    if not reply:
+        return []
+    out = []
+    for m in _CITE_RE.finditer(reply):
+        out.append(int(m.group(1) or m.group(2)))
+    return sorted(set(out))
+
+
+def citation_verdict(case: dict, reply: str) -> str:
+    """'correct' | 'wrong' | 'none' — for INTEGER-sourced cases only.
+
+    Sheet-named sources are excluded: a workbook answer cites "Q3 Revenue",
+    not a page number, and the regex would score it as no citation at all
+    rather than as a citation of a different kind.
+
+    'wrong' is the one that matters. A confidently cited page the answer did
+    not come from is worse than no citation, because it looks verifiable.
+    """
+    expected = [e for e in case["expected_sources"] if isinstance(e, int)]
+    if not expected:
+        return "n/a"
+    claimed = cited_pages(reply)
+    if not claimed:
+        return "none"
+    return "correct" if any(c in expected for c in claimed) else "wrong"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cross-document scoring
+#
+# Everything below scores the `multi_doc` block. It reuses load_chunks, the
+# selector and the citation helpers; what it adds is that a source is a
+# (document, page) PAIR. The single-document path above is deliberately left
+# alone — its headline is quoted across sessions.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_corpus(fixtures: list, cfg: dict, registry: SkillRegistry) -> list:
+    """Every fixture's passages in one flat list, each tagged with its document.
+
+    Tagging is safe against the shipped skill because it reads only `text`,
+    `page_or_sheet` and `embedding` from a chunk; a `document` key rides along
+    untouched. That is what makes a baseline measurable at all — the current
+    code can be handed a corpus and its choices attributed afterwards, without
+    changing it first and then measuring the thing you changed.
+    """
+    corpus = []
+    for fixture in fixtures:
+        for chunk in load_chunks(fixture, cfg, registry):
+            tagged = dict(chunk)
+            tagged["document"] = fixture
+            corpus.append(tagged)
+    return corpus
+
+
+def short_name(fixture: str) -> str:
+    """`sample_large_report.pdf` -> `large_report`, for a table that fits."""
+    stem = fixture.rsplit(".", 1)[0]
+    return stem[len("sample_"):] if stem.startswith("sample_") else stem
+
+
+def pair(chunk: dict) -> tuple:
+    return (chunk.get("document"), chunk.get("page_or_sheet"))
+
+
+def expected_pairs(case: dict) -> list:
+    return [(e["doc"], e["source"]) for e in case["expected_sources"]]
+
+
+def multi_hit(case: dict, got: list) -> bool:
+    exp = expected_pairs(case)
+    if case.get("match") == "all":
+        return all(e in got for e in exp)
+    return any(e in got for e in exp)
+
+
+def ambiguous_labels(corpus: list) -> dict:
+    """page label -> the documents that use it, for labels used more than once.
+
+    This is the measurement that matters most for the baseline. `used_pages` and
+    the model's prose both name a bare page label, so any label in here makes a
+    citation that cannot be resolved by the person reading it.
+    """
+    holders = defaultdict(set)
+    for chunk in corpus:
+        holders[chunk.get("page_or_sheet")].add(chunk.get("document"))
+    return {label: sorted(docs) for label, docs in holders.items() if len(docs) > 1}
+
+
+def label_collisions(corpus: list, scores: list, limit: int = 3) -> list:
+    """Passages the page-label dedupe discards in favour of a different document.
+
+    `_select_with_roles` keeps one chunk per `page_or_sheet` so that several
+    passages of one page cannot sweep the budget. Across a corpus that same key
+    conflates documents: once the review's page 3 has claimed the label "3", the
+    manual's page 3 is unreachable at any rank. Returns the (pair, score,
+    blocker) triples that lost a slot this way while the winner was still being
+    chosen.
+    """
+    order = sorted(range(len(corpus)), key=lambda i: scores[i], reverse=True)
+    winners: dict = {}
+    lost = []
+    for i in order:
+        label = corpus[i].get("page_or_sheet")
+        if label in winners:
+            j = winners[label]
+            if corpus[i].get("document") != corpus[j].get("document"):
+                lost.append((pair(corpus[i]), scores[i], pair(corpus[j])))
+            continue
+        winners[label] = i
+        if len(winners) >= limit:
+            break
+    return lost
+
+
+def cited_documents(reply: str, fixtures: list) -> list:
+    """Documents the model names in its own prose.
+
+    Currently zero by construction — the context is labelled `[Page 3]` with no
+    document anywhere in it, so the model has nothing to name. Measured rather
+    than assumed, because that is exactly how the single-document page-citation
+    bug stayed invisible: the prompt asked for something the context could not
+    support and nothing failed.
+    """
+    if not reply:
+        return []
+    lowered = reply.lower()
+    return [f for f in fixtures
+            if f.lower() in lowered or short_name(f).replace("_", " ") in lowered]
+
+
+def main_multi(argv: list) -> int:
+    with_answers = "--with-answers" in argv
+    as_json = "--json" in argv
+
+    if "--keyword" in argv:
+        from utils import embeddings
+        embeddings.is_supported = lambda: False
+
+    spec = json.loads((HERE / "eval_set.json").read_text(encoding="utf-8"))
+    block = spec["multi_doc"]
+    fixtures, cases = block["corpus"], block["cases"]
+
+    cfg = load_config().to_dict()
+    registry = SkillRegistry()
+    registry.discover()
+    chat = registry.instantiate("document_chat", config={"groq": cfg["groq"]})
+
+    corpus = load_corpus(fixtures, cfg, registry)
+    ambiguous = ambiguous_labels(corpus)
+    per_doc = defaultdict(int)
+    for chunk in corpus:
+        per_doc[chunk["document"]] += 1
+
+    results = []
+    for case in cases:
+        selected, ranked = chat._select_with_roles(case["question"], corpus)
+        sel_pairs, rank_pairs = [pair(c) for c in selected], [pair(c) for c in ranked]
+        scores, method = chat.score_chunks(case["question"], corpus)
+
+        # Which document does the single best passage live in? With one slot,
+        # that is the document the answer would come from.
+        best = max(range(len(corpus)), key=lambda i: scores[i])
+        answer_docs = {d for d, _ in expected_pairs(case)}
+
+        # Score the citation the READER is given. `used_pages` is the legacy
+        # bare-label list kept for single-document callers; across a corpus it
+        # cannot express "page 3 of the manual", so measuring it here would be
+        # measuring a field this mode does not use.
+        cites = chat.citable_sources_detailed(ranked, selected)
+        legacy_cites = chat._citable_sources(ranked, selected)
+        collisions = label_collisions(corpus, scores)
+
+        record = {
+            "id": case["id"],
+            "category": case["category"],
+            "expected": expected_pairs(case),
+            "ranked": rank_pairs,
+            "selected": sel_pairs,
+            "hit_ranked": multi_hit(case, rank_pairs),
+            "hit_any": multi_hit(case, sel_pairs),
+            "rank1_doc_correct": corpus[best]["document"] in answer_docs,
+            "rank1_doc": corpus[best]["document"],
+            # Documents that reached the model without earning a ranked slot.
+            "freeloading_docs": sorted({d for d, _ in sel_pairs}
+                                       - {d for d, _ in rank_pairs}),
+            "citations": [c["label"] for c in cites],
+            # A citation resolves when it names its document. Without one, a
+            # bare label that several documents share names none of them.
+            "unresolvable_citations": [
+                c["label"] for c in cites
+                if not c.get("document") and c["source"] in ambiguous
+            ],
+            "citations_name_document": all(c.get("document") for c in cites) if cites else False,
+            # What the page-label key WOULD have thrown away. Kept as a
+            # regression guard: if this is non-empty while the expected source
+            # is still ranked, the (document, page) key is doing its job.
+            "legacy_key_would_discard": [p for p, _, _ in collisions],
+            "legacy_citations": legacy_cites,
+            # An expected passage the LEGACY page-label dedupe made unreachable.
+            # The shipped selector keys on (document, page) and does not.
+            "expected_suppressed": [p for p, _, _ in collisions
+                                    if p in expected_pairs(case)],
+            "collisions": [(p, round(s, 4), b) for p, s, b in collisions],
+            "method": method,
+            "answer_hit": None,
+            "cited_docs": None,
+        }
+
+        if with_answers:
+            out = chat.safe_execute(SkillInput(data={
+                "user_message": case["question"],
+                "document_chunks": corpus,
+                "conversation_history": [],
+                "domain": "General",
+            }))
+            reply = out.data["reply"] if out.success else ""
+            record["answer_hit"] = answer_hit(case, reply) if out.success else False
+            record["cited_docs"] = cited_documents(reply, fixtures)
+            record["error"] = None if out.success else out.error
+
+        results.append(record)
+
+    if as_json:
+        print(json.dumps(results, indent=2, default=str))
+        return 0
+
+    def fmt(pairs: list) -> str:
+        return " ".join(f"{short_name(d)}:{s}" for d, s in pairs)
+
+    print("=" * 118)
+    print(f"CROSS-DOCUMENT RETRIEVAL — {len(fixtures)} documents, "
+          f"{len(corpus)} passages, {len(cases)} cases")
+    print(f"  corpus: " + ", ".join(
+        f"{short_name(f)}={per_doc[f]}" for f in fixtures))
+    print(f"  {len(ambiguous)} of {len(set(c['page_or_sheet'] for c in corpus))} "
+          f"page/sheet labels are used by more than one document")
+    print("=" * 118)
+    print(f"{'id':<8} {'category':<16} {'expected':<30} {'ranked slots':<44} result")
+    print("-" * 118)
+    for r in results:
+        verdict = ("RANKED" if r["hit_ranked"]
+                   else "anchor-only" if r["hit_any"] else "MISS")
+        ans = "" if r["answer_hit"] is None else (
+            "  ans:HIT" if r["answer_hit"] else "  ans:MISS")
+        print(f"{r['id']:<8} {r['category']:<16} {fmt(r['expected'])[:29]:<30} "
+              f"{fmt(r['ranked'])[:43]:<44} {verdict}{ans}")
+
+    print("-" * 118)
+    ranked_n = sum(1 for r in results if r["hit_ranked"])
+    anchor_n = sum(1 for r in results if r["hit_any"] and not r["hit_ranked"])
+    miss_n = len(results) - ranked_n - anchor_n
+    print(f"  {'retrieval (ranked slots)':<44} {ranked_n}/{len(results)}")
+    print(f"  {'present only as a structural anchor':<44} {anchor_n}/{len(results)}"
+          f"   {'<- looks like a hit, is not' if anchor_n else ''}")
+    print(f"  {'missed entirely':<44} {miss_n}/{len(results)}")
+
+    by_cat = defaultdict(list)
+    for r in results:
+        by_cat[r["category"]].append(r)
+    print()
+    print("  BY CATEGORY")
+    for category in sorted(by_cat):
+        rows = by_cat[category]
+        hits = sum(1 for r in rows if r["hit_ranked"])
+        print(f"    {category:<40} ranked {hits}/{len(rows)}")
+
+    print()
+    d1 = sum(1 for r in results if r["rank1_doc_correct"])
+    print(f"  {'top-scoring passage is in a correct document':<44} "
+          f"{d1}/{len(results)}")
+
+    # Attribution. Recall was never the weak part of cross-corpus chat; saying
+    # WHERE an answer came from was.
+    resolves = sum(1 for r in results if r["citations_name_document"])
+    amb = [r for r in results if r["unresolvable_citations"]]
+    print(f"  {'citations naming their document':<44} {resolves}/{len(results)}")
+    print(f"  {'citations that cannot be resolved to a file':<44} "
+          f"{len(amb)}/{len(results)}")
+    if with_answers:
+        named = sum(1 for r in results if r["cited_docs"])
+        print(f"  {'replies naming a document in their prose':<44} "
+              f"{named}/{len(results)}")
+
+    supp = [r for r in results if r["expected_suppressed"]]
+    print(f"  {'expected source the LEGACY page key would drop':<44} "
+          f"{len(supp)}/{len(results)}   (selector keys on (document, page))")
+
+    freeloaders = sum(len(r["freeloading_docs"]) for r in results)
+    print(f"  {'documents sent to the model with no ranked slot':<44} "
+          f"{freeloaders} across {len(results)} queries")
+    print("=" * 118)
+
+    if amb:
+        print()
+        print("UNRESOLVABLE CITATIONS — the label the reader is given names "
+              "more than one document")
+        print("-" * 118)
+        for r in amb:
+            for label in r["unresolvable_citations"]:
+                print(f"  {r['id']:<8} cites {label}")
+
+    if supp:
+        print()
+        print("RESCUED BY THE (document, page) KEY — these would be discarded "
+              "at any rank under the old page-label key")
+        print("-" * 118)
+        for r in supp:
+            for p, score, blocker in r["collisions"]:
+                if p in r["expected_suppressed"]:
+                    rescued = p in r["ranked"]
+                    print(f"  {r['id']:<8} {short_name(p[0])}:{p[1]} "
+                          f"(score {score}) was blocked by "
+                          f"{short_name(blocker[0])}:{blocker[1]}"
+                          f"   -> now {'RANKED' if rescued else 'still absent'}")
+
+    # One legacy-shape sample, so the reason the field changed stays visible.
+    dupes = [r for r in results
+             if len(r["legacy_citations"]) != len(set(map(str, r["legacy_citations"])))]
+    if dupes:
+        print()
+        print("WHY used_pages IS NOT ENOUGH — the same bare label twice, from "
+              "two different documents")
+        print("-" * 118)
+        for r in dupes[:3]:
+            print(f"  {r['id']:<8} used_pages {r['legacy_citations']}")
+            for label in r["citations"]:
+                print(f"           -> {label}")
+    return 0
 
 
 def main(argv: list) -> int:
@@ -240,6 +681,7 @@ def main(argv: list) -> int:
             "rank": answer_rank(case, scores),
             "method": method,
             "answer_hit": None,
+            "citation": None,
         }
 
         if with_answers:
@@ -250,6 +692,7 @@ def main(argv: list) -> int:
                 "domain": "General",
             }))
             record["answer_hit"] = answer_hit(case, out.data["reply"]) if out.success else False
+            record["citation"] = citation_verdict(case, out.data["reply"]) if out.success else "none"
             record["error"] = None if out.success else out.error
 
         results.append(record)
@@ -338,6 +781,17 @@ def main(argv: list) -> int:
     print(f"  {'answering chunk ranked #1':<34} "
           f"{top1}/{len(ranked_cases)}   (mean rank {mean_rank:.2f})")
 
+    # Citation correctness, from the model's own prose rather than from what
+    # the selector chose. 'wrong' is the number that matters: a confidently
+    # cited page the answer did not come from looks verifiable and is not.
+    cited = [r for r in meaningful if r.get("citation") not in (None, "n/a")]
+    if cited:
+        ok = sum(1 for r in cited if r["citation"] == "correct")
+        wrong = sum(1 for r in cited if r["citation"] == "wrong")
+        none = sum(1 for r in cited if r["citation"] == "none")
+        print(f"  {'prose citations (page-sourced)':<34} "
+              f"correct {ok}/{len(cited)}   WRONG {wrong}   none {none}")
+
     anchor_slots = sum(len(r["anchors_in_selection"]) for r in meaningful)
     chosen_slots = sum(r["chosen_slots"] for r in meaningful)
     print(f"  {'slot accounting (meaningful)':<34} "
@@ -348,4 +802,4 @@ def main(argv: list) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main_multi(sys.argv) if "--multi" in sys.argv else main(sys.argv))

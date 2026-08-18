@@ -570,5 +570,264 @@
       ],
       "note": "p3 mentions handheld terminals repeatedly (issue, refresh cycle) but holds no figure; the amount is only on p4."
     }
-  ]
+  ],
+  "multi_doc": {
+    "_about": {
+      "purpose": "Measure retrieval and ATTRIBUTION when one question is asked across a whole corpus, not one document.",
+      "why_separate": "Scored apart from the single-document set so neither number contaminates the other. The single-document headline (33/33 retrieved, 28/33 ranked first) is quoted in the docs and must stay comparable across sessions, and cross-corpus retrieval fails for different reasons than in-document retrieval does.",
+      "expected_sources": "A source is a {doc, source} PAIR, not a bare page number. That is the whole point: page 3 of the operations review and page 3 of the staff manual are different sources, and the single-document code cannot tell them apart because it keys on the page label alone.",
+      "categories": {
+        "one_of_many": "The fact lives in exactly one document; the others are on-topic but silent on it.",
+        "topical_sibling": "Two documents are plausibly the right place to look, but only one carries the figure.",
+        "cross_document": "The answer needs a fact from each of two different documents. Neither answers alone.",
+        "wrong_document": "The highest-scoring passage is in a document that does NOT hold the answer, so a selector with fewer slots - or a reader trusting an unqualified page number - lands on the wrong document."
+      },
+      "corpus_note": "All six fixtures are used, including the three trivial ones. They are not filler here: they are what makes page labels collide. Pages 1 and 2 exist in four of the six documents, so a citation of Page 1 names four different things.",
+      "expected_answer_all": "Every fragment must appear: the question asks two things and half an answer is wrong. Distinct from expected_answer_contains, which is a list of alternative phrasings of ONE fact and is satisfied by any of them."
+    },
+    "corpus": [
+      "sample_large_report.pdf",
+      "sample_large_sales.xlsx",
+      "sample_dense_manual.pdf",
+      "sample_report.pdf",
+      "sample_sales.xlsx",
+      "sample_scanned.pdf"
+    ],
+    "cases": [
+      {
+        "id": "md-01",
+        "category": "one_of_many",
+        "question": "What is the mileage reimbursement rate for a private vehicle?",
+        "expected_sources": [
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 2
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "45 pence",
+          "45p"
+        ],
+        "note": "Only the staff manual sets rates. The operations review is all fleet vehicles and fuel."
+      },
+      {
+        "id": "md-02",
+        "category": "one_of_many",
+        "question": "What was the average maintenance cost per vehicle at the Northern depot?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 5
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "9,065",
+          "9065"
+        ],
+        "note": "The in-document distractor (policy page 4) is still present, now with two more documents around it."
+      },
+      {
+        "id": "md-03",
+        "category": "one_of_many",
+        "question": "What was revenue per consignment for the North region in Q3?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_sales.xlsx",
+            "source": "Q3 Revenue"
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "1,163",
+          "1163"
+        ],
+        "note": "Sheet-named source, so the citation cannot collide with a page number."
+      },
+      {
+        "id": "md-04",
+        "category": "one_of_many",
+        "question": "What is the monthly data allowance on a company mobile telephone?",
+        "expected_sources": [
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 3
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "40 gigabytes",
+          "40 gb"
+        ],
+        "note": "The review has a Technology and Telematics page, which is the plausible wrong place."
+      },
+      {
+        "id": "md-05",
+        "category": "topical_sibling",
+        "question": "How many Tier 1 incidents occurred at the Northern depot?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 12
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "seven"
+        ],
+        "note": "The workbook's Incident Log holds Tier 1 counts too, but group-wide with no depot split."
+      },
+      {
+        "id": "md-06",
+        "category": "topical_sibling",
+        "question": "How many drivers are employed in the North division?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_sales.xlsx",
+            "source": "Headcount"
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "402"
+        ],
+        "note": "The review gives a group headcount of 1,840 and has a recruitment page; only the workbook splits by division."
+      },
+      {
+        "id": "md-07",
+        "category": "topical_sibling",
+        "question": "What is the annual leave entitlement after five years of continuous service?",
+        "expected_sources": [
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 5
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "28 days",
+          "28"
+        ],
+        "note": "The review's recruitment and attrition pages are the plausible wrong place."
+      },
+      {
+        "id": "md-08",
+        "category": "cross_document",
+        "question": "How many vehicles are in the fleet, and how many consignments did the North region complete in Q4?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 3
+          },
+          {
+            "doc": "sample_large_sales.xlsx",
+            "source": "Q4 Revenue"
+          }
+        ],
+        "match": "all",
+        "note": "Fleet size in the review, consignments in the workbook.",
+        "expected_answer_all": [
+          "612",
+          "9,370"
+        ]
+      },
+      {
+        "id": "md-09",
+        "category": "cross_document",
+        "question": "What is the purchase order authorisation threshold for a divisional director, and what was the longest recorded procurement lead time?",
+        "expected_sources": [
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 8
+          },
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 18
+          }
+        ],
+        "match": "all",
+        "note": "Threshold in the manual, lead time in the review. Both documents use the word procurement.",
+        "expected_answer_all": [
+          "25,000",
+          "212"
+        ]
+      },
+      {
+        "id": "md-10",
+        "category": "cross_document",
+        "question": "How many people does the company employ, and what is the standard annual leave entitlement?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 1
+          },
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 5
+          }
+        ],
+        "match": "all",
+        "note": "Headcount is on page 1 of the review. The single-document selector supplied it as a structural ANCHOR, so it looked like a hit while being luck; with anchors dropped for corpus mode the luck is gone and this is a HARD FAILURE, 0/5 over five trials. Page 2 (Corporate Structure) outranks page 1 for 'how many people does the company employ'. The model then answers from the nearest plausible document instead of declining: it sums the trivial sales.xlsx Headcount sheet to '96 employees' and cites it correctly. An honest citation on a wrong answer.",
+        "expected_answer_all": [
+          "1,840",
+          "25 days"
+        ]
+      },
+      {
+        "id": "md-11",
+        "category": "wrong_document",
+        "question": "What proportion of fuel consumption was covered by the fixed-price agreement?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 8
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "71 percent",
+          "71%"
+        ],
+        "note": "The workbook's Energy Spend sheet carries the same litres and unit costs and outscores the page that states the proportion."
+      },
+      {
+        "id": "md-12",
+        "category": "wrong_document",
+        "question": "How many days on average does it take to close a Tier 2 incident?",
+        "expected_sources": [
+          {
+            "doc": "sample_large_sales.xlsx",
+            "source": "Incident Log"
+          }
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "9.1"
+        ],
+        "note": "The review's two Tier 1 register pages outscore the sheet, and they cover Tier 1 only. Answering from them gives 23.4, the wrong tier from the wrong document."
+      },
+      {
+        "id": "md-13",
+        "category": "wrong_document",
+        "question": "What are the replacement cycles for equipment and for vehicles?",
+        "expected_sources": [
+          {
+            "doc": "sample_dense_manual.pdf",
+            "source": 3
+          },
+          {
+            "doc": "sample_large_report.pdf",
+            "source": 3
+          }
+        ],
+        "match": "all",
+        "note": "BOTH facts sit on a page numbered 3, in different documents. Under the old page-label key the manual's page 3 was unreachable at any rank despite scoring third highest in the corpus. The (document, page) key fixes retrieval, which is now reliably RANKED. The ANSWER is unstable at 3/5 across trials -- the model sometimes restructures the reply and drops one of the two cycles. Retrieval and generation fail independently here, which is why they are scored separately.",
+        "expected_answer_all": [
+          "four year",
+          "seven years"
+        ]
+      }
+    ]
+  }
 }

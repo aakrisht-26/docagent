@@ -21,7 +21,16 @@ groq:
   api_keys: "PASTE_MULTIPLE_GROQ_API_KEYS_HERE" # Comma separated for fallback
   api_key: "PASTE_YOUR_GROQ_API_KEY_HERE"  # Single key Or set GROQ_API_KEY env var
   base_url: "https://api.groq.com/openai/v1"
-  model: "llama-3.3-70b-versatile"
+  # Groq deprecated llama-3.3-70b-versatile and llama-3.1-8b-instant on
+  # 17 June 2026 for the free and developer tiers. Calls to them now 404 with
+  # `model_not_found`, which the client treats as any other LLM failure: every
+  # stage degrades to its extractive fallback and nothing raises. gpt-oss-120b
+  # is Groq's own recommended replacement for the 70b.
+  #
+  # Retrieval figures in the docs are model-independent (no LLM call), but every
+  # ANSWER and CITATION figure names the model it was measured on. Re-run the
+  # eval if you change this line.
+  model: "openai/gpt-oss-120b"
   timeout_seconds: 180
   temperature: 0.15
   # A 429 whose retry window exceeds this many seconds means the key is
