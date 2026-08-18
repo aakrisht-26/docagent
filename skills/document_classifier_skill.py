@@ -159,6 +159,18 @@ class DocumentClassifierSkill(BaseSkill):
                     )
                 else:
                     self.logger.info(f"Domain detected: {domain} (Heuristic dominating: {normalized:.3f})")
+            else:
+                # Say so. A discarded LLM result leaves domain "General" and
+                # method "heuristic", which is ALSO what a healthy heuristic-only
+                # run looks like, so success and failure were indistinguishable
+                # in the logs. That is how an 80-token budget disabled LLM
+                # classification for a whole model migration without a warning.
+                self.logger.warning(
+                    "LLM classification was discarded; falling back to the "
+                    "heuristic alone. Domain stays 'General', which gates "
+                    "structure_recognition, and the questionnaire blend loses "
+                    "its LLM term. See the log line above for the cause."
+                )
 
         doc_type = "questionnaire" if confidence >= self._threshold else "normal_document"
         signals["final_score"] = round(confidence, 4)
@@ -222,7 +234,21 @@ class DocumentClassifierSkill(BaseSkill):
                 ),
             }],
             temperature=0.0,
-            max_tokens=80,
+            # Sized for REASONING, not for the answer. The reply is a 25-token
+            # JSON object, but gpt-oss-120b is a reasoning model and spends a
+            # variable prefix of the completion budget thinking before it emits
+            # anything. At 80 it never got to the answer: the API returned
+            # finish_reason "length" with reasoning_tokens 78 of 80 and content
+            # "", the client turned empty content into None, and this method
+            # returned None. Classification then fell back to the heuristic with
+            # domain "General" and said nothing, because the "did not return
+            # parseable JSON" warning below is downstream of that return.
+            #
+            # Measured across the six e2e fixtures at the 3000-char cap:
+            # reasoning ran 76-168 tokens, content a steady 25, worst total 193.
+            # 512 leaves roughly 2.6x headroom on the worst case; an unused
+            # budget costs nothing, an exhausted one costs the whole stage.
+            max_tokens=512,
         )
         if not content:
             return None
