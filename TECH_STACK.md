@@ -8,7 +8,7 @@ DocAgent is a production-quality document understanding system built on a modula
 
 ### LLM — Groq Cloud (Text)
 - **Provider:** [Groq Cloud](https://groq.com/) via OpenAI-compatible API
-- **Model:** `llama-3.3-70b-versatile` (default; configurable via `DOCAGENT_GROQ_MODEL`)
+- **Model:** `openai/gpt-oss-120b` (default; configurable via `DOCAGENT_GROQ_MODEL`)
 - **Integration:** `openai` Python SDK pointed at `https://api.groq.com/openai/v1`
 - **Multi-key rotation:** `GROQ_API_KEYS` (comma-separated list); automatic HTTP 429 backoff + retry across keys
 - **Temperature:** 0.15 (summaries), 0.0 (question extraction), 0.1 (editing), 0.2 (form filling)

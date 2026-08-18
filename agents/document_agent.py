@@ -72,7 +72,7 @@ class DocumentAgent(BaseAgent):
                 "api_keys":        ",".join(resolved_keys),
                 "api_key":         resolved_keys[0] if resolved_keys else "",
                 "base_url":        gro.get("base_url", "https://api.groq.com/openai/v1"),
-                "model":           gro.get("model", "llama-3.3-70b-versatile"),
+                "model":           gro.get("model", "openai/gpt-oss-120b"),
                 "timeout_seconds": gro.get("timeout_seconds", 180),
                 "temperature":     gro.get("temperature", 0.15),
             }

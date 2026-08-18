@@ -108,7 +108,7 @@ def estimate_cost_usd(usage: UsageTotals, pricing: Optional[Dict[str, Any]] = No
 
 # Groq defaults
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 # Backoff between retries: base * factor**attempt, capped, with jitter.
 _BACKOFF_BASE_SECONDS = 0.5

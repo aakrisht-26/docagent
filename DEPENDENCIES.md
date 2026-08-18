@@ -397,7 +397,9 @@ document is re-analysed.
 Retrieval degrades rather than breaks. Uninstalling it leaves chat working on
 keyword overlap at **27/33 retrieved and 17/33 ranked first**, against 33/33 and
 28/33 with embeddings — and mean rank falls from 1.18 to 3.09, which is the
-figure that best captures how much worse the ordering gets. The loss is
+figure that best captures how much worse the ordering gets. (These are
+LLM-independent: the eval makes no API call, so they hold whatever Groq model
+is configured.) The loss is
 concentrated in synonym-phrased questions, where no amount of word overlap
 helps. Verify with:
 

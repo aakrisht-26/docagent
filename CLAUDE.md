@@ -71,7 +71,7 @@ All inter-component communication uses typed dataclasses from `core/models.py`. 
 
 ### LLM Client
 
-`utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`llama-3.3-70b-versatile`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
+`utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`openai/gpt-oss-120b`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
 
 ### Hybrid Classification
 
@@ -119,6 +119,16 @@ Score it with `python tests/e2e/rag_eval/run_eval.py` (no API calls), or
 `--keyword` for the fallback alone. Full method, per-case flips and costs in
 `docs/retrieval-sub-chunking.md`; the earlier embeddings-vs-keyword experiment
 is in `tests/e2e/rag_eval/RESULTS.md`.
+
+**Which figures depend on the LLM.** Every retrieval number above is produced
+without an API call — verified by scoring identically with
+`DOCAGENT_GROQ_ENABLED=false` — so it is a property of the embedding model and
+the chunking, and the Groq model can change without invalidating it. The
+figures that *do* depend on the LLM are answer and citation correctness
+(`--with-answers`), and those name their model: **33/33 answers and 27/27
+correct prose citations, 0 wrong, on `openai/gpt-oss-120b`**. The same
+citation figure on the previous default, `llama-3.3-70b-versatile`, was also
+27/27 before Groq retired it on 17 June 2026.
 
 **If you change the model OR the chunking**, stored vectors become
 incomparable — a vector describes specific text, so re-splitting invalidates it

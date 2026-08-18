@@ -207,6 +207,12 @@ parameter sweep, the per-case flips and the costs.
 | Keyword fallback | passages | 27/33 | 17/33 | 3.09 |
 | Keyword fallback | whole pages | 29/33 | 16/33 | 3.06 |
 
+Every figure in this table is produced without an API call, so it measures the
+embedding model and the chunking, not the Groq model, and does not move when
+that changes. The LLM-dependent figures — answer and citation correctness — are
+**33/33 answers, 27/27 correct prose citations with 0 wrong**, measured on
+`openai/gpt-oss-120b`.
+
 Sub-chunking improves **ranking, not recall** — page-level chunking already put
 the answer in the context on every case. Three cases moved from rank 2 to rank 1
 and none regressed. It also fixes a silent truncation bug: the embedding model
@@ -332,7 +338,7 @@ the full annotated list.
 | `DOCAGENT_DEBUG` | Re-raise pipeline errors instead of catching them | false |
 | `DOCAGENT_GROQ_ENABLED` | Set false to disable all LLM calls | true |
 | `DOCAGENT_GROQ_URL` | OpenAI-compatible endpoint | https://api.groq.com/openai/v1 |
-| `DOCAGENT_GROQ_MODEL` | LLM model name | llama-3.3-70b-versatile |
+| `DOCAGENT_GROQ_MODEL` | LLM model name | openai/gpt-oss-120b |
 | `DOCAGENT_GROQ_TIMEOUT` | Per-request timeout in seconds | 180 |
 
 ---
@@ -478,7 +484,7 @@ class MySkill(BaseSkill):
 
 | Component | Technology |
 |---|---|
-| LLM / Chat | Groq Cloud (llama-3.3-70b-versatile) |
+| LLM / Chat | Groq Cloud (openai/gpt-oss-120b) |
 | Transcription | Groq Whisper (whisper-large-v3) |
 | YouTube Download | yt-dlp |
 | Audio Conversion | pydub + ffmpeg |

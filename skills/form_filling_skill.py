@@ -35,7 +35,7 @@ class FormFillingSkill(BaseSkill):
         raw_text = inputs.data["raw_text"]
         questions = inputs.data["questions"]
         user_answers = inputs.data["user_answers"]  # Dict[question, answer]
-        model = inputs.data.get("model", "llama-3.3-70b-versatile")
+        model = inputs.data.get("model", "openai/gpt-oss-120b")
         
         # Guard clause
         if not raw_text or not questions or not user_answers:
