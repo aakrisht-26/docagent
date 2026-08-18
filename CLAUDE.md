@@ -111,6 +111,21 @@ document a dot product is exact and instant.
   three chunks — with passages, several fragments of one page would otherwise
   sweep the budget and displace a page that is genuinely needed.
 
+**Chat spans one document or the whole corpus.** Mode is derived from the
+chunks, never from a caller flag: single-document chunks carry no `document`
+key. Across a corpus the selector keys on `(document, page)` — a bare page label
+conflates files and made one passage unreachable at any rank — drops anchors,
+and spends 6 slots. Labels become `report.pdf, Page 3`, and `used_sources`
+carries document and page as separate fields.
+
+Measured on 13 cross-document cases: retrieval 11/13 → **12/13**, citations
+naming their document 0/13 → **13/13**, unresolvable citations 11/13 → **0/13**.
+Cross-corpus retrieval is **meaningfully worse than single-document** — mean
+rank 2.15 against 1.18, ranked first 54% against 85% — and one case answers
+confidently from the wrong document with a correct citation. Both are
+quantified in `docs/multi-document-chat.md`, which is the thing to read before
+raising `MAX_CORPUS_DOCUMENTS` (25).
+
 Retrieval is measured, not assumed. On the current eval set (33 meaningful
 cases): **33/33 retrieved, 28/33 ranked first**, mean rank 1.18. Page-level
 chunking scores the same 33/33 but 25/33 ranked first — sub-chunking improves

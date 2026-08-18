@@ -242,6 +242,34 @@ def _normalise_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def _contains(reply: str, fragment: Any) -> bool:
+    """Is `fragment` present in `reply` as a WHOLE value?
+
+    A plain substring test has no boundaries, and that cuts the opposite way to
+    every normalisation above: it makes WRONG answers pass. Expecting "19"
+    matched "1987" — a real figure, the incorporation year, sitting on page 2 of
+    the same fixture. Expecting "94" matched "1.94". Auditing the two eval sets
+    found 127 such collisions reachable from figures that genuinely appear in
+    the corpus.
+
+    So a numeric fragment must not be flanked by more digits, and a word
+    fragment must not be flanked by more word characters. This is the one
+    change to the matcher that can move a score DOWN, which is why it is here:
+    the folding above earns its keep only if the comparison it feeds is sound.
+    """
+    needle = _normalise_for_match(str(fragment))
+    if not needle:
+        return False
+    haystack = _normalise_for_match(reply)
+
+    # A period is only a boundary problem when it is a DECIMAL POINT, i.e. when
+    # a digit sits on its far side. Excluding every adjacent period instead
+    # rejected "19. Next", where the period ends a sentence.
+    left = r"(?<!\d)(?<!\d\.)" if needle[0].isdigit() else r"(?<!\w)"
+    right = r"(?!\d)(?!\.\d)" if needle[-1].isdigit() else r"(?!\w)"
+    return re.search(left + re.escape(needle) + right, haystack) is not None
+
+
 def answer_hit(case: dict, reply: str) -> bool:
     """Did the reply contain the expected fact? (case-insensitive)
 
@@ -260,13 +288,11 @@ def answer_hit(case: dict, reply: str) -> bool:
     two fully correct replies wrong — `lg-pdf-05` answered "Nineteen ... 23.4
     days" and was failed for not writing the digits "19".
     """
-    lowered = _normalise_for_match(reply)
-
     required = case.get("expected_answer_all")
     if required:
-        return all(_normalise_for_match(str(f)) in lowered for f in required)
+        return all(_contains(reply, f) for f in required)
 
-    return any(_normalise_for_match(str(f)) in lowered
+    return any(_contains(reply, f)
                for f in case.get("expected_answer_contains", []))
 
 

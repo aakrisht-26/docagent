@@ -85,6 +85,45 @@ class TestAnswerMatching(unittest.TestCase):
         self.assertFalse(RE.answer_hit(case, "no figure is given"))
 
 
+class TestMatchBoundaries(unittest.TestCase):
+    """The one direction the matcher can be WRONGLY GENEROUS.
+
+    Every normalisation in `_normalise_for_match` collapses a distinction, so
+    each can only turn a non-match into a match — the matcher is monotonic and
+    any change to it can only raise a score. That is fine for typography and
+    fatal for boundaries: a plain substring test let "19" match "1987", which is
+    a real figure on page 2 of the same fixture. An audit of both eval sets
+    found 127 such collisions reachable from figures that actually appear in the
+    corpus.
+    """
+
+    def test_a_number_does_not_match_inside_a_longer_number(self):
+        self.assertFalse(RE._contains("incorporated in 1987", "19"))
+        self.assertFalse(RE._contains("the figure is 151", "51"))
+        self.assertFalse(RE._contains("spend was 1.94 million", "94"))
+
+    def test_a_number_still_matches_as_a_whole_value(self):
+        self.assertTrue(RE._contains("19 incidents were recorded", "19"))
+        self.assertTrue(RE._contains("averaged 94 days", "94"))
+
+    def test_a_word_does_not_match_inside_a_longer_word(self):
+        self.assertFalse(RE._contains("the subtotal was given", "total"))
+
+    def test_punctuation_around_a_value_is_not_a_boundary_problem(self):
+        for reply in ("19, and also", "(19)", "19. Next", "was 19"):
+            with self.subTest(reply=reply):
+                self.assertTrue(RE._contains(reply, "19"))
+
+    def test_the_typography_folding_still_applies(self):
+        """Tightening boundaries must not undo the corrections it sits on."""
+        self.assertTrue(RE._contains("total of 21500000", "21,500,000"))
+        self.assertTrue(RE._contains("rate is 45 pence per mile", "45 pence"))
+        self.assertTrue(RE._contains("a four‑year cycle", "four year"))
+
+    def test_an_empty_expectation_never_matches(self):
+        self.assertFalse(RE._contains("anything", ""))
+
+
 class TestMultiDocSources(unittest.TestCase):
     """A cross-document source is a (document, page) PAIR."""
 
