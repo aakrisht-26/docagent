@@ -243,7 +243,10 @@ class DocumentStore:
                        word_count, question_count, processing_time_ms,
                        result_json, created_at
                 FROM history
-                ORDER BY created_at DESC
+                -- id breaks the tie. created_at has one-second resolution, so
+                -- documents analysed in the same second ordered arbitrarily,
+                -- which decides WHICH of them fall inside the corpus cap.
+                ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -315,6 +318,99 @@ class DocumentStore:
         # comparing vectors that are not comparable.
         self._attach_embeddings(data, row[3], row[4], entry_id, row[5])
         return data
+
+    def load_corpus(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        """Every recent document's chunks in one list, tagged with its source.
+
+        Returns {"chunks": [...], "documents": [...], "truncated": bool}, where
+        each chunk carries a `document` key. That key is what lets the chat
+        skill tell page 3 of one file from page 3 of another; without it the
+        selector conflates them and one becomes unreachable at any rank.
+
+        Two things this deliberately does NOT do:
+
+        * It does not re-embed. Chunks arrive with whatever vectors `load()`
+          could vouch for, and `score_chunks` fills only the gaps. A document
+          stored under an older model or a different chunk scheme contributes
+          text without vectors rather than being silently compared against
+          incomparable ones.
+        * It does not hide which documents those are. `documents` reports
+          `searchable` per file, so a corpus that is half keyword-matched can
+          say so instead of quietly answering worse.
+
+        `limit` bounds ANSWER QUALITY, not memory: the selector has six slots,
+        and spreading them over an unbounded corpus degrades silently.
+        """
+        # Defaulted from the skill rather than duplicated, so the cap cannot be
+        # raised in one place and silently stay put in the other.
+        if limit is None:
+            from skills.document_chat_skill import MAX_CORPUS_DOCUMENTS
+            limit = MAX_CORPUS_DOCUMENTS
+
+        entries = self.list_recent(limit=limit)
+        total = self.count()
+
+        chunks: List[Dict[str, Any]] = []
+        documents: List[Dict[str, Any]] = []
+
+        # Two history rows can share a file name — the same file analysed twice,
+        # or two different files with the same name. Left alone that reproduces
+        # the exact ambiguity this method exists to remove, one level up, so
+        # repeats are disambiguated by entry id.
+        seen_names: Dict[str, int] = {}
+        skipped: List[str] = []
+
+        for entry in entries:
+            data = self.load(entry.entry_id)
+            if not data:
+                continue
+            entry_chunks = [c for c in (data.get("content_chunks") or [])
+                            if (c.get("text") or "").strip()]
+            if not entry_chunks:
+                # Rows saved before document content was persisted. Including
+                # them would add a name to the corpus that can never answer.
+                skipped.append(entry.file_name)
+                continue
+
+            name = entry.file_name
+            if name in seen_names:
+                seen_names[name] += 1
+                name = f"{name} (#{entry.entry_id})"
+            else:
+                seen_names[name] = 1
+
+            vectors = sum(1 for c in entry_chunks if c.get("embedding") is not None)
+            for chunk in entry_chunks:
+                tagged = dict(chunk)
+                tagged["document"] = name
+                tagged["entry_id"] = entry.entry_id
+                chunks.append(tagged)
+
+            documents.append({
+                "entry_id": entry.entry_id,
+                "document": name,
+                "file_name": entry.file_name,
+                "chunks": len(entry_chunks),
+                "vectors": vectors,
+                # Fully vectorised means this document is ranked by meaning.
+                # Partially or not at all means the gaps are embedded on the
+                # fly, which is correct but slower on the first question.
+                "searchable": vectors == len(entry_chunks),
+            })
+
+        return {
+            "chunks": chunks,
+            "documents": documents,
+            # Two different reasons a corpus is smaller than the history, kept
+            # apart because they need different words in the UI: `truncated`
+            # means the CAP bit and older documents are outside the answer;
+            # `skipped` means a row carried no text and could never answer.
+            # Reporting them as one number would tell a user their corpus was
+            # capped when nothing had been capped.
+            "truncated": total > limit,
+            "skipped": skipped,
+            "total_documents": total,
+        }
 
     @staticmethod
     def _attach_embeddings(data: Dict[str, Any], blob: Optional[str],

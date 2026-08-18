@@ -31,6 +31,27 @@ _STOPWORDS = frozenset({
 
 # Max total chars of context to inject into the LLM prompt
 _MAX_CONTEXT_CHARS = 6000
+
+# Distinct sources handed to the model. One document gets 3 plus first/last
+# anchors; a corpus gets 6 and no anchors.
+#
+# Anchors are the opening and closing chunk, added whatever the question is, to
+# give the model a sense of the document. Across a corpus that idea does not
+# survive: the "first" chunk is page 1 of whichever document happens to sort
+# first, and the "last" is the tail of another. Measured on the cross-document
+# eval, they spent 14% of the context budget on every query, on documents
+# nobody had asked about. So multi-document drops them and spends the budget on
+# ranked matches instead.
+_SINGLE_DOC_SLOTS = 3
+_MULTI_DOC_SLOTS = 6
+
+# Documents searchable in one query. Not a memory limit -- 25 documents is
+# roughly 9 MB of vectors against a ~643 MB steady state. It is an ANSWER
+# QUALITY limit: 6 slots spread over a large corpus stop being enough for any
+# one document to be properly represented, and the failure is silent. A
+# documented cap that can be raised beats an unbounded corpus that quietly
+# degrades.
+MAX_CORPUS_DOCUMENTS = 25
 # Max conversation turns to keep before truncation
 _MAX_HISTORY_TURNS = 20
 # Estimated chars per token (rough)
@@ -72,8 +93,10 @@ class DocumentChatSkill(BaseSkill):
             )
 
         # Select most relevant chunks
+        multi_doc = self.is_multi_doc(chunks)
         selected_chunks, ranked_chunks = self._select_with_roles(user_message, chunks)
         used_pages = self._citable_sources(ranked_chunks, selected_chunks)
+        used_sources = self.citable_sources_detailed(ranked_chunks, selected_chunks)
 
         context_text = self._format_context(selected_chunks)
 
@@ -91,19 +114,42 @@ class DocumentChatSkill(BaseSkill):
                     # Naming the exact format matters: asked only to "cite page
                     # numbers", with labels present, the model still preferred
                     # quoting section headings out of the body text.
-                    "Each excerpt begins with its source in square brackets, such as "
-                    "[Page 3] or [Sheet: Q3 Revenue]. When you state a fact, cite the "
-                    "source it came from using exactly that label. Never cite a source "
-                    "that is not shown in the context."
+                    + (
+                        # Across a corpus the document is the load-bearing half
+                        # of the citation. Naming only the page is not a weaker
+                        # answer, it is a wrong one: several documents have a
+                        # page 3, and the reader cannot tell which was meant.
+                        "The excerpts come from SEVERAL DIFFERENT DOCUMENTS. Each "
+                        "begins with its source in square brackets, naming the "
+                        "document and then the location, such as "
+                        "[report.pdf, Page 3] or [sales.xlsx, Sheet: Q3 Revenue]. "
+                        "When you state a fact, cite it using exactly that label, "
+                        "INCLUDING the document name — a page number alone is "
+                        "ambiguous because several documents have a page 3. If two "
+                        "documents disagree, say so and attribute each. Never cite "
+                        "a source that is not shown in the context."
+                        if multi_doc else
+                        "Each excerpt begins with its source in square brackets, such as "
+                        "[Page 3] or [Sheet: Q3 Revenue]. When you state a fact, cite the "
+                        "source it came from using exactly that label. Never cite a source "
+                        "that is not shown in the context."
+                    )
                 ),
             },
             {
                 "role": "user",
-                "content": f"[DOCUMENT CONTEXT]\n{context_text}\n[END CONTEXT]",
+                "content": (
+                    f"[{'CORPUS CONTEXT' if multi_doc else 'DOCUMENT CONTEXT'}]\n"
+                    f"{context_text}\n[END CONTEXT]"
+                ),
             },
             {
                 "role": "assistant",
-                "content": "I have read the document context. Ask me anything about it.",
+                "content": (
+                    "I have read the excerpts from these documents. Ask me anything "
+                    "about them." if multi_doc else
+                    "I have read the document context. Ask me anything about it."
+                ),
             },
             *truncated_history,
             {"role": "user", "content": user_message},
@@ -119,7 +165,18 @@ class DocumentChatSkill(BaseSkill):
 
         return SkillOutput(
             success=True,
-            data={"reply": reply, "used_pages": used_pages},
+            data={
+                "reply": reply,
+                # Bare page labels, unchanged, for every existing reader.
+                "used_pages": used_pages,
+                # The same citations with the document kept separate, which is
+                # what the UI renders and what a corpus answer needs.
+                "used_sources": used_sources,
+                "multi_doc": multi_doc,
+                "documents_searched": sorted(
+                    {c["document"] for c in chunks if c.get("document")}
+                ),
+            },
             duration_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -235,11 +292,75 @@ class DocumentChatSkill(BaseSkill):
         sources = []
         for chunk in ranked:
             source = chunk.get("page_or_sheet")
-            if source in (None, "") or source in seen:
+            if source in (None, ""):
                 continue
-            seen.add(source)
+            # Deduplicate on the SAME key the selector used. Deduplicating on
+            # the bare page label here would silently merge page 3 of two
+            # different documents back into one citation, undoing the fix one
+            # layer further down.
+            key = self.source_key(chunk)
+            if key in seen:
+                continue
+            seen.add(key)
             sources.append(source)
         return sources
+
+    def citable_sources_detailed(self, ranked: List[Dict],
+                                 selected: List[Dict]) -> List[Dict]:
+        """Citations as structure, not display strings.
+
+        `used_pages` is a list of bare page labels and cannot express "page 3
+        of the manual" — the thing multi-document chat exists to say. Rather
+        than overload it and break every existing reader, this returns the
+        parts alongside the rendered label, so the UI, the prose and the eval
+        all describe a source the same way instead of three near-agreeing ways.
+        """
+        if not ranked:
+            ranked = selected
+
+        seen = set()
+        out: List[Dict] = []
+        for chunk in ranked:
+            source = chunk.get("page_or_sheet")
+            if source in (None, ""):
+                continue
+            key = self.source_key(chunk)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "document": chunk.get("document"),
+                "source": source,
+                "label": self.source_label(chunk),
+            })
+        return out
+
+    @staticmethod
+    def is_multi_doc(chunks: List[Dict]) -> bool:
+        """True when these chunks come from more than one document.
+
+        Keyed on the presence of a `document` field rather than on a flag
+        passed in by the caller, so a single-document call cannot accidentally
+        take the multi-document path: single-document chunks are built as
+        {"text", "page_or_sheet"} and have no `document` at all.
+        """
+        return any(c.get("document") for c in chunks)
+
+    @staticmethod
+    def source_key(chunk: Dict) -> Any:
+        """The identity a slot is deduplicated on.
+
+        Within one document a page is a source. Across a corpus it is not:
+        page 3 of the operations review and page 3 of the staff manual are
+        different sources that the page label alone conflates. That is not
+        theoretical — on the cross-document eval it made the manual's page 3
+        unreachable AT ANY RANK, discarded as a duplicate while scoring third
+        highest in the corpus, because the review's page 3 had already claimed
+        the label "3".
+        """
+        source = chunk.get("page_or_sheet")
+        document = chunk.get("document")
+        return (document, source) if document else source
 
     @staticmethod
     def anchor_chunks(chunks: List[Dict]) -> List[Dict]:
@@ -250,8 +371,14 @@ class DocumentChatSkill(BaseSkill):
         context. Defined once here because two callers need the same answer:
         the selector, which adds them, and `execute()`, which must keep them
         out of the citation list.
+
+        NONE across a corpus. The concept is document-shaped: "the opening"
+        means something for one document and nothing for twenty, where it
+        resolves to page 1 of whichever happens to be first in the list. Those
+        two slots were measured spending 14% of the context budget on every
+        cross-document query, on documents nobody asked about.
         """
-        if not chunks:
+        if not chunks or DocumentChatSkill.is_multi_doc(chunks):
             return []
         if len(chunks) == 1:
             return [chunks[0]]
@@ -259,11 +386,28 @@ class DocumentChatSkill(BaseSkill):
 
     @staticmethod
     def source_label(chunk: Dict) -> str:
-        """Human-readable origin of a chunk: 'Page 3' or 'Sheet: Q3 Revenue'."""
+        """Human-readable origin: 'Page 3', or 'report.pdf, Page 3' in a corpus.
+
+        The document is prefixed only when there is one, so a single-document
+        conversation produces exactly the labels it always has and its answers
+        are unchanged.
+
+        A bare "Page 3" across a corpus is not a weaker citation, it is a wrong
+        one: on the cross-document eval, 11 of 13 citation lists contained a
+        page label that named more than one file, and pages 1 and 2 each named
+        four. The reader cannot tell which, and has no way to know they cannot.
+        """
         source = chunk.get("page_or_sheet")
+        document = chunk.get("document")
+
         if source is None or source == "":
-            return "Unknown source"
-        return f"Page {source}" if isinstance(source, int) else f"Sheet: {source}"
+            where = "Unknown source"
+        elif isinstance(source, int):
+            where = f"Page {source}"
+        else:
+            where = f"Sheet: {source}"
+
+        return f"{document}, {where}" if document else where
 
     def _format_context(self, selected: List[Dict]) -> str:
         """Label every chunk with where it came from, then join.
@@ -304,7 +448,10 @@ class DocumentChatSkill(BaseSkill):
         return "\n\n---\n\n".join(parts)
 
     def _select_chunks(self, query: str, chunks: List[Dict]) -> List[Dict]:
-        """The chunks handed to the model: top 3 by relevance, plus anchors.
+        """The chunks handed to the model.
+
+        Top 3 by relevance plus first/last anchors within one document; top 6
+        and no anchors across a corpus.
 
         Thin wrapper over `_select_with_roles`, kept because the retrieval eval
         and older callers want just the list.
@@ -357,21 +504,27 @@ class DocumentChatSkill(BaseSkill):
         #
         # Taking each source's best passage keeps the context as wide as it was
         # before while still ranking on the tighter passage match.
+        slots = _MULTI_DOC_SLOTS if self.is_multi_doc(chunks) else _SINGLE_DOC_SLOTS
         top = []
         seen_sources = set()
         for i in order:
-            source = chunks[i].get("page_or_sheet")
+            # (document, page) across a corpus, bare page within one document.
+            # Keying on the page label alone made a passage unreachable at any
+            # rank whenever another document had already used that number.
+            source = self.source_key(chunks[i])
             if source in seen_sources:
                 continue
             seen_sources.add(source)
             top.append(chunks[i])
-            if len(top) == 3:
+            if len(top) == slots:
                 break
 
         self.logger.info(
             f"Chunk retrieval via {method}: selected "
-            f"{[c.get('page_or_sheet') for c in top]} "
-            f"from {len(chunks)} chunk(s) across {len(set(c.get('page_or_sheet') for c in chunks))} source(s) "
+            f"{[self.source_label(c) for c in top]} "
+            f"from {len(chunks)} chunk(s) across "
+            f"{len(set(self.source_key(c) for c in chunks))} source(s) "
+            f"in {len(set(c.get('document') for c in chunks))} document(s) "
             f"(top score {scores[order[0]]:.3f})"
         )
 

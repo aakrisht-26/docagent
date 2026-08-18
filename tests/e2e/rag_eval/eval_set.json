@@ -768,7 +768,7 @@
           }
         ],
         "match": "all",
-        "note": "Headcount is on page 1 of the review, which the single-document selector supplies as a structural ANCHOR rather than a ranked choice. It therefore looks like a hit while being luck.",
+        "note": "Headcount is on page 1 of the review. The single-document selector supplied it as a structural ANCHOR, so it looked like a hit while being luck; with anchors dropped for corpus mode the luck is gone and this is a HARD FAILURE, 0/5 over five trials. Page 2 (Corporate Structure) outranks page 1 for 'how many people does the company employ'. The model then answers from the nearest plausible document instead of declining: it sums the trivial sales.xlsx Headcount sheet to '96 employees' and cites it correctly. An honest citation on a wrong answer.",
         "expected_answer_all": [
           "1,840",
           "25 days"
@@ -822,7 +822,7 @@
           }
         ],
         "match": "all",
-        "note": "BOTH facts sit on a page numbered 3, in different documents. Deduplicating by page label alone makes the second unreachable at any rank: the manual's page 3 is the third-highest scoring passage in the corpus and is discarded because the review's page 3 already claimed the label 3.",
+        "note": "BOTH facts sit on a page numbered 3, in different documents. Under the old page-label key the manual's page 3 was unreachable at any rank despite scoring third highest in the corpus. The (document, page) key fixes retrieval, which is now reliably RANKED. The ANSWER is unstable at 3/5 across trials -- the model sometimes restructures the reply and drops one of the two cycles. Retrieval and generation fail independently here, which is why they are scored separately.",
         "expected_answer_all": [
           "four year",
           "seven years"

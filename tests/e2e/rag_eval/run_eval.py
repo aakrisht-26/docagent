@@ -209,7 +209,7 @@ _UNICODE_LOOKALIKES = {
 }
 
 
-def _normalise_digits(text: str) -> str:
+def _normalise_for_match(text: str) -> str:
     """Fold away formatting so the check scores correctness, not typography.
 
     Lowercases, strips the commas inside numbers, and maps Unicode lookalikes
@@ -234,7 +234,12 @@ def _normalise_digits(text: str) -> str:
     text = (text or "").lower()
     for bad, good in _UNICODE_LOOKALIKES.items():
         text = text.replace(bad, good)
-    return re.sub(r"(?<=\d),(?=\d)", "", text)
+    text = re.sub(r"(?<=\d),(?=\d)", "", text)
+    # A hyphen between words is the same word pair as a space between them.
+    # Applied to BOTH sides, so "four-year" and "four year" compare equal
+    # whichever way round the fixture and the model happen to write them.
+    text = re.sub(r"(?<=[a-z])-(?=[a-z])", " ", text)
+    return re.sub(r"\s+", " ", text)
 
 
 def answer_hit(case: dict, reply: str) -> bool:
@@ -255,13 +260,13 @@ def answer_hit(case: dict, reply: str) -> bool:
     two fully correct replies wrong — `lg-pdf-05` answered "Nineteen ... 23.4
     days" and was failed for not writing the digits "19".
     """
-    lowered = _normalise_digits(reply)
+    lowered = _normalise_for_match(reply)
 
     required = case.get("expected_answer_all")
     if required:
-        return all(_normalise_digits(str(f)) in lowered for f in required)
+        return all(_normalise_for_match(str(f)) in lowered for f in required)
 
-    return any(_normalise_digits(str(f)) in lowered
+    return any(_normalise_for_match(str(f)) in lowered
                for f in case.get("expected_answer_contains", []))
 
 
@@ -441,7 +446,12 @@ def main_multi(argv: list) -> int:
         best = max(range(len(corpus)), key=lambda i: scores[i])
         answer_docs = {d for d, _ in expected_pairs(case)}
 
-        cites = chat._citable_sources(ranked, selected)
+        # Score the citation the READER is given. `used_pages` is the legacy
+        # bare-label list kept for single-document callers; across a corpus it
+        # cannot express "page 3 of the manual", so measuring it here would be
+        # measuring a field this mode does not use.
+        cites = chat.citable_sources_detailed(ranked, selected)
+        legacy_cites = chat._citable_sources(ranked, selected)
         collisions = label_collisions(corpus, scores)
 
         record = {
@@ -457,9 +467,21 @@ def main_multi(argv: list) -> int:
             # Documents that reached the model without earning a ranked slot.
             "freeloading_docs": sorted({d for d, _ in sel_pairs}
                                        - {d for d, _ in rank_pairs}),
-            "citations": cites,
-            "ambiguous_citations": [c for c in cites if c in ambiguous],
-            # An expected passage the page-label dedupe made unreachable.
+            "citations": [c["label"] for c in cites],
+            # A citation resolves when it names its document. Without one, a
+            # bare label that several documents share names none of them.
+            "unresolvable_citations": [
+                c["label"] for c in cites
+                if not c.get("document") and c["source"] in ambiguous
+            ],
+            "citations_name_document": all(c.get("document") for c in cites) if cites else False,
+            # What the page-label key WOULD have thrown away. Kept as a
+            # regression guard: if this is non-empty while the expected source
+            # is still ranked, the (document, page) key is doing its job.
+            "legacy_key_would_discard": [p for p, _, _ in collisions],
+            "legacy_citations": legacy_cites,
+            # An expected passage the LEGACY page-label dedupe made unreachable.
+            # The shipped selector keys on (document, page) and does not.
             "expected_suppressed": [p for p, _, _ in collisions
                                     if p in expected_pairs(case)],
             "collisions": [(p, round(s, 4), b) for p, s, b in collisions],
@@ -531,18 +553,21 @@ def main_multi(argv: list) -> int:
     print(f"  {'top-scoring passage is in a correct document':<44} "
           f"{d1}/{len(results)}")
 
-    # Attribution. This, not recall, is where the current code fails: the answer
-    # is found and then described with a page number that names several files.
-    amb = [r for r in results if r["ambiguous_citations"]]
-    print(f"  {'citations containing an ambiguous page label':<44} "
+    # Attribution. Recall was never the weak part of cross-corpus chat; saying
+    # WHERE an answer came from was.
+    resolves = sum(1 for r in results if r["citations_name_document"])
+    amb = [r for r in results if r["unresolvable_citations"]]
+    print(f"  {'citations naming their document':<44} {resolves}/{len(results)}")
+    print(f"  {'citations that cannot be resolved to a file':<44} "
           f"{len(amb)}/{len(results)}")
     if with_answers:
         named = sum(1 for r in results if r["cited_docs"])
-        print(f"  {'replies naming any document':<44} {named}/{len(results)}")
+        print(f"  {'replies naming a document in their prose':<44} "
+              f"{named}/{len(results)}")
 
     supp = [r for r in results if r["expected_suppressed"]]
-    print(f"  {'expected source made unreachable by the label key':<44} "
-          f"{len(supp)}/{len(results)}")
+    print(f"  {'expected source the LEGACY page key would drop':<44} "
+          f"{len(supp)}/{len(results)}   (selector keys on (document, page))")
 
     freeloaders = sum(len(r["freeloading_docs"]) for r in results)
     print(f"  {'documents sent to the model with no ranked slot':<44} "
@@ -551,25 +576,39 @@ def main_multi(argv: list) -> int:
 
     if amb:
         print()
-        print("AMBIGUOUS CITATIONS — the page label the reader is given names "
+        print("UNRESOLVABLE CITATIONS — the label the reader is given names "
               "more than one document")
         print("-" * 118)
         for r in amb:
-            for label in r["ambiguous_citations"]:
-                holders = ", ".join(short_name(d) for d in ambiguous[label])
-                print(f"  {r['id']:<8} cites {str(label):<14} which exists in: {holders}")
+            for label in r["unresolvable_citations"]:
+                print(f"  {r['id']:<8} cites {label}")
 
     if supp:
         print()
-        print("UNREACHABLE AT ANY RANK — discarded because another document "
-              "already claimed the page label")
+        print("RESCUED BY THE (document, page) KEY — these would be discarded "
+              "at any rank under the old page-label key")
         print("-" * 118)
         for r in supp:
             for p, score, blocker in r["collisions"]:
                 if p in r["expected_suppressed"]:
+                    rescued = p in r["ranked"]
                     print(f"  {r['id']:<8} {short_name(p[0])}:{p[1]} "
-                          f"(score {score}) blocked by "
-                          f"{short_name(blocker[0])}:{blocker[1]}")
+                          f"(score {score}) was blocked by "
+                          f"{short_name(blocker[0])}:{blocker[1]}"
+                          f"   -> now {'RANKED' if rescued else 'still absent'}")
+
+    # One legacy-shape sample, so the reason the field changed stays visible.
+    dupes = [r for r in results
+             if len(r["legacy_citations"]) != len(set(map(str, r["legacy_citations"])))]
+    if dupes:
+        print()
+        print("WHY used_pages IS NOT ENOUGH — the same bare label twice, from "
+              "two different documents")
+        print("-" * 118)
+        for r in dupes[:3]:
+            print(f"  {r['id']:<8} used_pages {r['legacy_citations']}")
+            for label in r["citations"]:
+                print(f"           -> {label}")
     return 0
 
 
