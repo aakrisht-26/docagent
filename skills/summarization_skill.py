@@ -46,6 +46,76 @@ _LENGTH_CONFIGS: Dict[str, Dict[str, Any]] = {
     "Exhaustive": {"max_tokens": 8000, "instruction": "Produce a comprehensive report covering every claim, data point, entity, and timeline mentioned."},
 }
 
+# ── Reasoning allowance ───────────────────────────────────────────────────────
+#
+# The numbers above are CONTENT budgets: what a "Standard" summary is meant to
+# be allowed to say. `max_tokens` is not that. It caps content PLUS the
+# reasoning tokens a model spends before writing anything, so under
+# gpt-oss-120b every preset silently delivered less than it was designed to.
+# The allowance is added on top at the call, which restores what the preset
+# always meant. Raising the preset numbers themselves would change the meaning.
+#
+# SIZED FROM MEASUREMENT, and the shape of the measurement matters:
+#
+#   reasoning vs INPUT size   (Standard, no directive)
+#     prompt   448 -> reasoning  45
+#     prompt  2460 -> reasoning  42
+#     prompt  1575 -> reasoning 192
+#   A 5.5x range of input moves reasoning barely at all. It does NOT scale
+#   with input, so the allowance does not need to.
+#
+#   reasoning vs REQUESTED OUTPUT   (same document, ~1600-token prompt)
+#     Concise      199
+#     Standard      34
+#     Detailed     126
+#     Exhaustive   902
+#   Here it does move, and the directive is what moves it — "cover every claim,
+#   data point, entity and timeline" costs an order of magnitude more thinking
+#   than no directive at all.
+#
+# So the allowance is preset-SENSITIVE in principle. It is a flat constant
+# anyway, because the same measurement is noisy run to run: Standard produced
+# 34 reasoning tokens in one run and 192 in another on identical input. Fitting
+# a per-preset curve to four noisy points would imply a precision the data does
+# not support, and a flat value that clears the worst observation is honest
+# about what is known. 1024 clears 902 with margin.
+_REASONING_ALLOWANCE = 1024
+
+# Content budget for one map-step chunk. Measured need on the largest real
+# chunks of sample_large_report: ~943 content tokens.
+_MAP_CONTENT_TOKENS = 1000
+
+
+# Groq counts prompt + max_tokens against the per-minute limit and REFUSES the
+# request outright (413) when the sum exceeds it — it does not truncate. Free
+# tier is 8,000 TPM, so a request can never ask for more than that whatever the
+# preset says.
+#
+# This clamp exists so the allowance cannot make anything worse. Measured across
+# the eight configured keys: max_tokens 5000 is accepted by seven of them, 8000
+# is refused by six, and 9024 is refused by all eight. So "Exhaustive" (8000)
+# was ALREADY failing on most keys before the allowance existed — but adding
+# 1024 on top would have taken it from occasionally working to never working,
+# and a fix for one preset must not break another.
+#
+# Exhaustive therefore keeps asking for 8000 and remains as viable, or not, as
+# it was. That it exceeds the free tier at all is a pre-existing product
+# question — lowering it would change what "Exhaustive" means — and it is
+# documented rather than decided here. When it does fail, the summary falls back
+# to extractive WITH a note, and the client now logs the 413.
+_PROVIDER_REQUEST_CEILING = 8000
+
+
+def _with_reasoning_room(content_tokens: int) -> int:
+    """Turn a CONTENT budget into a max_tokens that can actually deliver it.
+
+    Clamped to what the provider will accept, so a preset that already fitted
+    is not pushed over the edge by the allowance.
+    """
+    return min(content_tokens + _REASONING_ALLOWANCE,
+               max(content_tokens, _PROVIDER_REQUEST_CEILING))
+
+
 # ── Audience tone personas ─────────────────────────────────────────────────────
 _TONE_PERSONAS: Dict[str, Dict[str, str]] = {
     "Expert / Technical": {
@@ -328,7 +398,9 @@ class SummarizationSkill(BaseSkill):
                 {"role": "system", "content": system_content},
                 {"role": "user",   "content": user_content},
             ],
-            max_tokens=max_tokens,
+            # `max_tokens` here is the preset's CONTENT budget; the reasoning
+            # allowance is added so the preset delivers the length it names.
+            max_tokens=_with_reasoning_room(max_tokens),
         )
 
     def _call_map(self, chunk: str, domain: str) -> Optional[str]:
@@ -346,17 +418,12 @@ class SummarizationSkill(BaseSkill):
                 ),
             }],
             temperature=0.1,
-            # Measured on the four largest real chunks of sample_large_report:
-            # reasoning 88-297 tokens, content 134-252, worst total 549. 800 was
-            # safe, but only at 69% utilisation, and reasoning varied more than
-            # threefold across chunks — a denser section could exceed it.
-            #
-            # The failure mode is why the margin matters: this method's caller
-            # does `if s: chunk_summaries.append(s)`, so a truncated chunk is
-            # silently DROPPED and the summary is quietly missing a section
-            # rather than erroring. Truncation is now logged by the client, but
-            # room not to truncate beats a warning about having done.
-            max_tokens=1200,
+            # The failure mode is why this needs room: this method's caller does
+            # `if s: chunk_summaries.append(s)`, so a truncated chunk is quietly
+            # dropped or half-kept and the summary loses a section without
+            # erroring. Measured need is ~943 content tokens on the largest real
+            # chunks; 800 was truncating in practice.
+            max_tokens=_with_reasoning_room(_MAP_CONTENT_TOKENS),
         )
 
     def _call_reduce(
@@ -410,7 +477,9 @@ class SummarizationSkill(BaseSkill):
                 {"role": "system", "content": system_content},
                 {"role": "user",   "content": user_content},
             ],
-            max_tokens=max_tokens,
+            # `max_tokens` here is the preset's CONTENT budget; the reasoning
+            # allowance is added so the preset delivers the length it names.
+            max_tokens=_with_reasoning_room(max_tokens),
         )
 
     # ── Page-to-chunk mapping (for citations) ─────────────────────────────────

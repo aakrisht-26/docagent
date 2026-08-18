@@ -159,13 +159,23 @@ class TestBudgetsAtCallSites(unittest.TestCase):
         return int(re.search(r"max_tokens=(\d+)", after).group(1))
 
     def test_the_summarisation_map_step_has_headroom(self):
-        """Worst measured chunk needed 549 tokens, 297 of them reasoning.
+        """Measured need is ~943 content tokens on the largest real chunks.
 
-        A truncated map chunk is dropped by its caller, so the summary silently
-        loses a section rather than failing.
+        A truncated map chunk is dropped or half-kept by its caller, so the
+        summary silently loses a section rather than failing.
+
+        Asserted through the budget helper rather than by scraping a literal:
+        the call site now composes its budget from a content figure plus the
+        reasoning allowance, and a regex over the source would only re-encode
+        the arithmetic it is supposed to be checking.
         """
-        self.assertGreaterEqual(
-            self._budget("skills/summarization_skill.py", "def _call_map"), 1000)
+        from skills.summarization_skill import (
+            _MAP_CONTENT_TOKENS, _with_reasoning_room)
+        self.assertGreaterEqual(_MAP_CONTENT_TOKENS, 943,
+                                "must cover the measured content need")
+        self.assertGreater(_with_reasoning_room(_MAP_CONTENT_TOKENS),
+                           _MAP_CONTENT_TOKENS,
+                           "and leave room for reasoning on top of it")
 
     def test_the_classifier_has_headroom(self):
         self.assertGreaterEqual(

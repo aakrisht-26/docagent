@@ -97,6 +97,20 @@ for an entire model migration. Domain fell back to `General`, which gates
 - **It is ~4x slower per call** than the retired 70b — summaries went from ~2s
   to 12-18s — and free-tier keys have an 8,000 TPM limit a large document now
   brushes. Use several keys via `GROQ_API_KEYS`.
+- **Summary length presets carry a reasoning allowance.** The numbers in
+  `_LENGTH_CONFIGS` are CONTENT budgets; `_with_reasoning_room()` adds 1024 at
+  the call so a preset delivers the length it names. Reasoning does not scale
+  with input (a 5.5x range of prompt sizes moved it from 45 to 42 tokens) but
+  does scale with the directive (Standard 34, Exhaustive 902), and it is noisy
+  run to run — hence a flat constant clearing the worst observation rather than
+  a fitted curve.
+- **Groq refuses, it does not truncate.** prompt + `max_tokens` over the
+  per-minute limit returns 413, so the allowance is clamped to
+  `_PROVIDER_REQUEST_CEILING`. Measured across eight keys: 5000 accepted by
+  seven, 8000 refused by six, 9024 refused by all. "Exhaustive" (8000) already
+  exceeded the free tier before the allowance existed; the clamp stops it being
+  made worse. Whether 8000 is the right number for that preset is a product
+  question, not a bug.
 
 ### Hybrid Classification
 

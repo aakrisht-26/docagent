@@ -301,6 +301,16 @@ throttled key and rotates to the next, so this surfaces as `tokens/min headroom
 low` warnings rather than failures — but with a single key it would be a stall.
 Configure several keys via `GROQ_API_KEYS` for anything beyond casual use.
 
+**The "Exhaustive" summary length falls back to extractive.**
+Expected on the free tier, and it predates the reasoning allowance. Groq counts
+prompt + `max_tokens` against the per-minute limit and **refuses** the request
+with a 413 rather than truncating it, so an 8,000-token request cannot fit an
+8,000 TPM key alongside any prompt at all. Measured across eight keys: 5000 is
+accepted by seven, 8000 refused by six, 9024 refused by all eight. Concise,
+Standard and Detailed are unaffected. Either use a key on a higher tier, or pick
+Detailed — lowering the Exhaustive budget would change what the preset means, so
+it has been left alone deliberately.
+
 **Summaries are short and flat, and the method reads `extractive`.**
 The LLM is not running. Two causes, and they need different fixes. If the log
 shows `No API key found`, the secret did not arrive — see above. If it shows
