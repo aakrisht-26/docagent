@@ -213,7 +213,8 @@ quantified in `docs/multi-document-chat.md`, which is the thing to read before
 raising `MAX_CORPUS_DOCUMENTS` (25).
 
 Retrieval is measured, not assumed. On the current eval set (33 meaningful
-cases): **33/33 retrieved, 28/33 ranked first**, mean rank 1.18. Page-level
+cases): **33/33 retrieved, 32/33 required sources leading the ranking**
+(worst-rank diagnostic 28/33, mean worst rank 1.18). Page-level
 chunking scores the same 33/33 but 25/33 ranked first — sub-chunking improves
 *ranking*, not recall. The keyword fallback scores 27/33 with mean rank 3.09.
 Score it with `python tests/e2e/rag_eval/run_eval.py` (no API calls), or

@@ -183,6 +183,44 @@ def classify_hit(case: dict, selected_sources: list, scores: dict,
     return "ranked"
 
 
+def leads_ranking(case: dict, scores: dict) -> bool:
+    """Do the required sources occupy the TOP of the ranking?
+
+    The headline metric, because the one it replaces had an unreachable
+    ceiling. `answer_rank` returns the WORST rank across required sources, so a
+    case needing two pages scores 2 even when retrieval puts them first and
+    second — the best outcome that exists. Five of the 33 single-document cases
+    are `match: all` with two sources, so "ranked #1" could never exceed 28/33
+    however good retrieval became, and 28/33 was being read as five failures.
+    A metric whose maximum is not attainable reads as a deficit that is really
+    a definition.
+
+    Here `k` is the number of sources the case actually requires — every
+    expected source for `match: all`, one for `match: any` — and the case
+    passes when those sources hold the top `k` positions. A single-source case
+    still means "ranked first". A two-source case means "first and second, in
+    either order", which is exactly what perfect retrieval looks like.
+
+    `answer_rank` is kept and still reported: knowing HOW far down a miss
+    landed is diagnostic, and it is what moves when chunking changes. It just
+    is not the headline.
+    """
+    if not scores:
+        return False
+    ordered = sorted(scores.items(), key=lambda kv: -kv[1])
+    positions = {src: i + 1 for i, (src, _) in enumerate(ordered)}
+    expected = case["expected_sources"]
+
+    if case.get("match") == "all":
+        ranks = [positions.get(e) for e in expected]
+        if any(r is None for r in ranks):
+            return False
+        return max(ranks) <= len(expected)
+
+    # `any`: one of them suffices, so the bar is that one of them leads.
+    return any(positions.get(e) == 1 for e in expected)
+
+
 def answer_rank(case: dict, scores: dict) -> int:
     """1-based rank of the best expected source, by score. 0 if it has none.
 
@@ -387,6 +425,30 @@ def expected_pairs(case: dict) -> list:
     return [(e["doc"], e["source"]) for e in case["expected_sources"]]
 
 
+def multi_leads(case: dict, corpus: list, scores: list, chat) -> bool:
+    """The cross-document twin of `leads_ranking`.
+
+    Same reasoning: three of the thirteen cases require two (document, page)
+    pairs, so any "was it first" metric is capped below 13/13 by definition.
+    Here the required pairs must hold the top `k` source positions, k being how
+    many the case needs.
+    """
+    order = sorted(range(len(corpus)), key=lambda i: scores[i], reverse=True)
+    positions, seen = {}, set()
+    for i in order:
+        key = chat.source_key(corpus[i])
+        if key in seen:
+            continue
+        seen.add(key)
+        positions[key] = len(positions) + 1
+
+    expected = expected_pairs(case)
+    if case.get("match") == "all":
+        ranks = [positions.get(e) for e in expected]
+        return bool(ranks) and all(r is not None for r in ranks)             and max(ranks) <= len(expected)
+    return any(positions.get(e) == 1 for e in expected)
+
+
 def multi_hit(case: dict, got: list) -> bool:
     exp = expected_pairs(case)
     if case.get("match") == "all":
@@ -538,6 +600,7 @@ def main_multi(argv: list) -> int:
             "hit_ranked": multi_hit(case, rank_pairs),
             "hit_any": multi_hit(case, sel_pairs),
             "rank1_doc_correct": corpus[best]["document"] in answer_docs,
+            "leads": multi_leads(case, corpus, scores, chat),
             "rank1_doc": corpus[best]["document"],
             # Documents that reached the model without earning a ranked slot.
             "freeloading_docs": sorted({d for d, _ in sel_pairs}
@@ -624,7 +687,10 @@ def main_multi(argv: list) -> int:
         print(f"    {category:<40} ranked {hits}/{len(rows)}")
 
     print()
+    leads = sum(1 for r in results if r["leads"])
     d1 = sum(1 for r in results if r["rank1_doc_correct"])
+    print(f"  {'required sources lead the ranking':<44} "
+          f"{leads}/{len(results)}   <- headline")
     print(f"  {'top-scoring passage is in a correct document':<44} "
           f"{d1}/{len(results)}")
 
@@ -795,6 +861,7 @@ def main(argv: list) -> int:
             "retrieval_hit": retrieval_hit(case, sources),
             "hit_kind": classify_hit(case, sources, scores, anchors),
             "rank": answer_rank(case, scores),
+            "leads": leads_ranking(case, scores),
             "method": method,
             "answer_hit": None,
             "citation": None,
@@ -867,9 +934,11 @@ def main(argv: list) -> int:
         summarise(category, by_cat[category])
         rc = [r for r in by_cat[category] if r["rank"] > 0]
         if rc:
+            leads = sum(1 for r in rc if r["leads"])
             t1 = sum(1 for r in rc if r["rank"] == 1)
             mr = sum(r["rank"] for r in rc) / len(rc)
-            print(f"  {'':<34} rank#1 {t1}/{len(rc)}   mean rank {mr:.2f}")
+            print(f"  {'':<34} leads {leads}/{len(rc)}   "
+                  f"(worst-rank#1 {t1}/{len(rc)}, mean worst rank {mr:.2f})")
 
     incidental = [r for r in meaningful if r["hit_kind"] == "incidental"]
     if incidental:
@@ -892,10 +961,15 @@ def main(argv: list) -> int:
     # saturates: on the dense fixture every case "hits" because the selector
     # returns 4-5 of 8 pages, while the answering page's RANK varies from 1 to 3.
     ranked_cases = [r for r in meaningful if r["rank"] > 0]
+    leads = sum(1 for r in meaningful if r["leads"])
     top1 = sum(1 for r in ranked_cases if r["rank"] == 1)
     mean_rank = sum(r["rank"] for r in ranked_cases) / len(ranked_cases) if ranked_cases else 0.0
-    print(f"  {'answering chunk ranked #1':<34} "
-          f"{top1}/{len(ranked_cases)}   (mean rank {mean_rank:.2f})")
+    print(f"  {'required sources lead the ranking':<34} "
+          f"{leads}/{len(meaningful)}   <- headline, ceiling is reachable")
+    print(f"  {'worst required source ranked #1':<34} "
+          f"{top1}/{len(ranked_cases)}   (mean worst rank {mean_rank:.2f}; "
+          f"capped at {len(meaningful) - sum(1 for r in meaningful if len(r['expected']) > 1)}"
+          f"/{len(meaningful)} by multi-source cases)")
 
     # Citation correctness, from the model's own prose rather than from what
     # the selector chose. 'wrong' is the number that matters: a confidently

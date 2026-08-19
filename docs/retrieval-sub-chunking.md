@@ -33,11 +33,26 @@ had.
 
 ## Results
 
-Same eval set, same questions, only the chunking changed. No API call is
+Same eval set, same questions, only the chunking changed.
+
+**Read the headline as "leads", not "ranked first".** `required sources lead
+the ranking` counts a case when its required sources hold the top *k*
+positions, *k* being how many the case needs: rank 1 for a single-source
+question, first-and-second in either order for a two-source one. Its ceiling is
+33/33 and is attainable.
+
+The older `worst required source ranked #1` is kept as a diagnostic and still
+printed, but **its ceiling is 28/33, not 33/33.** It returns the WORST rank
+across required sources, and five cases are `match: all` needing two pages —
+two sources cannot both be rank 1. So 28/33 was a perfect score being read as
+five failures, which is the metric reading backwards rather than retrieval
+failing. Four of those five rank their pair [1,2] or [2,1]; only `dn-11` at
+[1,3] is genuinely short.
+ No API call is
 involved in any row, so none of these numbers depends on which Groq model is
 configured — they moved only with the chunking, which is the point.
 
-| setting | hit | rank #1 | mean rank | index chunks |
+| setting | hit | worst-rank #1 (ceiling 28/33) | mean worst rank | index chunks |
 |---|---|---|---|---|
 | **page-level (baseline)** | 33/33 | 25/33 | 1.270 | 42 |
 | passage 60/15 | 33/33 | 26/33 | 1.210 | 84 |
@@ -69,7 +84,7 @@ was no recall to recover. The gain is entirely in ranking.
 Measured separately, because the fallback serves every query whenever the
 embedding model cannot load — which is a real state on the hosted deployment:
 
-| method | chunking | hit | ranked | rank #1 | mean rank |
+| method | chunking | hit | ranked | worst-rank #1 *(ceiling 28/33)* | mean worst rank |
 |---|---|---|---|---|---|
 | embedding | page-level | 33/33 | 33/33 | 25/33 | 1.27 |
 | embedding | passage 100/20 | 33/33 | 33/33 | **28/33** | **1.18** |

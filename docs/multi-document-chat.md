@@ -57,7 +57,7 @@ describe a source the same way.
 
 | | single-document | cross-document |
 |---|---|---|
-| answering source ranked #1 | 28/33 (85%) | **7/13 (54%)** |
+| required sources lead the ranking | 32/33 (97%) | **9/13 (69%)** |
 | mean rank | 1.18 | **2.15** |
 | worst rank | 3 | **10** |
 
@@ -398,7 +398,7 @@ every answer is right.
 **Mode comes from the chunks, not a caller flag.** Single-document chunks are
 `{"text", "page_or_sheet"}` and carry no `document` key, so a single-document
 conversation cannot take the corpus path by accident. Single-document behaviour
-is unchanged and re-verified: 33/33 retrieved, 28/33 ranked first, 33/33
+is unchanged and re-verified: 33/33 retrieved, 32/33 leading the ranking, 33/33
 answers, 27/27 correct citations.
 
 **No vector database.** Numpy over the stored vectors, exactly as before. Gaps
