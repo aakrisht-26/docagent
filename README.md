@@ -30,9 +30,10 @@ More, including before-and-after comparisons of every surface in both themes:
 - **Multi-Key API Resilience** — Round-robin rotation across multiple Groq API keys with automatic rate-limit (HTTP 429) recovery and retry logic.
 - **Advanced Adaptive OCR** — OpenCV-driven pipeline using Gaussian equalisation and adaptive thresholding to extract text from scanned or photographed PDFs with poor lighting.
 - **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial) document table extraction as structured HTML, preventing garbled text from complex layouts.
-- **Multi-Turn Document Chat** — Semantic Q&A over overlapping ~100-word passages, retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Citations still resolve to the original page or sheet. Falls back to keyword overlap when the model is unavailable. Measured **33/33 retrieved, 28/33 ranked first** on the eval set ([details](docs/retrieval-sub-chunking.md)).
+- **Multi-Turn Document Chat** — Semantic Q&A over overlapping ~100-word passages, retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Citations still resolve to the original page or sheet. Falls back to keyword overlap when the model is unavailable. Measured **33/33 retrieved, 32/33 with the required sources leading the ranking** on the eval set ([details](docs/retrieval-sub-chunking.md)).
 - **Natural Language Document Editing** — Describe edits in plain English; the LLM rewrites the document or applies structured JSON operations to Excel sheets.
 - **Cross-Document Chat** — Ask one question of everything in history, with citations that name the document as well as the page. Retrieval keys on `(document, page)`, so two files with a page 3 stay distinct. Capped at 25 documents, and the cap is about answer quality rather than resources. Cross-corpus retrieval is measurably harder than single-document — mean rank 2.15 vs 1.18 — and the honest limits, including a case that answers from the wrong document with a correct citation, are in [docs/multi-document-chat.md](docs/multi-document-chat.md).
+- **Retrieval limits are measured, not assumed** — the one case that still ranks its answer 4th was traced to *competition* (a page about the subject outranking the page stating the fact), not to mixed-topic dilution. A purpose-built fixture refuted the dilution reading: heterogeneity correlates with rank at −0.084 and both its losses were on the least-mixed page. Re-chunking cannot address it; details and a re-runnable probe in [docs/dilution-probe.md](docs/dilution-probe.md).
 - **Says when it cannot answer** — Asked something the loaded documents do not cover, chat declines rather than improvising: 39/39 across three runs on a set of questions with no answer in the corpus. The prompt also forbids computing a figure from unrelated numbers or substituting a similar fact from a different document, which cut fabrication on the hardest case from 5/5 to roughly 1 in 12. What is still not guaranteed is documented in [docs/multi-document-chat.md](docs/multi-document-chat.md).
 - **Form Filling** — Paste answers to extracted questions; DocAgent compiles the completed form as a downloadable PDF.
 - **Glassmorphic Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
@@ -202,7 +203,7 @@ Chunk retrieval via keyword_overlap: selected [9, 13, 18] from 20 chunk(s) (top 
 [`docs/retrieval-sub-chunking.md`](docs/retrieval-sub-chunking.md) for the
 parameter sweep, the per-case flips and the costs.
 
-| Method | chunking | retrieved | ranked #1 | mean rank |
+| Method | chunking | retrieved | worst-rank #1 *(ceiling 28/33)* | mean worst rank |
 |---|---|---|---|---|
 | **Embeddings (current)** | **passages** | **33/33** | **28/33** | **1.18** |
 | Embeddings | whole pages | 33/33 | 25/33 | 1.27 |
