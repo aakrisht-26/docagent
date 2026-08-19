@@ -159,6 +159,26 @@ carries document and page as separate fields.
 
 Measured on 13 cross-document cases: retrieval 11/13 → **12/13**, citations
 naming their document 0/13 → **13/13**, unresolvable citations 11/13 → **0/13**.
+
+**The corpus prompt forbids substitution.** Not permission to decline — the
+model already declines 39/39 across three runs when nothing is on topic, and
+always did. What it did instead was answer a headcount question by summing an
+unrelated workbook's departmental figures and citing that workbook correctly.
+The prompt therefore prohibits computing a figure from numbers not presented as
+a total, and offering a similar fact about a different depot, tier, period or
+organisation, while explicitly allowing a multi-part question to be part
+answered and part declined. Fabrication on the worst case fell from 5/5 to
+2 in 25 trials; its answerable half survived 22/22. Score it with
+`run_eval.py --multi --with-answers`, which reports the 13 no-answer cases
+alongside the answerable ones.
+
+**No similarity threshold can do this job**, and it was measured rather than
+assumed: an unanswerable question about a depot the corpus does not cover scores
+0.7784, higher than 11 of the 12 answerable cross-document cases, while six of
+33 correct single-document answers score below the highest unanswerable
+question. The cause of the remaining failure is dilution, not the slot budget —
+per-part retrieval was implemented and does not recover it. Both are in
+`docs/multi-document-chat.md`.
 Cross-corpus retrieval is **meaningfully worse than single-document** — mean
 rank 2.15 against 1.18, ranked first 54% against 85% — and one case answers
 confidently from the wrong document with a correct citation. Both are
