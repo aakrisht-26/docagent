@@ -21,6 +21,7 @@ Usage:
     python tests/e2e/rag_eval/run_eval.py --with-answers  # also scores answers
     python tests/e2e/rag_eval/run_eval.py --json          # machine-readable
     python tests/e2e/rag_eval/run_eval.py --multi          # the CROSS-DOCUMENT set
+    python tests/e2e/rag_eval/run_eval.py --probe          # the DILUTION probe
 
 `--keyword` disables embeddings for the run so the keyword fallback can be
 measured on its own. That path serves every query whenever the model is
@@ -820,6 +821,79 @@ def main_multi(argv: list) -> int:
     return 0
 
 
+def main_probe(argv: list) -> int:
+    """Score the dilution probe: does topic mixing cost a passage its rank?
+
+    Kept out of the two headline sets so it cannot move numbers quoted across
+    sessions. Free — no API calls.
+    """
+    if "--keyword" in argv:
+        from utils import embeddings
+        embeddings.is_supported = lambda: False
+
+    spec = json.loads((HERE / "eval_set.json").read_text(encoding="utf-8"))
+    block = spec["dilution_probe"]
+    cfg = load_config().to_dict()
+    registry = SkillRegistry()
+    registry.discover()
+    chat = registry.instantiate("document_chat", config={"groq": cfg["groq"]})
+
+    rows = []
+    for case in block["cases"]:
+        chunks = load_chunks(case["fixture"], cfg, registry)
+        scores, method = score_sources(case["question"], chunks, chat)
+        order = sorted(scores.items(), key=lambda kv: -kv[1])
+        positions = {s: i + 1 for i, (s, _) in enumerate(order)}
+        page = case["page"]
+        rows.append({**case, "rank": positions.get(page, 0),
+                     "score": scores.get(page, 0.0),
+                     "top": order[0][0], "top_score": order[0][1],
+                     "method": method})
+
+    print("=" * 96)
+    print(f"DILUTION PROBE — {len(rows)} cases, "
+          f"{len(set(r['page'] for r in rows))} answer pages")
+    print("=" * 96)
+    print(f"{'id':<7} {'topics':>7} {'depth':<8} {'competitor':>11} {'rank':>5} "
+          f"{'score':>8} {'beaten by':>10}")
+    print("-" * 96)
+    for r in rows:
+        beat = "" if r["rank"] == 1 else f"page {r['top']}"
+        print(f"{r['id']:<7} {r['topics']:>7} {r['depth']:<8} "
+              f"{str(r.get('competitor', '-')):>11} {r['rank']:>5} "
+              f"{r['score']:>8.4f} {beat:>10}")
+
+    print("-" * 96)
+    print(f"  {'answer page ranked first':<40} "
+          f"{sum(1 for r in rows if r['rank'] == 1)}/{len(rows)}")
+    print()
+    print("  BY DECLARED TOPIC COUNT — the hypothesis under test")
+    for t in sorted({r["topics"] for r in rows}):
+        sub = [r for r in rows if r["topics"] == t]
+        print(f"    {t} topic(s): rank-1 {sum(1 for r in sub if r['rank'] == 1)}"
+              f"/{len(sub)}   mean score "
+              f"{sum(r['score'] for r in sub) / len(sub):.4f}")
+    print("  BY DEPTH OF THE ANSWERING FACT — the control variable")
+    for d in ("lead", "middle", "final"):
+        sub = [r for r in rows if r["depth"] == d]
+        if sub:
+            print(f"    {d:<8}: rank-1 {sum(1 for r in sub if r['rank'] == 1)}"
+                  f"/{len(sub)}   mean score "
+                  f"{sum(r['score'] for r in sub) / len(sub):.4f}")
+
+    lost = [r for r in rows if r["rank"] != 1]
+    if lost:
+        print()
+        print("  LOST RANK 1 — note the declared topic count of each")
+        for r in lost:
+            print(f"    {r['id']}  answer page {r['page']} "
+                  f"({r['topics']} topic(s), fact {r['depth']}) "
+                  f"-> rank {r['rank']}, beaten by page {r['top']} "
+                  f"@ {r['top_score']:.4f}")
+    print("=" * 96)
+    return 0
+
+
 def main(argv: list) -> int:
     with_answers = "--with-answers" in argv
     as_json = "--json" in argv
@@ -992,4 +1066,5 @@ def main(argv: list) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main_multi(sys.argv) if "--multi" in sys.argv else main(sys.argv))
+    sys.exit(main_probe(sys.argv) if "--probe" in sys.argv else
+             main_multi(sys.argv) if "--multi" in sys.argv else main(sys.argv))

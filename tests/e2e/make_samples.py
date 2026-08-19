@@ -337,10 +337,44 @@ def build_questionnaire_pdf() -> Path:
     return out
 
 
+def build_mixed_topic_pdf() -> Path:
+    """Pages that vary topic count and the depth of the answering fact.
+
+    The dilution probe. See the note above MIXED_PDF_PAGES for the factorial
+    and, more importantly, for why the single-topic controls exist.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (PageBreak, Paragraph, SimpleDocTemplate,
+                                    Spacer)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "rag_eval"))
+    from fixture_content import (MIXED_PDF_COMPETITORS, MIXED_PDF_PAGES,
+                                 MIXED_PDF_TITLE)
+
+    out = SAMPLES / "sample_mixed_topics.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(out), pagesize=LETTER)
+
+    pages = MIXED_PDF_PAGES + MIXED_PDF_COMPETITORS
+    story = []
+    for index, (heading, body) in enumerate(pages):
+        if index == 0:
+            story.append(Paragraph(MIXED_PDF_TITLE, styles["Title"]))
+            story.append(Spacer(1, 12))
+        story.append(Paragraph(heading, styles["Heading1"]))
+        story.append(Paragraph(body, styles["BodyText"]))
+        if index != len(pages) - 1:
+            story.append(PageBreak())
+
+    doc.build(story)
+    return out
+
+
 if __name__ == "__main__":
     for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf(),
                  build_large_pdf(), build_large_excel(), build_dense_pdf(),
-                 build_questionnaire_pdf()):
+                 build_questionnaire_pdf(), build_mixed_topic_pdf()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")
