@@ -95,12 +95,18 @@ The citation is **honest**: that number really does come from that sheet. The
 answer is **wrong**: 96 is a fragment of an unrelated fixture, not the company
 headcount. Reproducible **5/5**.
 
-### The cause is dilution, not the slot budget
+### The cause is COMPETITION, not dilution and not the slot budget
 
-The obvious reading is that the second question part steals slots. That reading
-is wrong, and testing the fix for it is what showed so. Asked **on its own**,
-"how many people does the company employ" is answered correctly — but page 1
-arrives only at rank 4:
+This section previously said dilution: that page 1 is an executive summary, so
+the answering clause is drowned out by revenue, depots and fleet, and the page
+embeds as something else. **That was measured and refuted.** See
+[docs/dilution-probe.md](dilution-probe.md).
+
+Two readings were tested and both failed.
+
+**Not the slot budget.** The obvious reading is that the second question part
+steals slots. Asked *on its own*, "how many people does the company employ" is
+answered correctly — but page 1 arrives only at rank 4:
 
 | rank | source | score |
 |---|---|---|
@@ -109,19 +115,38 @@ arrives only at rank 4:
 | 3 | **sales.xlsx, Headcount** (wrong company) | 0.4023 |
 | 4 | **review page 1 — the answer** | 0.3726 |
 
-Page 1 is an executive summary. "…operates 612 heavy goods vehicles and
-**employs 1,840 people**. This review covers fleet upkeep, personnel, safety…"
-The fact is one clause in a paragraph about revenue, depots, fleet and scope, so
-the page embeds mostly as something else. That is **dilution**, a category the
-single-document eval already names. The second question part turns a
-fourth-place near-miss into an absence; it does not create it.
+Per-part retrieval was implemented on that reading and does not recover the
+case: it gives the headcount part three slots and the answer is fourth.
 
-**Per-part retrieval was measured and does not fix it.** Splitting the question
-and giving each part its own slots leaves the headcount part three slots, and
-the answer is fourth. It changes 5 of 26 selections and loses nothing, but it
-does not recover the case it was built for. Fixing the cause properly means
-changing how mixed-topic pages are embedded — a much larger change than this
-symptom justifies, so the cause is recorded as known and open.
+**Not dilution either.** A purpose-built fixture varied topic count (1, 2, 6)
+against the depth of the answering fact, with single-topic controls at matched
+length. Twelve cases, 10 ranked first, and **both losses were on the page with
+the FEWEST topics**. The six-topic executive summary beat its dedicated
+competitor at 0.7784. Measured heterogeneity — mean cosine distance of each
+sentence from its page centroid — correlates with rank at **−0.084**, no
+relationship and the sign runs the wrong way.
+
+**What is left is competition.** Page 2 is *entirely about the organisation* and
+states no headcount. Page 1 states the headcount inside a paragraph that is
+mostly about other things. The question "how many people does the company
+employ" is a better match for a page *about the organisation* than for a page
+that happens to *contain* the number. In the probe, `dp-01` ranked first among
+nine pages and dropped to rank 2 the moment a plant-room page existed — its own
+text unchanged.
+
+**This implies re-chunking cannot fix it, and nobody should try.** Splitting
+pages into smaller passages changes what each passage contains; it does not
+change the fact that a different page is a better match. Both pages get split by
+the same rule and the competitor keeps its advantage. The passage-size sweep
+confirms it: `md-10`'s rank wanders between 2 and 5 across settings with no
+monotone trend, and the shipped 100/20 is already the best setting on the
+single-document set.
+
+Addressing competition needs a different class of change — reranking candidates
+against the question, or a signal separating "this page is about X" from "this
+page states a fact about X". Both are much larger than a chunking parameter and
+neither is justified by one case, so this is recorded as understood and open
+rather than fixed.
 
 ### No similarity threshold can separate this
 
@@ -137,8 +162,8 @@ Measured across both eval sets:
 Unanswerable questions do separate from *multi-document* answerable ones. They
 do not separate from **single-document** answerable ones: six of 33 correct
 single-doc cases score below the highest unanswerable question, because a
-synonym or dilution question is a weak match and looks exactly like an absent
-one. And `md-10` scores **above** every answerable minimum but its own. A cut
+synonym or hard-vocabulary question is a weak match and looks exactly like an
+absent one. And `md-10` scores **above** every answerable minimum but its own. A cut
 that catches it costs **14 of 33** correct single-document answers.
 
 `nm-01` settles it on its own: "the average maintenance cost per vehicle at the
@@ -243,7 +268,7 @@ Ten slots would put `md-10`'s answer in the context. It is not the default
 because that is tuning to a single case, and because more slots treat the
 symptom: the passage sits at rank 10 in the pooled ranking, and at rank 4 even
 for its own sub-question asked alone, because the page it lives on is diluted.
-See [the cause](#the-cause-is-dilution-not-the-slot-budget) — per-part slot
+See [the cause](#the-cause-is-competition-not-dilution-and-not-the-slot-budget) — per-part slot
 allocation was measured on exactly this reasoning and does not recover it.
 
 ---

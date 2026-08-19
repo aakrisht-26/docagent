@@ -203,11 +203,17 @@ alongside the answerable ones.
 assumed: an unanswerable question about a depot the corpus does not cover scores
 0.7784, higher than 11 of the 12 answerable cross-document cases, while six of
 33 correct single-document answers score below the highest unanswerable
-question. The cause of the remaining failure is dilution, not the slot budget —
-per-part retrieval was implemented and does not recover it. Both are in
+question. The cause of the remaining failure is **competition, not dilution and
+not the slot budget**: a page entirely *about* the question's subject outranks
+the page that *states* the answer. Both alternatives were implemented or
+measured and neither held — per-part retrieval does not recover the case, and a
+purpose-built fixture found heterogeneity correlating with rank at −0.084 with
+both its losses on the page with the fewest topics. **Re-chunking cannot address
+this**, so do not spend a session trying. See `docs/dilution-probe.md` and
 `docs/multi-document-chat.md`.
-Cross-corpus retrieval is **meaningfully worse than single-document** — mean
-rank 2.15 against 1.18, ranked first 54% against 85% — and one case answers
+
+Cross-corpus retrieval is **meaningfully worse than single-document** — required
+sources lead the ranking 9/13 (69%) against 32/33 (97%) — and one case answers
 confidently from the wrong document with a correct citation. Both are
 quantified in `docs/multi-document-chat.md`, which is the thing to read before
 raising `MAX_CORPUS_DOCUMENTS` (25).

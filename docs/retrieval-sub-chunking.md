@@ -105,6 +105,14 @@ than discovered later.
 
 ---
 
+> **On "dilution".** The argument below is about the 256-token embedding
+> truncation, which is mechanical and holds. A separate claim — that mixing
+> topics on a page costs the answering passage its rank — was tested later with
+> a purpose-built fixture and **refuted**: heterogeneity correlates with rank at
+> −0.084, and both losses landed on the least-mixed page. See
+> [dilution-probe.md](dilution-probe.md). Read the truncation argument as the
+> reason passages exist; do not read it as evidence for dilution.
+
 ## The mechanical reason, which is stronger than the dilution argument
 
 `all-MiniLM-L6-v2` has `max_seq_length = 256` tokens and **silently truncates**
