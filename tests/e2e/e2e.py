@@ -93,7 +93,13 @@ def show(r) -> None:
     print(f"  file        : {r.file_name}")
     print(f"  file_type   : {r.file_type}")
     print(f"  success     : {r.success}   partial: {r.partial}")
-    print(f"  doc_type    : {r.doc_type}  ({r.classification_method}, conf {r.classification_confidence:.2f})")
+    # `classification_confidence` is P(questionnaire), so a confidently
+    # classified normal document prints near 0.00. Printing that alone under
+    # the label "conf" is what made it look broken across three sessions.
+    from core.models import confidence_in_verdict
+    _verdict_conf = confidence_in_verdict(r.classification_confidence, r.doc_type)
+    print(f"  doc_type    : {r.doc_type}  ({r.classification_method}, "
+          f"{_verdict_conf:.0%} confident; p(questionnaire)={r.classification_confidence:.2f})")
     print(f"  domain      : {r.domain}")
     print(f"  words/pages : {r.word_count} / {r.page_count}")
     print(f"  tables      : {len(r.tables)}")

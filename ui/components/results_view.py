@@ -430,9 +430,10 @@ def display_confidence(result: Any) -> float:
     persisted in history.db, asserted on in tests, and consumed by the pipeline,
     and changing its meaning would be a data change rather than a display fix.
     """
-    score = float(getattr(result, "classification_confidence", 0.0) or 0.0)
-    doc_type = (getattr(result, "doc_type", "") or "").lower()
-    return score if doc_type == "questionnaire" else 1.0 - score
+    from core.models import confidence_in_verdict
+    return confidence_in_verdict(
+        getattr(result, "classification_confidence", 0.0),
+        getattr(result, "doc_type", ""))
 
 
 def _render_confidence_meter(confidence: float, label: str = "Classification confidence") -> None:
