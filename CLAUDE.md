@@ -115,8 +115,35 @@ for an entire model migration. Domain fell back to `General`, which gates
 ### Hybrid Classification
 
 `DocumentClassifierSkill` uses two phases:
-1. **Heuristic**: 20+ regex patterns with weighted scoring
-2. **LLM disambiguation**: Only invoked when heuristic score is in borderline range (0.10–0.70); blended 60% LLM / 40% heuristic
+1. **Heuristic**: 19 regex signals with weighted scoring, normalised by their
+   total (1.81). Silent on anything that is not a textbook form — all seven e2e
+   fixtures score 0.000 — but not dead: a form with Likert scales, underscored
+   fields and a signature block fires 15 of 19 and reaches 0.862, which crosses
+   the `> 0.85` gate and bypasses the LLM entirely.
+2. **LLM disambiguation**: blended `0.7 * p(questionnaire) + 0.3 * heuristic`.
+
+**`classification_confidence` is P(QUESTIONNAIRE), not confidence in the
+verdict.** A confidently classified normal document scores near **zero**: 0.02
+means the classifier was 98% sure it was *not* a questionnaire. Six of seven
+fixtures are normal documents, so the raw field reads backwards on almost
+everything, and it was reported as a suspected defect in three consecutive
+sessions before being traced. The logic was correct each time.
+
+Use `core.models.confidence_in_verdict(score, doc_type)` for anything a human
+reads — UI, markdown export, logs, the e2e harness. The stored field stays raw:
+it is persisted in `history.db`, asserted on in tests, and `doc_type` derives
+from it via the 0.4 threshold, so changing its meaning would be a data
+migration rather than a display fix.
+
+**The 0.70 ceiling is intended.** With a silent heuristic the blend cannot
+exceed 0.70, so the top of the range is unreachable. That is not a bug to
+normalise away: it makes the LLM conviction needed to reach the 0.4 threshold
+slide with how much the heuristic corroborates it — 0.571 uncorroborated, 0.486
+at weak support, 0.211 at strong. Renormalising would drop the uncorroborated
+bar to 0.400, a 30% cut in required conviction for nothing. Observed
+p(questionnaire) is 0.01–0.04 on normal documents and 0.96 on the questionnaire,
+against a 0.571 boundary — the headroom is enormous and the ceiling costs
+nothing.
 
 ### PDF Parsing Fallback Chain
 

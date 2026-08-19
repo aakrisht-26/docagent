@@ -108,6 +108,29 @@ class SkillOutput:
 
 # ── Intermediate Results ──────────────────────────────────────────────────────
 
+def confidence_in_verdict(questionnaire_score: float, doc_type: str) -> float:
+    """Confidence in the ANSWER the classifier gave, 0.0-1.0.
+
+    `ClassificationResult.confidence` is not that number. It is
+    P(questionnaire): how strongly the document looked like a form. For a
+    document classified `normal_document`, 0.03 means the classifier was 97%
+    sure it was a normal document — the *most* confident of outcomes, displayed
+    as the least.
+
+    Six of the seven e2e fixtures classify as `normal_document`, so the raw
+    field reads backwards on almost everything, and it read backwards in the
+    logs and the e2e harness for three sessions before anyone chased it.
+
+    Defined here, beside the field it interprets, because four surfaces need
+    the same answer: the UI, the markdown export, the classifier's own log line
+    and the e2e harness. The stored field stays raw — it is persisted in
+    history.db, asserted on in tests and consumed by the pipeline, so changing
+    its meaning would be a data migration rather than a presentation fix.
+    """
+    score = float(questionnaire_score or 0.0)
+    return score if (doc_type or "").lower() == "questionnaire" else 1.0 - score
+
+
 @dataclass
 class ClassificationResult:
     """
@@ -115,7 +138,9 @@ class ClassificationResult:
 
     `doc_type`   : "questionnaire" | "normal_document"
     `domain`     : Detected document domain/industry (e.g. "Financial")
-    `confidence` : 0.0 – 1.0
+    `confidence` : P(QUESTIONNAIRE), 0.0-1.0 — NOT confidence in `doc_type`.
+                   A normal document confidently classified scores near ZERO.
+                   Use `confidence_in_verdict()` for anything a human reads.
     `method`     : "heuristic" | "llm" | "hybrid"
     `signals`    : diagnostic dict of matched patterns / scores
     """

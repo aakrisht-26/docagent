@@ -81,7 +81,12 @@ class PipelineResult:
         Used for the Markdown download button in the UI.
         """
         doc_label = self.doc_type.replace("_", " ").title()
-        conf_pct = f"{self.classification_confidence:.0%}"
+        # The raw field is P(questionnaire); a confidently-classified normal
+        # document scores near zero and this line read "2% confidence" for the
+        # classifier's best work. The UI was corrected for this; the downloadable
+        # report was missed.
+        from core.models import confidence_in_verdict
+        conf_pct = f"{confidence_in_verdict(self.classification_confidence, self.doc_type):.0%}"
 
         lines: List[str] = [
             "# DocAgent — Analysis Report",

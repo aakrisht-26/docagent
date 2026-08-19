@@ -20,7 +20,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.models import ClassificationResult, SkillInput, SkillOutput
+from core.models import (ClassificationResult, SkillInput, SkillOutput,
+                         confidence_in_verdict)
 from skills.base_skill import BaseSkill
 from utils.logger import get_logger
 
@@ -150,7 +151,30 @@ class DocumentClassifierSkill(BaseSkill):
                 # Blend structural score unless heuristics are overwhelmingly certain (> 0.85)
                 # This ensures simple forms that score very low on heuristics are rescued by the LLM.
                 if normalized < 0.85:
-                    # Heavy weight to the LLM (70%) to catch nuanced real-world forms
+                    # Heavy weight to the LLM (70%) to catch nuanced real-world forms.
+                    #
+                    # THE 0.7 CEILING IS INTENDED — do not "fix" it. When the
+                    # heuristic is silent (which it is on every document that is
+                    # not a textbook form) this expression cannot exceed 0.70,
+                    # so the top of the 0-1 range is unreachable. That looks
+                    # like a bug and is not: it makes the amount of LLM
+                    # conviction required to reach the 0.4 threshold slide with
+                    # how much the heuristic corroborates it.
+                    #
+                    #   heuristic silent    (0.00)  needs p(questionnaire) >= 0.571
+                    #   heuristic weak      (0.20)  needs                  >= 0.486
+                    #   heuristic moderate  (0.50)  needs                  >= 0.357
+                    #   heuristic strong    (0.84)  needs                  >= 0.211
+                    #
+                    # So the questionnaire path opens on either LLM conviction
+                    # or corroborating structure, and needs less of one when it
+                    # has more of the other. Renormalising to reach 1.0 would
+                    # drop the uncorroborated bar from 0.571 to 0.400 — a 30%
+                    # cut in required conviction, bought for nothing.
+                    #
+                    # Headroom on the fixtures is enormous: the six normal
+                    # documents score p(questionnaire) 0.01-0.04, and the
+                    # questionnaire scores 0.96, against a boundary of 0.571.
                     confidence = 0.7 * llm_score + 0.3 * normalized
                     method = f"hybrid_{self._llm.provider}"
                     signals["llm_score"] = round(llm_score, 3)
@@ -175,6 +199,7 @@ class DocumentClassifierSkill(BaseSkill):
         doc_type = "questionnaire" if confidence >= self._threshold else "normal_document"
         signals["final_score"] = round(confidence, 4)
 
+        verdict_confidence = confidence_in_verdict(confidence, doc_type)
         result = ClassificationResult(
             doc_type=doc_type,
             domain=domain,
@@ -183,7 +208,13 @@ class DocumentClassifierSkill(BaseSkill):
             signals=signals,
         )
         self.logger.info(
-            f"Classification: {doc_type} | Domain: {domain} ({confidence:.0%} confidence, method={method})"
+            # Both numbers, because they answer different questions and one of
+            # them reads backwards on its own. This line is what made the score
+            # look broken for three sessions: "0% confidence" on a correct,
+            # certain classification.
+            f"Classification: {doc_type} | Domain: {domain} "
+            f"({verdict_confidence:.0%} confident in this verdict; "
+            f"p(questionnaire)={confidence:.3f}, method={method})"
         )
         return SkillOutput(
             success=True,
