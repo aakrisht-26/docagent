@@ -128,6 +128,40 @@ class DocumentChatSkill(BaseSkill):
                         "ambiguous because several documents have a page 3. If two "
                         "documents disagree, say so and attribute each. Never cite "
                         "a source that is not shown in the context."
+                        # Why this exists, and why it is worded as a prohibition
+                        # rather than as permission to decline:
+                        #
+                        # The model already declines readily — 12/12 on the
+                        # no-answer cases that require it, in its own words,
+                        # before any of this was added. Refusal was never the
+                        # missing capability, so "you may say you don't know"
+                        # would have changed nothing.
+                        #
+                        # What it does instead is SUBSTITUTE. Asked for a
+                        # company headcount whose only source ranks 4th and
+                        # falls outside the slots, it finds a sheet named
+                        # Headcount belonging to a different organisation, sums
+                        # 51+21+15+9, and reports "96 employees" with a correct
+                        # citation to that sheet. The citation is honest; the
+                        # answer is invented. 5/5 before this text, 0/5 after.
+                        #
+                        # The two clauses are separate failures. Arithmetic over
+                        # unrelated figures is the worse one: the result appears
+                        # in no document, so it cannot be traced back and looks
+                        # exactly like a retrieved fact.
+                        "\n\nThese excerpts are retrieved by similarity, so they are "
+                        "often merely ON THE SUBJECT of the question without "
+                        "containing its answer. Before answering, check that an "
+                        "excerpt actually states the fact asked for. Two things you "
+                        "must never do: do not compute a figure by combining numbers "
+                        "that were not presented as a total, and do not offer a "
+                        "similar fact about a different depot, tier, period or "
+                        "organisation as though it answered the question. Where the "
+                        "excerpts do not support an answer, say so plainly for that "
+                        "part. A question with several parts may be partly "
+                        "answerable: answer the parts the excerpts support and "
+                        "decline the rest, rather than declining everything or "
+                        "inventing the remainder."
                         if multi_doc else
                         "Each excerpt begins with its source in square brackets, such as "
                         "[Page 3] or [Sheet: Q3 Revenue]. When you state a fact, cite the "
