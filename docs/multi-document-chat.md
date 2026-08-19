@@ -63,7 +63,9 @@ describe a source the same way.
 
 Mean rank nearly doubles and the rank-1 rate falls by thirty points. The worst
 case moves from rank 3 — comfortably inside any slot budget — to rank 10, which
-is outside it.
+is outside it. (That worst case is `md-10`, whose answering passage ranks 4th
+even for its own sub-question in isolation; the pooled rank of 10 is the two
+question parts competing on top of that.)
 
 **Read that with one caveat.** These are different question sets, and the
 cross-document cases were written to be hard: topical siblings where two
@@ -74,7 +76,7 @@ trustworthy; the exact ratio is not.
 
 ---
 
-## The limitation worth knowing: `md-10`
+## `md-10`, and what declining is worth
 
 This case illustrates what the system does and does not guarantee better than
 any passing number, so it is documented rather than carried quietly.
@@ -82,38 +84,134 @@ any passing number, so it is documented rather than carried quietly.
 **Question.** "How many people does the company employ, and what is the standard
 annual leave entitlement?"
 
-The headcount — 1,840 — is on page 1 of the operations review. Page 2
-(Corporate Structure) outranks it for that question, and page 1 lands at **rank
-10** with a score of 0.2826 against 0.5042 at the top. It is outside the six
-slots. Retrieval fails.
-
-What happens next is the part that matters. The model does not say it could not
-find the figure. It answers from the nearest plausible document — summing a
-two-row sheet in the trivial sales workbook:
+The headcount — 1,840 — is on page 1 of the operations review, which does not
+reach the six slots. Originally the model answered anyway, summing a two-row
+sheet in the trivial sales workbook:
 
 > Adding these gives **96 employees** in the company as of Q3
 > [**sample_sales.xlsx, Sheet: Headcount**]
 
 The citation is **honest**: that number really does come from that sheet. The
 answer is **wrong**: 96 is a fragment of an unrelated fixture, not the company
-headcount.
+headcount. Reproducible **5/5**.
 
-Reproducible, **0/5 across five trials**.
+### The cause is dilution, not the slot budget
 
-So the guarantee this work provides is narrower than it looks:
+The obvious reading is that the second question part steals slots. That reading
+is wrong, and testing the fix for it is what showed so. Asked **on its own**,
+"how many people does the company employ" is answered correctly — but page 1
+arrives only at rank 4:
+
+| rank | source | score |
+|---|---|---|
+| 1 | review page 2 (Corporate Structure) | 0.4501 |
+| 2 | review page 14 (Warehouse Riverside) | 0.4046 |
+| 3 | **sales.xlsx, Headcount** (wrong company) | 0.4023 |
+| 4 | **review page 1 — the answer** | 0.3726 |
+
+Page 1 is an executive summary. "…operates 612 heavy goods vehicles and
+**employs 1,840 people**. This review covers fleet upkeep, personnel, safety…"
+The fact is one clause in a paragraph about revenue, depots, fleet and scope, so
+the page embeds mostly as something else. That is **dilution**, a category the
+single-document eval already names. The second question part turns a
+fourth-place near-miss into an absence; it does not create it.
+
+**Per-part retrieval was measured and does not fix it.** Splitting the question
+and giving each part its own slots leaves the headcount part three slots, and
+the answer is fourth. It changes 5 of 26 selections and loses nothing, but it
+does not recover the case it was built for. Fixing the cause properly means
+changing how mixed-topic pages are embedded — a much larger change than this
+symptom justifies, so the cause is recorded as known and open.
+
+### No similarity threshold can separate this
+
+Measured across both eval sets:
+
+| population | n | min | max |
+|---|---|---|---|
+| unanswerable questions | 16 | 0.1973 | **0.4663** |
+| multi-doc answerable | 12 | **0.4944** | 0.8433 |
+| single-doc answerable | 33 | **0.3583** | 0.8504 |
+| `md-10` | — | — | **0.5042** |
+
+Unanswerable questions do separate from *multi-document* answerable ones. They
+do not separate from **single-document** answerable ones: six of 33 correct
+single-doc cases score below the highest unanswerable question, because a
+synonym or dilution question is a weak match and looks exactly like an absent
+one. And `md-10` scores **above** every answerable minimum but its own. A cut
+that catches it costs **14 of 33** correct single-document answers.
+
+`nm-01` settles it on its own: "the average maintenance cost per vehicle at the
+Western depot", which the corpus cannot answer because no Western maintenance
+page exists, scores **0.7784** — higher than 11 of the 12 answerable
+cross-document cases. A confident wrong answer is not a low-scoring one.
+
+### What was changed, and what it bought
+
+Refusal was never the missing capability. On the thirteen no-answer cases the
+model declined **12/12** of those requiring it, unprompted, before anything was
+added — in its own words, "the provided excerpts do not contain any information
+about…". Granting permission to decline would have changed nothing.
+
+So the corpus prompt gained a **prohibition** on what was actually happening: no
+computing a figure from numbers not presented as a total, no offering a similar
+fact about a different depot, tier, period or organisation, and explicit
+permission to answer part of a question and decline the rest.
+
+| | before | after |
+|---|---|---|
+| no-answer cases handled correctly | 12/13 | **13/13** (39/39 over three runs) |
+| `md-10` fabricates "96" | 5/5 | **2 in 25 trials (~8%)** |
+| `md-10` leave half still correct | 5/5 | **22/22** |
+| multi-doc answerable | 12/13 | **12/13**, no regressions |
+| single-doc answers / citations | 33/33, 27/27 | **33/33, 27/27** |
+
+The reply now reads:
+
+> The excerpts do not give a single figure for the total number of people
+> employed by the company, so that information is not available in the provided
+> documents.
+>
+> The standard annual-leave entitlement is **25 days per year plus public
+> holidays** 【sample_dense_manual.pdf, Page 5】.
+
+### The residual ~8%, characterised
+
+It is a **different failure** from the one that was fixed. The surviving case
+declines correctly and then shows its working anyway:
+
+> Q2: Engineering 42, Sales 18, Support 12, Operations 9 → **81 employees**
+> Q3: Engineering 51, Sales 21, Support 15, Operations 9 → **96 employees**
+> … so a single overall current head-count **is not given**; the available data
+> show 81 employees in Q2 and 96 employees in Q3.
+
+The substitution prohibition is **holding** — 96 is no longer offered as the
+company headcount, and the absence is stated outright. The arithmetic
+prohibition is the one being violated: 81 and 96 are computed and appear in no
+document.
+
+The eval scores this as a failure because an invented number is on screen, which
+is the strict reading and the deliberate one. Severity is genuinely lower — a
+careful reader is told the answer is absent — but it is not zero, because a
+skimming reader can still take "96 employees in Q3" as the answer. It is also
+the mention-versus-assertion problem again, in a form no regex can settle: only
+a human reading the reply can tell working-out from a claim.
+
+### The guarantee, stated exactly
 
 - **Guaranteed:** a citation names the document and page the text actually came
-  from. Every one of the 13 cases resolves to exactly one file. There are no
-  fabricated citations and no ambiguous ones.
-- **Not guaranteed:** that the cited passage answers the question. A citation
+  from. All 13 cross-document cases resolve to exactly one file. No fabricated
+  citations, no ambiguous ones.
+- **Guaranteed:** when nothing in the corpus is on topic, the model says so.
+  39/39 across three runs.
+- **NOT guaranteed:** that the cited passage answers the question. A citation
   attests to *provenance*, not to *correctness*.
+- **NOT guaranteed:** that no invented figure appears. Roughly one reply in
+  twelve on the hardest case still computes one, now alongside a correct
+  statement that the answer is missing.
 
-A confidently cited wrong document was the failure mode this work set out to
-prevent, and it is prevented — the model no longer cites a page that could be
-any of four files. But a **correctly cited wrong answer** is still reachable,
-and this change does not address it. Retrieval failing quietly is one problem; a
-model that will not say "not found" with six plausible excerpts in front of it is
-a different one, and it is untouched.
+A confidently cited wrong *document* is prevented. A correctly cited wrong
+*answer* is rarer than it was and is still reachable.
 
 ---
 
@@ -141,9 +239,12 @@ and because a corpus answer should be able to draw on more than three
 documents. That is a design judgement, not a measured gain, and it is recorded
 as one.
 
-Ten slots would fix `md-10`. It is not the default because that is tuning to a
-single case, and the underlying problem is a passage at rank 10, which more
-slots paper over rather than solve.
+Ten slots would put `md-10`'s answer in the context. It is not the default
+because that is tuning to a single case, and because more slots treat the
+symptom: the passage sits at rank 10 in the pooled ranking, and at rank 4 even
+for its own sub-question asked alone, because the page it lives on is diluted.
+See [the cause](#the-cause-is-dilution-not-the-slot-budget) — per-part slot
+allocation was measured on exactly this reasoning and does not recover it.
 
 ---
 

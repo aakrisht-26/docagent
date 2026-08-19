@@ -50,6 +50,17 @@ SAMPLES = HERE.parent / "samples"
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
+# Windows consoles default to a legacy codepage that cannot encode what an LLM
+# emits — U+202F narrow no-break spaces, em-dashes, CJK brackets. Printing one
+# raised UnicodeEncodeError and killed the run PART WAY THROUGH, after the
+# scored work and the API spend, so the eval reported a truncated result that
+# looked like a short run rather than a crash. Test output must never be the
+# thing that breaks the test.
+for _stream in ("stdout", "stderr"):
+    _s = getattr(sys, _stream)
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
+
 from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402
 from utils.config import load_config  # noqa: E402
@@ -422,6 +433,44 @@ def label_collisions(corpus: list, scores: list, limit: int = 3) -> list:
     return lost
 
 
+# Ways a model says "what I was given does not answer this". Deliberately broad:
+# the cost of missing one is understating how often the model declines, which
+# would make a prompt change look more effective than it is.
+_DECLINE_RE = re.compile(
+    r"\b(not (?:found|available|present|stated|specified|mentioned|included|"
+    r"provided|contained|given)"
+    r"|no (?:information|mention|reference|figure|data|detail|record|breakdown)"
+    r"|does not (?:contain|state|mention|specify|provide|include|give|list)"
+    r"|do not (?:contain|state|mention|specify|provide|include|give|list)"
+    r"|don't (?:contain|state|mention|specify|provide|include)"
+    r"|doesn't (?:contain|state|mention|specify|provide|include)"
+    # "states no motorcycle rate", "gives no breakdown" — the negation attaches
+    # to the verb rather than to a noun this pattern could enumerate.
+    r"|(?:states?|gives?|lists?|provides?|specif(?:y|ies)|contains?|"
+    r"mentions?|includes?) no\b"
+    r"|cannot (?:be )?(?:determin|answer|find|establish)"
+    r"|can't (?:be )?(?:determin|answer|find)"
+    r"|unable to (?:find|answer|determine)"
+    r"|isn't (?:in|available|provided)|is not (?:in|available|provided)"
+    r"|only (?:list|cover|give|state)s?\b)", re.IGNORECASE)
+
+
+def declined(reply: str) -> bool:
+    """Did the reply say the context does not support an answer?"""
+    return bool(_DECLINE_RE.search(reply or ""))
+
+
+def asserted_traps(case: dict, reply: str) -> list:
+    """Trap values the reply contains.
+
+    A DIAGNOSTIC, not the verdict. "The manual gives 45 pence for a private
+    vehicle but states no motorcycle rate" contains a trap value and is exactly
+    the right answer. Only a human reading the reply can tell mention from
+    assertion, so this counts mentions and the pass criterion stays `declined`.
+    """
+    return [t for t in case.get("must_not_assert", []) if _contains(reply, t)]
+
+
 def cited_documents(reply: str, fixtures: list) -> list:
     """Documents the model names in its own prose.
 
@@ -622,6 +671,73 @@ def main_multi(argv: list) -> int:
                           f"(score {score}) was blocked by "
                           f"{short_name(blocker[0])}:{blocker[1]}"
                           f"   -> now {'RANKED' if rescued else 'still absent'}")
+
+    # ── Questions the corpus does not answer ─────────────────────────────────
+    no_answer = block.get("no_answer_cases") or []
+    if no_answer and with_answers:
+        print()
+        print("=" * 118)
+        print(f"NO-ANSWER CASES — {len(no_answer)} questions the corpus does not answer")
+        print("=" * 118)
+        print(f"{'id':<8} {'category':<24} {'verdict':<10} {'traps seen':<14} reply")
+        print("-" * 118)
+        na_results = []
+        for case in no_answer:
+            out = chat.safe_execute(SkillInput(data={
+                "user_message": case["question"],
+                "document_chunks": corpus,
+                "conversation_history": [],
+                "domain": "General",
+            }))
+            reply = out.data["reply"] if out.success else ""
+            traps = asserted_traps(case, reply)
+            wants_decline = case.get("expects_decline", True)
+            row = {
+                "id": case["id"],
+                "category": case["category"],
+                "declined": declined(reply),
+                "traps": traps,
+                # Two criteria, because two shapes. Where nothing is answerable
+                # the reply must decline. Where PART is answerable, declining
+                # outright would be wrong and the test is that the fabricated
+                # value stays out.
+                "passed": declined(reply) if wants_decline else not traps,
+                "wants_decline": wants_decline,
+                "reply": reply,
+            }
+            na_results.append(row)
+            verdict = ("DECLINED" if row["declined"] else
+                       "ok" if row["passed"] else "ANSWERED")
+            print(f"{case['id']:<8} {case['category']:<24} "
+                  f"{verdict:<10} "
+                  f"{str(row['traps'])[:13]:<14} "
+                  f"{reply[:44].replace(chr(10), ' ')}")
+
+        print("-" * 118)
+        passed = sum(1 for r in na_results if r["passed"])
+        wants = [r for r in na_results if r["wants_decline"]]
+        print(f"  {'handled correctly':<44} {passed}/{len(na_results)}")
+        print(f"  {'declined (of those that must)':<44} "
+              f"{sum(1 for r in wants if r['declined'])}/{len(wants)}")
+        by_cat = defaultdict(list)
+        for r in na_results:
+            by_cat[r["category"]].append(r)
+        for category in sorted(by_cat):
+            rows = by_cat[category]
+            print(f"    {category:<40} "
+                  f"{sum(1 for r in rows if r['passed'])}/{len(rows)}")
+        seen = sum(1 for r in na_results if r["traps"])
+        print(f"  {'replies containing a trap value':<44} {seen}/{len(na_results)}"
+              f"   (diagnostic: mention is not assertion)")
+
+        failures = [r for r in na_results if not r["passed"]]
+        if failures:
+            print()
+            print("NOT HANDLED — answered without support, or asserted a "
+                  "fabricated value")
+            print("-" * 118)
+            for r in failures:
+                print(f"  {r['id']:<8} {r['reply'][:100].replace(chr(10), ' ')}")
 
     # One legacy-shape sample, so the reason the field changed stays visible.
     dupes = [r for r in results
