@@ -52,41 +52,75 @@ class TestConfidenceInVerdict(unittest.TestCase):
                          confidence_in_verdict(0.672, "questionnaire"))
 
 
-class TestEverySurfaceUsesIt(unittest.TestCase):
-    """Four surfaces need the same answer; three of them were wrong."""
+class TestEverySurfaceShowsTheRightNumber(unittest.TestCase):
+    """Four surfaces need the same answer; three of them were wrong.
 
-    def _src(self, path: str) -> str:
-        return (ROOT / path).read_text(encoding="utf-8")
+    These CALL each surface rather than grepping it for a function name. The
+    previous version asserted that files mention `confidence_in_verdict` and
+    passed while the classifier raised NameError on every call — the import was
+    never added, and a source-text assertion cannot see an unbound name.
+    """
+
+    def _result(self, score: float, doc_type: str):
+        from core.pipeline_result import PipelineResult
+        return PipelineResult(
+            file_name="x.pdf", file_type="pdf",
+            doc_type=doc_type, domain="Technical",
+            classification_confidence=score, classification_method="hybrid_groq",
+            summary="s", summary_method="llm_single_groq",
+            questions=[], question_extraction_method="skipped",
+            raw_text="t", word_count=1, page_count=1, metadata={},
+        )
 
     def test_the_markdown_export_shows_verdict_confidence(self):
-        """User-facing and downloadable — it read '2% confidence' for the
+        """User-facing and downloadable. It read "2% confidence" for the
         classifier's most certain work."""
-        src = self._src("core/pipeline_result.py")
-        self.assertIn("confidence_in_verdict", src)
+        md = self._result(0.021, "normal_document").to_markdown()
+        self.assertIn("98% confidence", md)
+        self.assertNotIn("2% confidence", md)
 
-    def test_the_classifier_log_line_shows_both_numbers(self):
-        src = self._src("skills/document_classifier_skill.py")
-        self.assertIn("confident in this verdict", src)
-        self.assertIn("p(questionnaire)=", src)
+    def test_the_markdown_export_leaves_a_questionnaire_alone(self):
+        md = self._result(0.672, "questionnaire").to_markdown()
+        self.assertIn("67% confidence", md)
 
-    def test_the_e2e_harness_shows_both_numbers(self):
-        """This surface is why it was misread three sessions running."""
-        src = self._src("tests/e2e/e2e.py")
-        self.assertIn("confidence_in_verdict", src)
-        self.assertIn("p(questionnaire)=", src)
+    def test_the_ui_helper_returns_the_verdict_confidence(self):
+        from ui.components.results_view import display_confidence
+        self.assertAlmostEqual(
+            display_confidence(self._result(0.021, "normal_document")), 0.979)
+        self.assertAlmostEqual(
+            display_confidence(self._result(0.672, "questionnaire")), 0.672)
 
-    def test_the_ui_does_not_keep_a_second_copy_of_the_rule(self):
-        src = self._src("ui/components/results_view.py")
-        self.assertIn("confidence_in_verdict", src)
-        self.assertNotIn("1.0 - score", src,
-                         "the inversion must have exactly one definition")
+    def test_the_e2e_harness_prints_both_numbers(self):
+        """The surface that made this look broken for three sessions."""
+        import io as _io
+        import sys as _sys
+        from contextlib import redirect_stdout
+        _sys.path.insert(0, str(ROOT / "tests" / "e2e"))
+        import e2e
+        buffer = _io.StringIO()
+        with redirect_stdout(buffer):
+            e2e.show(self._result(0.021, "normal_document"))
+        printed = buffer.getvalue()
+        self.assertIn("98% confident", printed)
+        self.assertIn("p(questionnaire)=0.02", printed)
 
     def test_the_stored_field_is_still_raw(self):
         """Changing it would be a data migration, not a display fix: it is
-        persisted in history.db and consumed by the questionnaire threshold."""
-        src = self._src("agents/document_agent.py")
-        self.assertIn("classification_confidence=class_conf", src)
-        self.assertNotIn("confidence_in_verdict", src)
+        persisted in history.db and consumed by the questionnaire threshold.
+
+        Checked by running the classifier and reading what it stored, not by
+        grepping the agent for an assignment.
+        """
+        from core.models import SkillInput
+        from core.skill_registry import SkillRegistry
+        registry = SkillRegistry()
+        registry.discover()
+        skill = registry.instantiate("document_classifier", config={})
+        out = skill.safe_execute(SkillInput(data={"full_text": "A plain depot report."}))
+        self.assertTrue(out.success, out.error)
+        self.assertEqual(out.data.doc_type, "normal_document")
+        self.assertLess(out.data.confidence, 0.5,
+                        "the stored field is P(questionnaire) and must stay raw")
 
 
 class TestTheSkillActuallyRuns(unittest.TestCase):
@@ -148,11 +182,6 @@ class TestTheCeilingIsIntended(unittest.TestCase):
         """0.70 against a 0.4 threshold: the top of the scale being
         unreachable costs nothing, because nothing needs to reach it."""
         self.assertGreater(0.7 * 1.0, 0.4)
-
-    def test_the_reasoning_is_written_down_at_the_blend(self):
-        src = (ROOT / "skills" / "document_classifier_skill.py").read_text(encoding="utf-8")
-        self.assertIn("CEILING IS INTENDED", src)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

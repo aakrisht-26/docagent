@@ -73,12 +73,6 @@ class TestClassifierBudget(unittest.TestCase):
         """An unused budget costs nothing; an exhausted one costs the stage."""
         self.assertGreaterEqual(_classifier_max_tokens(), MIN_SAFE_BUDGET)
 
-    def test_the_reason_for_the_budget_is_written_down(self):
-        """A bare number here reads as arbitrary and invites shrinking it."""
-        source = (ROOT / "skills" / "document_classifier_skill.py").read_text(encoding="utf-8")
-        self.assertIn("reasoning", source.lower())
-        self.assertIn("finish_reason", source.lower())
-
 
 class TestDiscardedClassificationIsVisible(unittest.TestCase):
     """The fallback must not be silent, whatever the cause."""
@@ -87,14 +81,34 @@ class TestDiscardedClassificationIsVisible(unittest.TestCase):
         """`_llm_classify` returning None must leave a trace in the caller.
 
         Without this the only evidence is a domain of "General", which is also
-        a legitimate answer, so the failure and the success look identical.
+        what a healthy heuristic-only run produces, so the failure and the
+        success look identical.
+
+        Forced by stubbing `_llm_classify` to return None — the exact state an
+        under-sized token budget produces — and asserting on the captured log.
+        A grep for "logger.warning" in `execute` would pass on a warning that
+        fires somewhere else entirely.
         """
-        source = (ROOT / "skills" / "document_classifier_skill.py").read_text(encoding="utf-8")
-        execute = source.split("def execute", 1)[1].split("\n    def ", 1)[0]
-        self.assertIn("logger.warning", execute,
-                      "a discarded LLM result must warn; domain 'General' with "
-                      "method 'heuristic' is also what a healthy heuristic-only "
-                      "run looks like, so nothing else distinguishes them")
+        from unittest.mock import patch
+        from core.models import SkillInput
+        from core.skill_registry import SkillRegistry
+
+        registry = SkillRegistry()
+        registry.discover()
+        skill = registry.instantiate("document_classifier", config={})
+
+        with patch.object(type(skill._llm), "available", True), \
+                patch.object(skill, "_llm_classify", return_value=None):
+            with self.assertLogs("docagent.skill.document_classifier",
+                                 level="WARNING") as captured:
+                out = skill.safe_execute(SkillInput(
+                    data={"full_text": "A plain depot report about vehicles."}))
+
+        self.assertTrue(out.success, out.error)
+        self.assertEqual(out.data.method, "heuristic")
+        self.assertEqual(out.data.domain, "General")
+        logged = " ".join(captured.output)
+        self.assertIn("discarded", logged)
 
 
 class TestPlannerDependsOnDomain(unittest.TestCase):
