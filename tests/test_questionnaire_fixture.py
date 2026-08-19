@@ -127,8 +127,13 @@ class TestTheFixtureIsWired(unittest.TestCase):
                       "a builder nobody calls leaves the fixture stale")
 
     def test_the_e2e_harness_runs_it(self):
-        source = (ROOT / "tests" / "e2e" / "e2e.py").read_text(encoding="utf-8")
-        self.assertIn("questionnaire", source.split("STAGES =", 1)[1].split("\n", 1)[0])
+        """Imported, not parsed: a malformed STAGES line would still contain
+        the word "questionnaire" while the stage never ran."""
+        import sys as _sys
+        _sys.path.insert(0, str(ROOT / "tests" / "e2e"))
+        import e2e
+        self.assertIn("questionnaire", e2e.STAGES)
+        self.assertIsInstance(e2e.STAGES, tuple)
 
     def test_the_e2e_stage_checks_questions_were_extracted(self):
         """Classifying correctly but extracting nothing is still a failure."""

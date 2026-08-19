@@ -232,11 +232,35 @@ class TestCorpusCap(unittest.TestCase):
         self.assertGreater(MAX_CORPUS_DOCUMENTS, 0)
 
     def test_the_store_defaults_to_the_skill_cap(self):
-        """One constant, so raising it cannot half-apply."""
-        import inspect
+        """One constant, so raising it cannot half-apply.
+
+        Asserted by MOVING the constant and watching the store follow. Grepping
+        `load_corpus` for the name would pass even if it were imported and then
+        ignored.
+        """
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import json
         from utils.document_store import DocumentStore
-        source = inspect.getsource(DocumentStore.load_corpus)
-        self.assertIn("MAX_CORPUS_DOCUMENTS", source)
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            store = DocumentStore(db_path=tmp / "history.db")
+            for i in range(6):
+                with store._connect() as conn:
+                    conn.execute(
+                        "INSERT INTO history (file_name, file_hash, result_json, "
+                        "content_chunks_json) VALUES (?,?,?,?)",
+                        (f"doc{i}.pdf", f"h{i}", json.dumps({}),
+                         json.dumps([{"text": f"body {i}", "page_or_sheet": 1}])))
+            with patch("skills.document_chat_skill.MAX_CORPUS_DOCUMENTS", 2):
+                self.assertEqual(len(store.load_corpus()["documents"]), 2)
+            with patch("skills.document_chat_skill.MAX_CORPUS_DOCUMENTS", 5):
+                self.assertEqual(len(store.load_corpus()["documents"]), 5)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
