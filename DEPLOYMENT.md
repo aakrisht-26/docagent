@@ -112,7 +112,7 @@ only on the PyTorch index, so pip is forced to take it from there. An
 ambiguous.
 
 **Why 2.7.1 specifically.** It matches the version used locally. The retrieval
-eval scores 33/33 retrieved and 28/33 ranked first, and four of its margins sit
+eval scores 33/33 retrieved and 32/33 leading the ranking, and four of its margins sit
 between 0.028 and 0.047 — narrow enough that numerical drift across releases
 could flip a case silently. Newer wheels exist; parity is worth more than
 novelty here. If you ever change this line, re-run the eval (below) — it is
@@ -222,7 +222,9 @@ Free and worth doing after any dependency change:
 python tests/e2e/rag_eval/run_eval.py
 ```
 
-Expect **33/33 retrieved, 28/33 ranked first** on the meaningful fixtures.
+Expect **33/33 retrieved, 32/33 leading the ranking** on the meaningful
+fixtures (the worst-rank diagnostic reads 28/33, which is ITS ceiling — see
+`docs/retrieval-sub-chunking.md`).
 These are LLM-independent — the eval makes no API call, so they do not move when
 the Groq model changes, and a drop means the embedding path really did change. If
 either has dropped, the torch pin is the first suspect: embedding values can

@@ -520,3 +520,213 @@ QUESTIONNAIRE_PDF_PAGES = [
      "State whether your organisation has been subject to an enforcement action by a "
      "regulator in the last five years, and describe the circumstances."),
 ]
+
+
+# ── Dilution probe: does topic mixing cost a passage its rank? ───────────────
+#
+# Built BLIND, before any fix existed and without knowing what fix might apply,
+# so the fixture cannot be tuned toward a conclusion.
+#
+# A 3x3 factorial plus controls. Every page is ~130 words and carries exactly
+# one queryable fact, unique in the document:
+#
+#            fact LEADS      fact MIDDLE     fact FINAL
+#   1 topic  dp-01 control   dp-02 control   dp-03 control
+#   2 topics dp-04           dp-05           dp-06
+#   6 topics dp-07           dp-08           dp-09
+#
+# THE CONTROLS ARE THE POINT. If a single-topic page of the same length also
+# loses rank when its fact sits in the final clause, the problem is depth or
+# length and heterogeneity is a red herring. Without them a mixed-topic page
+# that ranks badly proves nothing, because two variables moved.
+#
+# Written to read like real estates reporting rather than as traps: an annual
+# report genuinely does put six subjects in an executive summary, and a
+# combined "Grounds and Security" page is how small teams actually write. No
+# page repeats another page's vocabulary to bait it.
+
+MIXED_PDF_TITLE = "Calderwood Estates — Annual Facilities Report"
+
+MIXED_PDF_PAGES = [
+    # ── 1 topic (controls) ───────────────────────────────────────────────
+    # 1 — fact LEADS
+    ("1. Boiler Plant Replacement",
+     "The boiler plant replacement programme cost 4.7 million pounds and "
+     "completed in November. Three gas-fired units were removed from the "
+     "basement plant room and replaced with condensing equivalents. The "
+     "contractor worked outside teaching hours throughout, so no sessions were "
+     "lost to the works. Flue routing was rebuilt to discharge above the "
+     "parapet, which required a scaffold licence for eleven weeks. "
+     "Commissioning ran across two weekends and the system was rebalanced "
+     "afterwards. The old units were removed by a licensed recycler and their "
+     "copper recovered. Warranty runs for seven years from handover. Plant "
+     "room lighting and ventilation were renewed at the same time because the "
+     "space was already stripped, which the surveyor recommended."),
+
+    # 2 — fact MIDDLE
+    ("2. Lift Maintenance",
+     "Eleven passenger lifts and two goods lifts are covered by a single "
+     "maintenance contract renewed each April. Engineers attend monthly for "
+     "planned servicing and are called out on demand. Mean time between "
+     "callouts across the estate was 214 days, which the contract sets as the "
+     "reliability floor. Door sensors account for the largest share of faults, "
+     "followed by controller boards. Two lifts in the east wing are approaching "
+     "the end of their design life and a condition survey is scheduled. Spares "
+     "are held on site for the two most common failures to avoid waiting on "
+     "delivery. Out-of-hours attendance is guaranteed within four hours and "
+     "has been met on every occasion this year."),
+
+    # 3 — fact FINAL
+    ("3. Window Replacement Programme",
+     "The window replacement programme continued across the residential "
+     "blocks this year. Single-glazed timber frames are being replaced with "
+     "double-glazed aluminium throughout, block by block, so that residents "
+     "move out for one week rather than a whole term. Acoustic performance was "
+     "specified alongside thermal, because the north elevation faces the "
+     "bypass. Scaffolding is shared between adjacent blocks to reduce hire "
+     "costs. Waste frames are separated on site and the glass recycled "
+     "separately from the timber. The programme is funded from the capital "
+     "reserve rather than from operating budgets. Across the year 1,340 window "
+     "units were replaced."),
+
+    # ── 2 topics ─────────────────────────────────────────────────────────
+    # 4 — fact LEADS
+    ("4. Grounds and Security",
+     "Grounds maintenance contracts total 890,000 pounds annually, covering "
+     "mowing, hedging, tree surveys and winter gritting across the whole "
+     "estate. The contractor holds an arboricultural qualification, which the "
+     "tree stock requires. Gritting is triggered by a forecast threshold "
+     "rather than by observation, so the routes run before dawn. Security is "
+     "provided by a separate contractor under its own agreement. The gatehouse "
+     "is staffed continuously and mobile patrols cover the outer car parks "
+     "between dusk and dawn. Camera coverage was extended to the western "
+     "boundary after a spate of thefts from vehicles. Access cards are issued "
+     "by the estates office and deactivate automatically when a contract ends."),
+
+    # 5 — fact MIDDLE
+    ("5. Catering and Waste",
+     "The catering contract was retendered this year and awarded for five "
+     "years with a break at three. Three outlets operate daily during term and "
+     "one continues through vacations. Menu costing is reviewed quarterly "
+     "against commodity indices. Waste is collected under a separate "
+     "arrangement, and the estate diverted 71 percent of its waste from "
+     "landfill. Food waste is separated at source in all three kitchens and "
+     "goes to anaerobic digestion. Dry mixed recycling is collected twice "
+     "weekly and general waste once. Confidential paper is shredded on site "
+     "under a witnessed process. The waste contractor reports tonnages monthly "
+     "and these feed the annual sustainability return."),
+
+    # 6 — fact FINAL
+    ("6. Parking and Signage",
+     "Parking on the estate is managed by permit, with allocation weighted "
+     "toward staff who work irregular hours or carry equipment. Enforcement is "
+     "contracted out and appeals are heard by an independent panel. The two "
+     "largest car parks were resurfaced this year and their drainage renewed "
+     "at the same time. Wayfinding signage was replaced across the whole "
+     "estate to a single specification, which took most of the summer "
+     "vacation. Fingerposts at the three main entrances now carry building "
+     "numbers rather than department names, because departments move and "
+     "buildings do not. The signage scheme cost 156,000 pounds."),
+
+    # ── 6 topics (executive-summary shape) ───────────────────────────────
+    # 7 — fact LEADS
+    ("7. Estates Overview",
+     "The estates directorate employs 268 people across maintenance, grounds, "
+     "security, catering, portering and administration. The estate comprises "
+     "44 buildings over 31 hectares, with a gross internal area of 186,000 "
+     "square metres. Operating expenditure was broadly flat against the prior "
+     "year once energy is excluded. Capital projects completed on schedule in "
+     "all but one case, where a planning condition delayed a start. Statutory "
+     "compliance was maintained across all disciplines with no enforcement "
+     "action. Staff turnover in the directorate fell for the second successive "
+     "year. The service desk logged 41,200 requests, of which 94 percent were "
+     "closed within target. Tenant satisfaction was surveyed in the spring."),
+
+    # 8 — fact MIDDLE
+    ("8. Year in Summary",
+     "Capital projects completed on time and within the approved envelope. "
+     "Energy consumption fell after the boiler works and the lighting retrofit "
+     "landed together. The service desk handled a higher volume than last year "
+     "with the same establishment. The estate's insured reinstatement value is "
+     "assessed at 412 million pounds, revalued this year for the first time "
+     "since the pandemic. Compliance inspections were completed across all "
+     "disciplines. Grounds and security contracts were both retendered without "
+     "dispute. Portering absorbed the additional load from the two building "
+     "moves without agency cover. The directorate closed the year within "
+     "budget on both pay and non-pay."),
+
+    # 9 — fact FINAL
+    ("9. Director's Statement",
+     "This has been a year of consolidation rather than expansion. The "
+     "directorate absorbed two significant capital programmes while keeping "
+     "the routine service running, which is a credit to the teams involved. "
+     "Recruitment remains difficult in the trades, and we continue to rely on "
+     "a small number of long-serving staff whose knowledge is not written "
+     "down. The compliance position is sound and was independently verified. "
+     "Energy remains the largest single exposure and the hedge expires next "
+     "year. Relationships with the two principal contractors are constructive. "
+     "Looking ahead, the condition survey will set the capital programme for "
+     "the next cycle. Deferred maintenance across the estate now stands at "
+     "23.8 million pounds."),
+]
+
+# ── Competitor pages ─────────────────────────────────────────────────────────
+#
+# Added after the first nine measured 9/9 rank-1, because that probe was missing
+# a variable md-10 has. In md-10 the answering page does not merely hold the
+# fact among others — it competes with a page DEDICATED to the question's
+# subject: "how many people does the company employ" is fought over by an
+# executive summary that states the number and a Corporate Structure page that
+# is entirely about the organisation and states none.
+#
+# Each page below is topically dedicated to one probe question and deliberately
+# does NOT contain its answer. Depth is held at "lead" across the three so only
+# the answer page's topic count varies:
+#
+#   dp-10  answer on a 1-topic page   competitor: page 10
+#   dp-11  answer on a 2-topic page   competitor: page 11
+#   dp-12  answer on a 6-topic page   competitor: page 12   <- the md-10 shape
+#
+# Realistic: a facilities report really would carry both a plant-room page and a
+# boiler-replacement page, and both a workforce page and an overview that counts
+# heads.
+
+MIXED_PDF_COMPETITORS = [
+    # 10 — competes with dp-01 (boiler replacement cost, 1-topic answer page)
+    ("10. Plant Room Condition",
+     "The plant rooms were surveyed for condition and access this year. Boiler "
+     "housings, pipework lagging and pump mountings were inspected in each of "
+     "the four rooms. Several runs of lagging were found damaged where cabling "
+     "had been pulled through, and these were made good. Access to the west "
+     "plant room remains poor and a permanent ladder is specified for next "
+     "year. Ventilation grilles were cleared and the louvre actuators "
+     "serviced. Water treatment dosing was recalibrated on all circuits. "
+     "Expenditure on plant room works sits within the routine maintenance "
+     "budget and is not separately reported. The survey did not price any "
+     "replacement of the boilers themselves."),
+
+    # 11 — competes with dp-04 (grounds contract value, 2-topic answer page)
+    ("11. Landscape and Planting Strategy",
+     "The landscape strategy sets out how the grounds are managed over a ten "
+     "year horizon. Mowing regimes were relaxed on three verges to encourage "
+     "wildflowers, and the resulting reduction in cutting frequency was agreed "
+     "with the contractor. Tree stock is surveyed on a three year cycle and "
+     "high-risk specimens annually. Replacement planting favours native "
+     "species and follows the loss of eleven mature trees to disease. Hedging "
+     "along the northern boundary is being restored by laying rather than "
+     "flailing. The strategy does not set contract values, which are handled "
+     "separately through procurement."),
+
+    # 12 — competes with dp-07 (directorate headcount, 6-topic answer page)
+    ("12. Workforce and Recruitment",
+     "Recruitment across the directorate remains difficult in the trades, "
+     "particularly for mechanical and electrical craftspeople. Vacancies are "
+     "advertised continuously rather than in campaigns. Agency use rose "
+     "slightly in portering and fell in cleaning. An apprenticeship scheme "
+     "started with four places across maintenance and grounds. Retention "
+     "improved following the pay review, and exit interviews now cite commute "
+     "and shift pattern more often than pay. Long service is a feature of the "
+     "workforce and a succession risk. Training days were taken up more fully "
+     "than last year. Establishment figures are held by human resources and "
+     "are not reproduced in this section."),
+]

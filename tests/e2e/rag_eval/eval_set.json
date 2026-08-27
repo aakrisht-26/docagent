@@ -968,5 +968,209 @@
         "note": "Fleet composition gives 70 light vans GROUP-wide; the depot pages give total vehicle counts with no van split. Answering needs an invented apportionment."
       }
     ]
+  },
+  "dilution_probe": {
+    "_about": {
+      "purpose": "Does mixing topics on a page cost the answering passage its rank?",
+      "design": "3x3 factorial. Topic count 1 (control), 2, 6 crossed with the answering fact leading the page, sitting mid-page, or in the final clause. Every page is 95-112 words and holds exactly one queryable fact.",
+      "why_controls": "The single-topic pages are the load-bearing part. A mixed-topic page that ranks badly proves nothing on its own, because topic count and fact depth both moved. If a single-topic page ALSO loses rank when its fact is in the final clause, the cause is depth or length and heterogeneity is a red herring.",
+      "built_blind": "Written before any fix existed and without knowing what fix might apply, so it cannot be tuned toward a conclusion. Realistic rather than adversarial: real annual reports do put six subjects in an executive summary, and small teams really do write a combined 'Grounds and Security' page.",
+      "scored_separately": "Its own block so it cannot move the 33-case single-document headline, which is quoted across sessions.",
+      "competitors": "Pages 10-12 are topically dedicated to a probe question and do NOT hold its answer. Added after the first nine all ranked first, because that probe was missing the variable md-10 has: there the answer page competes with a page entirely about the question's subject. dp-10/11/12 hold depth at 'lead' and vary only the answer page's topic count, so any rank loss is attributable."
+    },
+    "cases": [
+      {
+        "id": "dp-01",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 1,
+        "topics": 1,
+        "depth": "lead",
+        "question": "What did the boiler plant replacement cost?",
+        "expected_sources": [
+          1
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "4.7 million",
+          "4.7"
+        ]
+      },
+      {
+        "id": "dp-02",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 2,
+        "topics": 1,
+        "depth": "middle",
+        "question": "How long on average between lift callouts?",
+        "expected_sources": [
+          2
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "214"
+        ]
+      },
+      {
+        "id": "dp-03",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 3,
+        "topics": 1,
+        "depth": "final",
+        "question": "How many window units were replaced?",
+        "expected_sources": [
+          3
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "1,340",
+          "1340"
+        ]
+      },
+      {
+        "id": "dp-04",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 4,
+        "topics": 2,
+        "depth": "lead",
+        "question": "What is the annual value of the grounds maintenance contracts?",
+        "expected_sources": [
+          4
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "890,000",
+          "890000"
+        ]
+      },
+      {
+        "id": "dp-05",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 5,
+        "topics": 2,
+        "depth": "middle",
+        "question": "What proportion of waste was diverted from landfill?",
+        "expected_sources": [
+          5
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "71 percent",
+          "71%"
+        ]
+      },
+      {
+        "id": "dp-06",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 6,
+        "topics": 2,
+        "depth": "final",
+        "question": "What did the new wayfinding signage scheme cost?",
+        "expected_sources": [
+          6
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "156,000",
+          "156000"
+        ]
+      },
+      {
+        "id": "dp-07",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 7,
+        "topics": 6,
+        "depth": "lead",
+        "question": "How many people does the estates directorate employ?",
+        "expected_sources": [
+          7
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "268"
+        ]
+      },
+      {
+        "id": "dp-08",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 8,
+        "topics": 6,
+        "depth": "middle",
+        "question": "What is the insured reinstatement value of the estate?",
+        "expected_sources": [
+          8
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "412 million",
+          "412"
+        ]
+      },
+      {
+        "id": "dp-09",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 9,
+        "topics": 6,
+        "depth": "final",
+        "question": "How much deferred maintenance is outstanding across the estate?",
+        "expected_sources": [
+          9
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "23.8 million",
+          "23.8"
+        ]
+      },
+      {
+        "id": "dp-10",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 1,
+        "topics": 1,
+        "depth": "lead",
+        "competitor": 10,
+        "question": "How much was spent on the boilers?",
+        "expected_sources": [
+          1
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "4.7 million",
+          "4.7"
+        ]
+      },
+      {
+        "id": "dp-11",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 4,
+        "topics": 2,
+        "depth": "lead",
+        "competitor": 11,
+        "question": "How much do the grounds contracts cost?",
+        "expected_sources": [
+          4
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "890,000",
+          "890000"
+        ]
+      },
+      {
+        "id": "dp-12",
+        "fixture": "sample_mixed_topics.pdf",
+        "page": 7,
+        "topics": 6,
+        "depth": "lead",
+        "competitor": 12,
+        "question": "How many staff work in the estates directorate?",
+        "expected_sources": [
+          7
+        ],
+        "match": "any",
+        "expected_answer_contains": [
+          "268"
+        ]
+      }
+    ]
   }
 }

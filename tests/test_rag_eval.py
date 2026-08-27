@@ -85,6 +85,53 @@ class TestAnswerMatching(unittest.TestCase):
         self.assertFalse(RE.answer_hit(case, "no figure is given"))
 
 
+class TestLeadsRanking(unittest.TestCase):
+    """The headline metric, and why it replaced one with an unreachable ceiling.
+
+    `answer_rank` returns the WORST rank across required sources, so a case
+    needing two pages scores 2 even when retrieval puts them first and second —
+    the best outcome that exists. Five of the 33 single-document cases are
+    `match: all` with two sources, so "ranked #1" could never exceed 28/33, and
+    28/33 was being read as five failures. That is a definition, not a deficit.
+    """
+
+    def test_a_single_source_case_still_means_ranked_first(self):
+        case = {"expected_sources": [3], "match": "any"}
+        self.assertTrue(RE.leads_ranking(case, {3: 0.9, 7: 0.5}))
+        self.assertFalse(RE.leads_ranking(case, {7: 0.9, 3: 0.5}))
+
+    def test_two_required_sources_may_hold_the_top_two_in_either_order(self):
+        case = {"expected_sources": [12, 13], "match": "all"}
+        self.assertTrue(RE.leads_ranking(case, {12: 0.9, 13: 0.8, 1: 0.1}))
+        self.assertTrue(RE.leads_ranking(case, {13: 0.9, 12: 0.8, 1: 0.1}))
+
+    def test_a_required_source_below_the_pair_still_fails(self):
+        """dn-11 ranks [1, 3]: genuinely short, and must stay visible."""
+        case = {"expected_sources": [3, 4], "match": "all"}
+        self.assertFalse(RE.leads_ranking(case, {3: 0.9, 8: 0.8, 4: 0.7}))
+
+    def test_a_missing_required_source_fails(self):
+        case = {"expected_sources": [3, 4], "match": "all"}
+        self.assertFalse(RE.leads_ranking(case, {3: 0.9, 8: 0.8}))
+
+    def test_match_any_needs_only_one_of_them_to_lead(self):
+        case = {"expected_sources": [12, 13], "match": "any"}
+        self.assertTrue(RE.leads_ranking(case, {13: 0.9, 1: 0.5, 12: 0.2}))
+        self.assertFalse(RE.leads_ranking(case, {1: 0.9, 13: 0.5}))
+
+    def test_the_ceiling_is_reachable_where_the_old_one_was_not(self):
+        """The whole point, asserted directly."""
+        case = {"expected_sources": [12, 13], "match": "all"}
+        perfect = {12: 0.9, 13: 0.8, 1: 0.1}
+        self.assertTrue(RE.leads_ranking(case, perfect))
+        self.assertNotEqual(RE.answer_rank(case, perfect), 1,
+                            "the old metric cannot score 1 on a perfect "
+                            "two-source result, which is why it was replaced")
+
+    def test_no_scores_is_not_a_pass(self):
+        self.assertFalse(RE.leads_ranking({"expected_sources": [1]}, {}))
+
+
 class TestMatchBoundaries(unittest.TestCase):
     """The one direction the matcher can be WRONGLY GENEROUS.
 
