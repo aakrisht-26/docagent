@@ -605,6 +605,9 @@ class LLMClient:
             start working).
           - HTTP 429 / rate limit → transient. Rotate to the next live key and
             back off before retrying.
+          - HTTP 413 → the key has less per-minute budget left than this request
+            needs. Key-specific and time-varying, so rotate immediately to an
+            untried key without backing off.
           - Connection / timeout / 5xx → transient. Retry with backoff.
           - Anything else → not retryable; give up and return None.
 
@@ -631,6 +634,10 @@ class LLMClient:
         attempts = len(live) + self.max_total_retries
         rate_hits = 0
         transient_hits = 0
+        # A 413 anywhere in the sweep is remembered, so that if the call is
+        # ultimately abandoned the caller can say WHICH kind of failure it was.
+        refused_for_size = 0
+        self._last_failure = None
 
         # Keys already refused with a SHORT 429 during this call. Each key has
         # its own per-minute budget, so being throttled on one says nothing
@@ -757,6 +764,37 @@ class LLMClient:
                     )
                     _rotate()
                     continue  # another key may work; no point backing off
+                if exc.status_code == 413:
+                    # "Request too large ... tokens per minute (TPM)". Read as a
+                    # per-request size cap this looks fatal, so it used to fall
+                    # through to the catch-all below: log once, return None, and
+                    # every caller sees an indistinguishable empty result. On
+                    # the summarisation path that meant a silent drop to
+                    # extractive.
+                    #
+                    # It is not a size cap. It is a ROLLING per-minute
+                    # consumption window, and the same key gives different
+                    # verdicts minutes apart: one key here accepted a
+                    # 34,072-token request and refused an 8,600-token one a few
+                    # minutes later. So a refusal says something about that key
+                    # right now, not about the request — which is exactly the
+                    # situation rotation exists for, and 401 and 5xx were
+                    # already using it.
+                    #
+                    # No backoff: an untried key has its own window and sleeping
+                    # before it is dead time, the same reasoning the 429 handler
+                    # applies. If every key refuses, the loop exhausts its
+                    # attempts and returns None as before.
+                    transient_hits += 1
+                    refused_for_size += 1
+                    logger.warning(
+                        f"{what}: {key_label} refused this request size "
+                        f"(413, per-minute budget); trying the next key "
+                        f"[attempt {attempt + 1}/{attempts}]"
+                    )
+                    _rotate()
+                    continue
+
                 if exc.status_code >= 500:
                     transient_hits += 1
                     delay = self._backoff_seconds(attempt)
@@ -784,11 +822,24 @@ class LLMClient:
                 logger.warning(f"{what}: non-retryable failure: {type(exc).__name__}: {exc}")
                 return None
 
-        logger.error(
-            f"{what}: giving up after {attempts} attempt(s) "
-            f"(rate-limited: {rate_hits}, transient: {transient_hits}, "
-            f"invalid keys retired: {len(self._dead_key_idxs)})."
-        )
+        if refused_for_size:
+            self._last_failure = self.FAILURE_RATE_LIMIT
+            logger.error(
+                f"{what}: EVERY key refused this request as too large for its "
+                f"remaining per-minute budget ({refused_for_size} refusal(s) "
+                f"across {attempts} attempt(s)). This is the TIER declining the "
+                f"request size, not the model failing — the same request may "
+                f"succeed a minute later, and a smaller max_tokens would fit "
+                f"now. Reduce the budget at the call site or wait for the "
+                f"window to clear."
+            )
+        else:
+            self._last_failure = self.FAILURE_EXHAUSTED
+            logger.error(
+                f"{what}: giving up after {attempts} attempt(s) "
+                f"(rate-limited: {rate_hits}, transient: {transient_hits}, "
+                f"invalid keys retired: {len(self._dead_key_idxs)})."
+            )
         return None
 
     # ── Public operations ─────────────────────────────────────────────────────
@@ -797,6 +848,17 @@ class LLMClient:
     #: want to tell "the model had nothing to say" from "we did not give it room
     #: to say it"; `chat()` itself returns None for both.
     _last_finish_reason: Optional[str] = None
+
+    #: Why the most recent call gave up, or None if it succeeded. Callers get
+    #: None back for every failure, so without this a caller cannot tell "the
+    #: tier refused a request this size" from "the model returned nothing" —
+    #: and those need different words in front of a user. Set only when the
+    #: call is abandoned; a 413 that rotates and then succeeds leaves it None.
+    _last_failure: Optional[str] = None
+
+    #: Failure reasons `_last_failure` can carry.
+    FAILURE_RATE_LIMIT = "rate_limit_refused"
+    FAILURE_EXHAUSTED = "attempts_exhausted"
 
     def chat(
         self,

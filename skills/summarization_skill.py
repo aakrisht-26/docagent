@@ -43,7 +43,17 @@ _LENGTH_CONFIGS: Dict[str, Dict[str, Any]] = {
     "Concise":    {"max_tokens": 800,  "instruction": "Write 1-2 tight paragraphs only. Lead with the single most important finding. No sub-headings."},
     "Standard":   {"max_tokens": 3000, "instruction": ""},
     "Detailed":   {"max_tokens": 5000, "instruction": "Cover every major section with sub-headings and supporting evidence. Include key figures."},
-    "Exhaustive": {"max_tokens": 8000, "instruction": "Produce a comprehensive report covering every claim, data point, entity, and timeline mentioned."},
+    # 6000, not 8000. Measured across three documents, Exhaustive's longest
+    # output was 3783 tokens -- it never came within 4000 of its old ceiling,
+    # because on the map-reduce path length is driven by the DIRECTIVE and not
+    # by max_tokens. Only Standard binds (3722 against 4024). So 8000 bought no
+    # extra words and cost a larger request, which is what met the free tier's
+    # rolling per-minute window and 413'd.
+    #
+    # 6000 keeps Exhaustive strictly the largest budget, sits ~2200 tokens above
+    # the longest output ever observed, and shrinks the request by 976 tokens.
+    # It does NOT guarantee acceptance -- see _PROVIDER_REQUEST_CEILING.
+    "Exhaustive": {"max_tokens": 6000, "instruction": "Produce a comprehensive report covering every claim, data point, entity, and timeline mentioned."},
 }
 
 # ── Reasoning allowance ───────────────────────────────────────────────────────
@@ -86,23 +96,26 @@ _REASONING_ALLOWANCE = 1024
 _MAP_CONTENT_TOKENS = 1000
 
 
-# Groq counts prompt + max_tokens against the per-minute limit and REFUSES the
-# request outright (413) when the sum exceeds it — it does not truncate. Free
-# tier is 8,000 TPM, so a request can never ask for more than that whatever the
-# preset says.
+# Groq counts prompt + max_tokens against the per-minute allowance and REFUSES
+# the request outright with a 413 when the sum exceeds what is LEFT in the
+# window. It does not truncate.
 #
-# This clamp exists so the allowance cannot make anything worse. Measured across
-# the eight configured keys: max_tokens 5000 is accepted by seven of them, 8000
-# is refused by six, and 9024 is refused by all eight. So "Exhaustive" (8000)
-# was ALREADY failing on most keys before the allowance existed — but adding
-# 1024 on top would have taken it from occasionally working to never working,
-# and a fix for one preset must not break another.
+# THIS IS A ROLLING WINDOW, NOT A PER-REQUEST SIZE CAP. An earlier version of
+# this comment said the latter and sized the clamp accordingly; measurement
+# disproved it. The same key accepted a 34,072-token request and refused an
+# 8,600-token one minutes later, and two sessions disagreed about which keys
+# refuse what. What a refusal reports is how much budget that key had left at
+# that instant.
 #
-# Exhaustive therefore keeps asking for 8000 and remains as viable, or not, as
-# it was. That it exceeds the free tier at all is a pre-existing product
-# question — lowering it would change what "Exhaustive" means — and it is
-# documented rather than decided here. When it does fail, the summary falls back
-# to extractive WITH a note, and the client now logs the 413.
+# So NO VALUE HERE IS SAFE, and this clamp does not make one safe. What makes a
+# refusal survivable is that the client now rotates to another key on a 413
+# rather than returning None (see `_run_with_rotation`). Before that, one
+# unlucky key selection dropped the whole summary to extractive in silence.
+#
+# The clamp remains for a narrower reason: the reasoning allowance must not push
+# a request past what any key could ever serve. 8000 is the smallest per-key
+# limit seen across the configured keys, so it is the point beyond which a
+# request is refused everywhere rather than merely somewhere.
 _PROVIDER_REQUEST_CEILING = 8000
 
 
@@ -229,10 +242,30 @@ class SummarizationSkill(BaseSkill):
                     warnings=skill_warnings,
                     duration_ms=(time.monotonic() - start) * 1000,
                 )
-            self.logger.warning(
-                f"LLM ({self._llm.provider_label}) failed — falling back to extractive."
-            )
-            reason = f"LLM provider ({self._llm.provider_label}) failed or timed out"
+            # Name the cause. "failed or timed out" covered a tier refusal and
+            # a dead model equally, and those need different responses: one is
+            # "ask for less or wait", the other is "your configuration is
+            # wrong". This path is how Exhaustive dropped to extractive in
+            # silence for months.
+            if getattr(self._llm, "_last_failure", None) == \
+                    getattr(self._llm, "FAILURE_RATE_LIMIT", "rate_limit_refused"):
+                self.logger.warning(
+                    f"LLM ({self._llm.provider_label}) REFUSED the request size "
+                    f"on every key — the per-minute tier budget could not fit "
+                    f"prompt + max_tokens. Falling back to extractive. A shorter "
+                    f"summary length would fit; this is not a model failure."
+                )
+                reason = (f"the {self._llm.provider_label} tier refused this "
+                          f"request size (per-minute token limit)")
+                skill_warnings.append(
+                    "Summary length reduced to extractive: the provider's "
+                    "per-minute token limit could not fit this request. "
+                    "Try a shorter summary length.")
+            else:
+                self.logger.warning(
+                    f"LLM ({self._llm.provider_label}) failed — falling back to extractive."
+                )
+                reason = f"LLM provider ({self._llm.provider_label}) failed or timed out"
         else:
             reason = "no LLM provider configured"
 
