@@ -3,6 +3,13 @@
 # would rewrite line endings inside the binary and corrupt it on clone.
 # Mark the binary fixture formats explicitly so they round-trip byte-for-byte.
 
+# packages.txt is piped line-by-line to `apt-get install` by Streamlit
+# Community Cloud. A CRLF checkout would make the package name `ffmpeg`,
+# which apt cannot find — the same build break as a comment line, arriving by a
+# different route. It currently survives only because core.autocrlf normalises
+# it; this makes that explicit rather than incidental.
+packages.txt text eol=lf
+
 *.pdf   binary
 *.xlsx  binary
 *.xls   binary

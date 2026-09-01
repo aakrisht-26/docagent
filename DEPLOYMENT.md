@@ -120,16 +120,53 @@ free.
 
 ### `packages.txt`
 
+The whole file, and it must stay this literal:
+
+```
+ffmpeg
+tesseract-ocr
+```
+
+> **⚠️ Bare package names only. No comments, ever.**
+>
+> **Community Cloud pipes every line of this file to `apt-get install`. It does
+> not strip comments, and it does not skip blank-looking lines that start with
+> `#`.** A `#` line is read as a package name, and the build dies:
+>
+> ```
+> E: Unable to locate package #
+> ```
+>
+> This is not hypothetical — an earlier version of this file carried the
+> explanatory comments that now make up the rest of this section, and it broke
+> the deploy. The content lives here precisely because it **cannot** live in the
+> file it describes.
+>
+> Only the leading-`#` case is confirmed, because that is what broke the build.
+> An inline trailing comment (`ffmpeg  # for yt-dlp`) has not been tested and
+> there is no reason to find out: keep the file to bare package names, one per
+> line, and the question never arises.
+>
+> `requirements.txt` is the opposite — pip *does* honour `#`, which is why that
+> file is heavily annotated and this one cannot be. Do not reason from one to
+> the other.
+
 Community Cloud runs `apt-get install` on each line before installing Python
-packages. Two system binaries no pip package can supply:
+packages, at build time. Both entries are **system binaries that no pip package
+can supply**. The file does nothing locally.
 
-- **`ffmpeg`** — yt-dlp needs it to convert downloaded audio to MP3, and it
-  brings `ffprobe` along. Without it the YouTube path fails with a clear
-  message; uploads are unaffected.
-- **`tesseract-ocr`** — the OCR engine behind `pytesseract`, used for scanned
-  PDFs with no text layer. Without it a scanned PDF yields no text.
+**`ffmpeg`** — yt-dlp needs it to convert the downloaded stream to MP3 before
+transcription, and it brings `ffprobe` along, which yt-dlp also requires.
+Without it the YouTube path still works but takes the slower route:
+`AudioReaderSkill._find_ffmpeg()` falls through to the `imageio-ffmpeg` wheel
+bundled via `requirements.txt`. With it, the faster PATH branch is used.
+Uploads are unaffected either way.
 
-This file does nothing locally.
+**`tesseract-ocr`** — the OCR engine behind `pytesseract`, used by the PDF
+reader's third-tier fallback for scanned pages with no text layer. Without it a
+scanned PDF yields no text at all. On Linux, `PDFReaderSkill` leaves
+`tesseract_cmd` unset and `pytesseract` finds this on PATH; the hardcoded
+Windows path in that skill sits inside a platform guard and never runs here.
 
 ---
 
@@ -392,6 +429,12 @@ Check <https://console.groq.com/docs/deprecations>, then set `groq.model` in
 `configs/default.yaml` or add `DOCAGENT_GROQ_MODEL` to the secrets.
 `python tests/e2e/e2e.py pdf` refuses to start against an unreachable model, so
 run it before redeploying.
+
+**The build fails with `E: Unable to locate package #`.**
+`packages.txt` has comments in it. Community Cloud passes every line to
+`apt-get install` without stripping them, so `#` becomes a package name. Strip
+it back to bare package names — see [`packages.txt`](#packagestxt) above, where
+the explanation lives because it cannot live in the file.
 
 **Scanned PDFs produce no text.**
 `tesseract-ocr` missing from `packages.txt`, or the file was edited without a
