@@ -153,6 +153,38 @@ it is persisted in `history.db`, asserted on in tests, and `doc_type` derives
 from it via the 0.4 threshold, so changing its meaning would be a data
 migration rather than a display fix.
 
+**`confidence_in_verdict` IS PARTIAL — it returns `Optional[float]`, and None
+means there is no verdict.** It is defined on `questionnaire` and
+`normal_document` (`CLASSIFIED_DOC_TYPES`) and undefined on everything else.
+Handle the None; do not coerce it to 0.0, which reads as a confident negative
+rather than an absence.
+
+The first version was total, treating anything that was not `questionnaire` as
+`normal_document`. So `unknown` — the doc_type a failed parse or download
+carries — mapped to 1 - 0.0 = **100%, rendered green**, and a failed YouTube
+download displayed "Normal Document · Domain: General · 100% confidence" above
+"0 words · 0 pages". The maths was right at every step; nothing asked whether
+there had been any content to classify.
+
+**Three layers independently invented that verdict**, and all three are fixed:
+the confidence function (above), `_dict_to_pipeline_result`'s reload default,
+and the results banner's `else` branch. Fixing any one alone leaves the other
+two lying. `ui/components/results_view._banner_for()` and
+`confidence_in_verdict` normalise against the same constant so the label and
+the number cannot disagree.
+
+**The classifier's own empty-text branch reports `unknown`, and no end-to-end
+test can reach it** — the agent gates on `ParsedDocument.is_empty` before step
+3. Verified by mutation rather than assumed: reverting that branch leaves the
+`empty` e2e stage green, while reverting `confidence_in_verdict` turns it red.
+It is covered by `tests/test_empty_document.py`, which mutation-tests all four
+layers; the end-to-end case is `tests/e2e/e2e.py::empty` over
+`sample_blank.pdf`.
+
+Two shipped tests had asserted the old behaviour —
+`confidence_in_verdict(0.0, "") == 1.0` under the heading of "tolerating stored
+shapes", and `test_empty_text_returns_normal`. Both were the bug written down.
+
 **The 0.70 ceiling is intended.** With a silent heuristic the blend cannot
 exceed 0.70, so the top of the range is unreachable. That is not a bug to
 normalise away: it makes the LLM conviction needed to reach the 0.4 threshold
@@ -162,6 +194,40 @@ bar to 0.400, a 30% cut in required conviction for nothing. Observed
 p(questionnaire) is 0.01–0.04 on normal documents and 0.96 on the questionnaire,
 against a 0.571 boundary — the headroom is enormous and the ceiling costs
 nothing.
+
+### The YouTube path can fail for reasons outside this repo
+
+YouTube answers some downloads with "Sign in to confirm you're not a bot". It
+is keyed on **IP reputation**, not on the request: observed on a home
+connection minutes after the same video downloaded fine, and far more frequent
+from shared egress (Streamlit Community Cloud, CI, VPNs, NAT). Documented as a
+known limitation in README and DEPLOYMENT.md.
+
+**The cause used to be destroyed twice on its way out.** The skill replaced
+yt-dlp's text with `"Failed to download audio from YouTube"`, and
+`run_youtube` replaced that with `"YouTube audio extraction failed"` — so a bot
+check, a deleted video, a missing ffmpeg and a genuine bug all reached the user
+and the harness as the same sentence. Both now carry the reason through.
+
+`utils/youtube_errors.classify_download_error()` sorts it into **BLOCKED**
+(transient refusal of this client), **UNAVAILABLE** (the video: removed,
+private, age-gated, geo-blocked), **SETUP** (ffmpeg missing) or **UNKNOWN**.
+
+**UNKNOWN is the default, and that asymmetry is the whole design.** This
+classifier decides whether the e2e harness treats a red `youtube` stage as a
+real failure. Guessing "probably external" on unrecognised text would turn
+every genuine YouTube bug into a skipped stage. A missed BLOCKED signature only
+costs a confusing red run; a false BLOCKED hides a bug silently.
+
+**The harness has a third outcome: `BLOCKED`, exit code 3.** Not PASS (the
+stage verified nothing) and not FAIL (the code is fine). An ambiguous red is
+its own hazard — after a few runs where red meant "the bot check again", a real
+regression gets waved through. `_blocked_reason()` is narrow in three ways:
+only a failure at the **download step** qualifies, only allowlisted signatures
+qualify, and a **removed video does NOT** (that means the fixture needs
+replacing, which is work for this repo and stays red). A genuine failure
+anywhere outranks a block. All of it is mutation-tested in
+`tests/test_youtube_blocked.py`.
 
 ### PDF Parsing Fallback Chain
 

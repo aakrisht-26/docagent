@@ -596,6 +596,113 @@ written down.
 
 ---
 
+---
+
+## 7. `yt-dlp` is deliberately NOT pinned — only floored
+
+**Decision: keep it unpinned, and raise the floor to the version verified to
+work.** `yt-dlp>=2024.01.01` became `yt-dlp>=2026.8.19`.
+
+This is the opposite of the call made for `torch` and `sentence-transformers`
+in §3, so the asymmetry is worth stating rather than leaving implicit.
+
+### What prompted it
+
+A YouTube download failed against **2026.7.4**. Upgrading to **2026.8.19**
+fixed it, with no change to this repository. The videos were fine; the
+installed extractor was stale. Nothing in the project was wrong, and nothing in
+the project could have prevented it.
+
+Unpinned is why the fix was one `pip install -U` away. It is also why a fresh
+clone gets whatever is current rather than what was tested. Both halves are
+real.
+
+### Why the reproducibility argument does not transfer from §3
+
+`torch` is pinned because four retrieval-eval margins sit between 0.028 and
+0.047, narrow enough that a numerical shift across releases could **flip a
+scored case with no visible symptom**. That is the shape of risk pinning exists
+to remove: a dependency inside the measurement path, whose drift is silent.
+
+`yt-dlp` is not that dependency, on three counts, each checkable:
+
+- **It is in no measurement path.** No test and no eval imports `yt_dlp`
+  (`grep -rl yt_dlp tests/` is empty). No number this project reports depends
+  on its version. Drift cannot move a result, because it produces no result —
+  it produces an MP3 or an error.
+- **Its failures are loud.** A stale extractor raises, `_download_youtube_audio`
+  returns None, and the pipeline reports the failure at the top of the page.
+  That is exactly how the 2026.7.4 breakage presented: visibly, immediately,
+  with an error the user could read. Reproducibility protects against silent
+  divergence between environments; here divergence announces itself on the
+  first run.
+- **The API surface it is pinned against is tiny and old.**
+  `AudioReaderSkill` calls `YoutubeDL(opts).download([url])` with six options —
+  `format`, `postprocessors`/`FFmpegExtractAudio`, `outtmpl`, `quiet`,
+  `no_warnings`, `ffmpeg_location`. These are the most stable parts of the
+  library. The churn is in the extractors, which is precisely the part a pin
+  would freeze in a broken state.
+
+### Why a pin would have a guaranteed expiry date
+
+Measured from PyPI on 1 September 2026, stable releases only (pip does not
+install the `.dev0` builds, which are far more frequent):
+
+| | |
+|---|---|
+| stable releases since 2025-01-01 | 36 |
+| median gap between them | 11 days |
+| mean gap | 16.7 days |
+| longest gap | 84 days |
+| total stable releases | 137 |
+
+That cadence is not a project that cannot sit still. It is a project tracking
+**server-side changes at YouTube that this repository does not control and
+cannot vendor**. A pinned `yt-dlp==2026.8.19` would keep working exactly until
+the next such change, and would then be broken for every fresh clone, with no
+commit in this repo having caused it. Restoring it would need a commit —
+roughly every 11 days, forever, to stay current.
+
+An unpinned dependency that breaks is fixed by `pip install -U yt-dlp`. A
+pinned one that breaks is fixed by editing the repository and shipping it. The
+recovery for the failure a pin *causes* is strictly more expensive than the
+recovery for the failure it *prevents*.
+
+### The honest cost of not pinning
+
+An unpinned install can pick up a **bad** yt-dlp release, and at this cadence
+that is not far-fetched. If it happens, a fresh clone is born broken through no
+fault of the clone — the same class of failure as the pin, arriving by the
+opposite route.
+
+Two things bound it. The failure is loud, so it is diagnosed in one run rather
+than mistaken for a project bug. And the fix is to pin *temporarily* to the
+last good version — a local, reversible action — rather than to carry a
+permanent pin against a hypothetical.
+
+### What the floor actually buys
+
+`>=2024.01.01` was doing no work: it admits **58** stable releases, nearly all
+of which are now too old to download from YouTube at all. It expressed no
+knowledge.
+
+`>=2026.8.19` states the thing that is actually known: this version was
+verified against this code, by the `youtube` stage of `tests/e2e/e2e.py`
+downloading and transcribing a real video. It cannot promise a future release
+works — nothing can — but it does refuse to install one already known not to.
+
+That is the reproducibility guarantee available for a dependency in an arms
+race: **a lower bound on known-good, not an upper bound freezing time.**
+
+### When to revisit
+
+If a yt-dlp upgrade ever breaks the six options above — an API change rather
+than an extractor change — that is the signal this reasoning no longer holds,
+and an upper bound belongs on the line. Extractor breakage is not that signal,
+however often it happens.
+
+---
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:
@@ -608,7 +715,9 @@ python tests/e2e/e2e.py all
 pytest tests/ -q
 ```
 
-Expect 6 `PASS` rows with exit code 0, and 101 passing unit tests.
+Expect 8 `PASS` rows with exit code 0, and 379 passing unit tests. The
+eighth stage is `empty`, which asserts that a document with no content
+produces no classification verdict (see CLAUDE.md).
 
 Retrieval quality is scored separately, with no API calls:
 

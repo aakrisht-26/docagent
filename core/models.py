@@ -108,8 +108,14 @@ class SkillOutput:
 
 # ── Intermediate Results ──────────────────────────────────────────────────────
 
-def confidence_in_verdict(questionnaire_score: float, doc_type: str) -> float:
-    """Confidence in the ANSWER the classifier gave, 0.0-1.0.
+#: doc_type values that represent an actual verdict. Anything else means no
+#: classification happened, which is not the same as classifying it as normal.
+CLASSIFIED_DOC_TYPES = ("questionnaire", "normal_document")
+
+
+def confidence_in_verdict(questionnaire_score: float,
+                          doc_type: str) -> Optional[float]:
+    """Confidence in the ANSWER the classifier gave, 0.0-1.0, or None.
 
     `ClassificationResult.confidence` is not that number. It is
     P(questionnaire): how strongly the document looked like a form. For a
@@ -117,18 +123,25 @@ def confidence_in_verdict(questionnaire_score: float, doc_type: str) -> float:
     sure it was a normal document — the *most* confident of outcomes, displayed
     as the least.
 
-    Six of the seven e2e fixtures classify as `normal_document`, so the raw
-    field reads backwards on almost everything, and it read backwards in the
-    logs and the e2e harness for three sessions before anyone chased it.
+    RETURNS None WHEN THERE IS NO VERDICT, and that third state is the point.
+    This function is PARTIAL: "confidence in the verdict" means P(the class we
+    chose), which is only meaningful if a class was chosen. It is defined on
+    `questionnaire` and `normal_document` and undefined on everything else.
 
-    Defined here, beside the field it interprets, because four surfaces need
-    the same answer: the UI, the markdown export, the classifier's own log line
-    and the e2e harness. The stored field stays raw — it is persisted in
-    history.db, asserted on in tests and consumed by the pipeline, so changing
-    its meaning would be a data migration rather than a presentation fix.
+    The first version made it total by treating anything that was not
+    `questionnaire` as `normal_document`. That turned `unknown` — the doc_type a
+    failed parse carries, meaning nothing was classified — into "100%
+    confident", rendered green. A YouTube download failed and the UI asserted a
+    confident verdict about a document with zero words in it.
+
+    Returning 0.0 for the undefined case would be no better: that reads as a
+    confident negative rather than an absence. Callers must render "not
+    classified", and the Optional forces them to.
     """
+    if (doc_type or "").lower() not in CLASSIFIED_DOC_TYPES:
+        return None
     score = float(questionnaire_score or 0.0)
-    return score if (doc_type or "").lower() == "questionnaire" else 1.0 - score
+    return score if doc_type.lower() == "questionnaire" else 1.0 - score
 
 
 @dataclass
@@ -140,7 +153,8 @@ class ClassificationResult:
     `domain`     : Detected document domain/industry (e.g. "Financial")
     `confidence` : P(QUESTIONNAIRE), 0.0-1.0 — NOT confidence in `doc_type`.
                    A normal document confidently classified scores near ZERO.
-                   Use `confidence_in_verdict()` for anything a human reads.
+                   Use `confidence_in_verdict()` for anything a human reads,
+                   and handle the None it returns when there is no verdict.
     `method`     : "heuristic" | "llm" | "hybrid"
     `signals`    : diagnostic dict of matched patterns / scores
     """

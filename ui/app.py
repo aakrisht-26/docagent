@@ -803,7 +803,11 @@ def _dict_to_pipeline_result(d: dict):
     return PipelineResult(
         file_name=d.get("file_name", "unknown"),
         file_type=d.get("file_type", "unknown"),
-        doc_type=d.get("doc_type", "normal_document"),
+        # "unknown", not "normal_document". A stored row with no verdict must
+        # not acquire one on its way to the screen: defaulting to
+        # normal_document is what rendered a failed YouTube download as
+        # "Normal Document - Domain: General - 100% confidence".
+        doc_type=d.get("doc_type") or "unknown",
         domain=d.get("domain", "General"),
         classification_confidence=d.get("classification_confidence", 0.0),
         classification_method=d.get("classification_method", "unknown"),

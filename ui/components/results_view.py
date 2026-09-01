@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 import streamlit.components.v1 as components
 
+from core.models import CLASSIFIED_DOC_TYPES
 from core.pipeline_result import PipelineResult
 
 
@@ -131,7 +132,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
     story.append(p(
         f"**Words:** {result.word_count:,}   |   "
         f"**Pages/Sheets:** {result.page_count}   |   "
-        f"**Classification:** {display_confidence(result):.0%} ({result.classification_method})   |   "
+        f"**Classification:** {_confidence_text(result)} ({result.classification_method})   |   "
         f"**Processing:** {result.processing_time_ms / 1000:.2f}s",
         meta_k, is_md=True
     ))
@@ -415,7 +416,7 @@ def _render_tables_tab(tables: list) -> None:
 
 # ── Confidence meter ─────────────────────────────────────────────────────────
 
-def display_confidence(result: Any) -> float:
+def display_confidence(result: Any) -> Optional[float]:
     """How confident the classifier is *in the answer it gave*, 0.0–1.0.
 
     `PipelineResult.classification_confidence` is NOT that number. It is the
@@ -436,7 +437,53 @@ def display_confidence(result: Any) -> float:
         getattr(result, "doc_type", ""))
 
 
-def _render_confidence_meter(confidence: float, label: str = "Classification confidence") -> None:
+def _banner_for(doc_type: str) -> tuple:
+    """The banner label and CSS class for a doc_type. THREE states, not two.
+
+    The `else` branch used to read "Normal Document", so a document that was
+    never classified — a failed download, an empty parse — was announced as a
+    normal document, and with the old confidence maths it came with "100%
+    confidence" in green. Nothing checked whether there had been anything to
+    classify.
+
+    This is a plain function rather than an inline `if` so it can be tested
+    without a Streamlit runtime; `render_results` is otherwise unreachable from
+    a unit test, which is how the two-state version shipped.
+
+    Normalised the same way `confidence_in_verdict` normalises, and against the
+    same constant. The two must agree on what counts as a verdict: if the banner
+    were case-sensitive and the confidence maths were not, "NORMAL_DOCUMENT"
+    would print "Not classified" directly above a 97% meter.
+    """
+    normalised = (doc_type or "").lower()
+    if normalised not in CLASSIFIED_DOC_TYPES:
+        return "Not classified", "normal"
+    if normalised == "questionnaire":
+        return "Questionnaire / Form", "questionnaire"
+    return "Normal Document", "normal"
+
+
+def _confidence_text(result: Any) -> str:
+    """The confidence as a human reads it, or why there is none."""
+    confidence = display_confidence(result)
+    return "not classified" if confidence is None else f"{confidence:.0%}"
+
+
+def _render_confidence_meter(confidence, label: str = "Classification confidence") -> None:
+    # A None confidence means nothing was classified. Drawing a bar at all
+    # would put a number on screen where there is no verdict, and the old code
+    # drew it full and green.
+    if confidence is None:
+        _html(
+            '<div class="confidence-meter-wrap">'
+            '<div class="confidence-meter-label">'
+            f'<span>{label}</span><span>not classified</span></div>'
+            '<div style="font-size:0.75rem;opacity:.65">'
+            'No document content was extracted, so nothing was classified.'
+            '</div></div>'
+        )
+        return
+
     # round(), not int(). int() truncates, so 0.965 rendered as 96 here while
     # the banner's `:.0%` rounded it to 97 — the two disagreed by a step.
     pct = round(confidence * 100)
@@ -528,12 +575,11 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
     """)
 
     # ── Document type banner ───────────────────────────────────────────
-    if result.doc_type == "questionnaire":
-        label, css_cls = "Questionnaire / Form", "questionnaire"
-    else:
-        label, css_cls = "Normal Document", "normal"
+    confidence = display_confidence(result)
+    label, css_cls = _banner_for(result.doc_type)
 
-    conf_pct = f"{display_confidence(result):.0%}"
+    conf_pct = ("no document content" if confidence is None
+                else f"{confidence:.0%} confidence")
     _html(f"""
     <div class="doc-type-banner {css_cls} fade-in">
       <div style="flex:1">
@@ -541,7 +587,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
           <span style="font-weight:400;opacity:.7;font-size:0.85rem;margin-left:.5rem">Domain: {result.domain}</span>
         </div>
         <div style="font-size:0.75rem;opacity:.65;font-weight:400;margin-top:2px">
-          {conf_pct} confidence · {result.classification_method}
+          {conf_pct} · {result.classification_method}
         </div>
       </div>
     </div>
@@ -569,6 +615,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
 
     # ── Confidence meter ───────────────────────────────────────────────
     _render_confidence_meter(display_confidence(result))
+
 
     # ── Stats row ──────────────────────────────────────────────────────
     char_count = len(result.raw_text)
@@ -1078,7 +1125,7 @@ if (typeof speechSynthesis !== 'undefined')
             <div class="empty-state">
               <h3>Not a questionnaire</h3>
               <p>This document was classified as a normal document
-              ({display_confidence(result):.0%} confidence).
+              ({_confidence_text(result)} confidence).
               Question extraction only runs on questionnaires.</p>
             </div>""")
 

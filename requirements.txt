@@ -94,7 +94,29 @@ rich>=13.7.0
 # neither is imported anywhere in the codebase, neither was installed, and the
 # pin `ffmpeg-python>=0.2.1` was unsatisfiable (0.2.0 is the newest release),
 # which made `pip install -r requirements.txt` fail outright on a fresh clone.
-yt-dlp>=2024.01.01
+# DELIBERATELY NOT PINNED — floored instead. Full reasoning in DEPENDENCIES.md
+# section 7; the short version:
+#
+# yt-dlp tracks server-side changes at YouTube that this project does not
+# control. Stable releases land every 11 days (median, measured over 36
+# releases since Jan 2025), because that is the pace of the thing it is
+# chasing. A `==` pin would work until YouTube's next change and then be broken
+# for every fresh clone, fixable only by a commit here — whereas an unpinned
+# break is fixed by `pip install -U yt-dlp`. A download against 2026.7.4 failed
+# for exactly this reason and 2026.8.19 fixed it with no change to this repo.
+#
+# This is the opposite of the call made for torch and sentence-transformers,
+# and the difference is that those sit in the retrieval measurement path where
+# version drift moves a scored number SILENTLY. Nothing here imports yt_dlp in
+# a test, and its failures are loud: the download raises and the pipeline
+# reports it. The API used is six long-stable options on YoutubeDL; the churn
+# is all in the extractors, which is the part a pin would freeze broken.
+#
+# The floor is the version verified end-to-end by tests/e2e/e2e.py::youtube.
+# It cannot promise a future release works, but it refuses one already known
+# not to — a lower bound on known-good rather than an upper bound freezing
+# time. The old floor, >=2024.01.01, admitted 58 releases and expressed nothing.
+yt-dlp>=2026.8.19
 
 # The second half of AudioReaderSkill._find_ffmpeg(): if no ffmpeg is on PATH,
 # it falls back to the binary bundled in this wheel. That fallback was dead on

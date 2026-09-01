@@ -128,7 +128,16 @@ class DocumentAgent(BaseAgent):
         self._log_step("parse", parse_out.success, parse_out.duration_ms, parse_out.error)
 
         if not parse_out.success:
-            return self._error_result(synthetic_path, "YouTube audio extraction failed")
+            # Carry the skill's reason through. This is the second place the
+            # cause of a failed download was discarded: the skill had just
+            # replaced YouTube's prose with a fixed string, and this line then
+            # replaced THAT with another one, so a bot-check, a deleted video
+            # and a genuine bug all reached the user as the same sentence.
+            # Additive only — the original message is still the prefix, and no
+            # step, order or handoff changes.
+            detail = parse_out.error or "no further detail"
+            return self._error_result(
+                synthetic_path, f"YouTube audio extraction failed: {detail}")
 
         parsed_doc: ParsedDocument = parse_out.data
         if parsed_doc.is_empty:

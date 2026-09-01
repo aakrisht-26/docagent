@@ -121,9 +121,23 @@ class DocumentClassifierSkill(BaseSkill):
         full_text: str = inputs.data["full_text"]
 
         if not full_text.strip():
+            # "unknown", not "normal_document". There is nothing here to
+            # classify, and normal_document is a verdict with no basis — which
+            # `confidence_in_verdict` then rendered as 100% confident.
+            #
+            # The agent gates on `parsed_doc.is_empty` before reaching this, so
+            # nothing hits it today. Verified: mutating this branch back does
+            # NOT fail the `empty` e2e stage, because that path never arrives
+            # here. It is the same bug one layer down, left armed for any caller
+            # that skips the gate, and it needs a unit test rather than an
+            # end-to-end one.
+            self.logger.warning(
+                "Classification skipped: no text to classify. Reporting "
+                "doc_type 'unknown' rather than guessing a verdict."
+            )
             result = ClassificationResult(
-                doc_type="normal_document", confidence=0.0,
-                method="heuristic", signals={"reason": "empty_text"},
+                doc_type="unknown", confidence=0.0,
+                method="none", signals={"reason": "empty_text"},
             )
             return SkillOutput(success=True, data=result,
                                duration_ms=(time.monotonic() - start) * 1000)
@@ -200,6 +214,8 @@ class DocumentClassifierSkill(BaseSkill):
         signals["final_score"] = round(confidence, 4)
 
         verdict_confidence = confidence_in_verdict(confidence, doc_type)
+        shown = ("not classified" if verdict_confidence is None
+                 else f"{verdict_confidence:.0%} confident in this verdict")
         result = ClassificationResult(
             doc_type=doc_type,
             domain=domain,
@@ -213,8 +229,7 @@ class DocumentClassifierSkill(BaseSkill):
             # look broken for three sessions: "0% confidence" on a correct,
             # certain classification.
             f"Classification: {doc_type} | Domain: {domain} "
-            f"({verdict_confidence:.0%} confident in this verdict; "
-            f"p(questionnaire)={confidence:.3f}, method={method})"
+            f"({shown}; p(questionnaire)={confidence:.3f}, method={method})"
         )
         return SkillOutput(
             success=True,
