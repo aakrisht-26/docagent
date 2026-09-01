@@ -48,6 +48,30 @@ Step 6  Assemble           — builds PipelineResult
 - Data flows strictly through typed dataclasses: `SkillInput` → skill → `SkillOutput` → next skill. Do not add direct skill-to-skill calls.
 - `_run_core_pipeline()` (steps 2–6) is shared by `run()` (file) and `run_youtube()` (YouTube). Changes there affect both paths.
 
+### The one carve-out: failure-path message TEXT
+
+**The message string handed to `_error_result()` is open to additive change,
+and you do not need to ask.** Enriching what a failure *says* — appending a
+skill's `SkillOutput.error`, naming a cause — touches none of ordering, handoff,
+or the `_log_step` mechanism, which is what the freeze exists to protect.
+
+This was settled by an actual case: a failed YouTube download reported
+`"YouTube audio extraction failed"` regardless of whether it was a bot check, a
+deleted video, a missing ffmpeg or a genuine bug, because this file discarded
+`parse_out.error` and substituted a fixed string. The line now appends it. The
+user reviewed and approved that as within the freeze's intent.
+
+**Still frozen, and unchanged by this:**
+
+- which conditions return a failure, and where those returns sit
+- the `_error_result()` signature and the `PipelineResult` it builds
+- `_log_step` and anything about how a step reports to it
+- step order, step membership, planner gating, and every handoff between steps
+
+So: adding a reason to an existing failure message is fine. Adding a failure
+branch, moving one, or changing what a failure *returns* is not — that is a
+pipeline change and still needs an explicit instruction.
+
 ## Architecture
 
 ### Agent-Skill Pattern
