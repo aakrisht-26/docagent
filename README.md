@@ -120,13 +120,26 @@ exchange:
 python tests/e2e/e2e.py all
 ```
 
-Exit code 0 with six `PASS` rows means the install is good. Run a single stage
-with `python tests/e2e/e2e.py pdf` (or `scanned`, `excel`, `audio`, `youtube`,
-`rag`).
+Exit code 0 with eight `PASS` rows means the install is good. Run a single
+stage with `python tests/e2e/e2e.py pdf` (or `scanned`, `excel`, `audio`,
+`youtube`, `rag`, `questionnaire`, `empty`).
+
+| exit | meaning |
+|---|---|
+| `0` | every stage passed |
+| `1` | a stage failed — something is wrong in the code or the install |
+| `2` | bad arguments |
+| `3` | **a stage was blocked externally and did not run.** Nothing failed, but the suite is incomplete |
 
 The `scanned` stage is the one that proves Tesseract is wired up correctly: it
 asserts the OCR engine actually ran, so it fails loudly rather than silently
 falling back if `tesseract` is missing from PATH.
+
+**Exit code 3 is almost always the YouTube stage being rate-limited** — see
+[YouTube downloads and bot checks](#youtube-downloads-and-bot-checks). It is
+deliberately neither a pass nor a failure: the stage verified nothing, so
+calling it green would be a lie, and calling it red would train you to ignore
+red.
 
 > **First run downloads the embedding model.** The first document you analyse
 > pulls `all-MiniLM-L6-v2` (**87 MB**) into `~/.cache/huggingface` and takes
@@ -357,6 +370,43 @@ the full annotated list.
 | YouTube | Any `youtube.com/watch?v=` or `youtu.be/` URL |
 
 Maximum file size: **50 MB** (configurable via `DOCAGENT_MAX_FILE_MB`).
+
+### YouTube downloads and bot checks
+
+**Known external limitation. Expected behaviour, not a defect.**
+
+YouTube sometimes answers a download with an interstitial instead of the video:
+
+```
+Sign in to confirm you're not a bot. This helps protect our community.
+```
+
+When that happens the analysis stops and the app reports it. There is nothing
+to fix in DocAgent, and nothing about the video or the URL is wrong — the same
+link usually works minutes later, and works immediately from a different
+network. It was observed on a home connection moments after the same video
+downloaded successfully.
+
+**What triggers it is the address you are calling from, not the request.**
+YouTube rate-limits and challenges by IP reputation. Addresses shared by many
+users are challenged far more often than residential ones:
+
+- cloud hosts, **including Streamlit Community Cloud** (see `DEPLOYMENT.md`)
+- CI runners
+- VPNs and Tor exits
+- office, campus and carrier-grade NAT
+
+**What to do**
+
+| | |
+|---|---|
+| Running locally | Wait and retry, or use a different network. Upgrading yt-dlp (`pip install -U yt-dlp`) fixes the *other* class of download failure and is worth doing first if the error is not a bot check |
+| Running hosted | Expect this regularly. The file-upload paths (PDF, Excel, CSV, audio) are unaffected |
+| Running the e2e suite | The `youtube` stage reports `BLOCKED` and the run exits **3**, distinct from both pass and fail |
+
+The message names which of these it is — a bot check, an unavailable video, a
+missing ffmpeg, or an unrecognised error — rather than reporting every download
+problem as the same sentence.
 
 ---
 

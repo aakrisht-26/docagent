@@ -145,6 +145,46 @@ Cloud checks the repo out.
 | Upload cap | 50 MB | 10 MB, enforced in the **browser** | Bounds what a single visitor can push into a ~1 GB container. |
 | OCR page cap | 500 pages | 25 pages | This, not the upload cap, is what actually bounds memory — see below. |
 | Groq keys | `.env` | `st.secrets` | No `.env` exists on Cloud. |
+| YouTube downloads | Usually work | **Frequently blocked** | Community Cloud egress IPs are shared by every app on the platform and are heavily rate-limited by YouTube. See below. |
+
+### YouTube is unreliable when hosted, by design of the platform
+
+**Expect this. It is an external limitation, not a bug, and there is no fix
+available from inside this repository.**
+
+YouTube challenges downloads by IP reputation. Streamlit Community Cloud runs
+every app from a small pool of **shared** egress addresses, which are therefore
+seen by YouTube as high-volume, unattributable traffic and are challenged far
+more aggressively than a residential connection. The response looks like this:
+
+```
+Sign in to confirm you're not a bot. This helps protect our community.
+```
+
+The app surfaces it as a download failure that names the cause, so a hosted
+user is told the network was refused rather than being left to think the video
+or the app is broken.
+
+**How often** is not something this project can promise a number for — it
+depends on the platform's address pool and on YouTube's current thresholds,
+both of which change without notice. Treat a hosted YouTube URL as best-effort.
+It was already observed failing on a *home* connection minutes after the same
+video succeeded, so a shared cloud IP is strictly worse.
+
+**What is unaffected.** Everything else: PDF, Excel, CSV and direct audio
+uploads never touch YouTube. Only the URL path is exposed to this.
+
+**What would fix it**, none of which is currently done or recommended lightly:
+
+| approach | why it is not in place |
+|---|---|
+| Cookies from a signed-in account | Puts a real account's credentials in the deployment's secrets, and YouTube bans accounts used this way. A hosted app shared with strangers makes it worse — a single visitor's URL is downloaded on that account's behalf |
+| A proxy with residential IPs | A paid dependency and a new failure mode, for a secondary input path |
+| Dropping the YouTube feature when hosted | Reasonable if it proves more confusing than useful; the input path is already isolated enough to gate on `is_hosted()` |
+
+Until one of those is chosen, the honest position is the one taken here:
+**let it fail, say clearly why, and make sure the failure cannot be mistaken
+for something the user did wrong.**
 
 ### The upload cap is layered, not airtight
 
@@ -282,6 +322,17 @@ The Groq key did not arrive. Check the sidebar for a configuration warning, and
 the log for `Loaded N value(s) from Streamlit secrets.` — if N is 0 or the line
 is missing, the secret name is wrong. It must be exactly `GROQ_API_KEY` (or
 `GROQ_API_KEYS`) at the **top level** of the TOML, not nested in a section.
+
+**A YouTube URL fails with "Sign in to confirm you're not a bot".**
+Expected on Community Cloud — the platform's egress IPs are shared and heavily
+rate-limited by YouTube. Nothing is misconfigured, and retrying the same URL
+later sometimes works. File uploads are unaffected. See *YouTube is unreliable
+when hosted* above for why, and for the options that would change it.
+
+**The e2e suite exits 3.**
+At least one stage was blocked externally and did not run — in practice the
+`youtube` stage being rate-limited. Nothing failed, but the run is incomplete,
+which is why it is neither 0 nor 1. The summary names the blocked stages.
 
 **The sidebar shows other people's documents.**
 `DOCAGENT_HOSTED` is not set and the `/mount/src` backstop did not fire. Set it
