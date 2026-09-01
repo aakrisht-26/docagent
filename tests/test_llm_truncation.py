@@ -253,6 +253,108 @@ class TestRateLimitRefusalRotates(unittest.TestCase):
         self.assertEqual(calls["n"], 1, "a 400 must not be retried across keys")
 
 
+class TestRefusalIsDistinguishableFromEmptiness(unittest.TestCase):
+    """Callers get None for every failure, so the REASON has to travel too.
+
+    "LLM failed or timed out" covered a tier refusal and a dead model equally.
+    They need opposite responses -- ask for less or wait, versus fix your
+    configuration -- and conflating them is how Exhaustive dropped to extractive
+    in silence.
+    """
+
+    def setUp(self):
+        from utils.config import load_config
+        from utils.llm_client import LLMClient
+        cfg = load_config().to_dict()
+        cfg["groq"] = dict(cfg["groq"])
+        cfg["groq"]["api_key"] = ""
+        cfg["groq"]["api_keys"] = ",".join(f"gsk_stub_key_{i}" for i in range(3))
+        self.client = LLMClient.from_config(cfg)
+        self.client._cache = None
+
+    @staticmethod
+    def _error_413():
+        import httpx
+        import openai
+        request = httpx.Request("POST", "https://api.groq.com/v1/chat/completions")
+        response = httpx.Response(413, request=request, json={"error": {
+            "message": "Request too large ... tokens per minute (TPM): "
+                       "Limit 8000, Requested 9585"}})
+        return openai.APIStatusError("too large", response=response, body=None)
+
+    def test_a_tier_refusal_is_recorded_as_such(self):
+        def operation(_sdk):
+            raise self._error_413()
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            self.client._run_with_rotation(operation, what="chat")
+        self.assertEqual(self.client._last_failure, self.client.FAILURE_RATE_LIMIT)
+
+    def test_a_non_refusal_failure_is_recorded_differently(self):
+        import openai
+
+        def operation(_sdk):
+            raise openai.APITimeoutError(request=None)
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            self.client._run_with_rotation(operation, what="chat")
+        self.assertEqual(self.client._last_failure, self.client.FAILURE_EXHAUSTED)
+
+    def test_a_refusal_that_then_succeeds_is_not_a_failure(self):
+        """Rotation rescued it, so nothing should be reported as failed."""
+        calls = {"n": 0}
+
+        def operation(_sdk):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise self._error_413()
+            return "served"
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            self.assertEqual(
+                self.client._run_with_rotation(operation, what="chat"), "served")
+        self.assertIsNone(self.client._last_failure)
+
+    def test_the_give_up_message_says_it_is_the_tier_not_the_model(self):
+        def operation(_sdk):
+            raise self._error_413()
+
+        with self.assertLogs("docagent.utils.llm_client", level="ERROR") as cm:
+            self.client._run_with_rotation(operation, what="chat")
+        logged = " ".join(cm.output)
+        self.assertIn("TIER declining", logged)
+        self.assertIn("not the model failing", logged)
+
+    def test_summarisation_says_which_cause_applied(self):
+        """The user-facing half: a refusal must not read as a model failure."""
+        from unittest.mock import patch
+        from core.models import SkillInput
+        from core.skill_registry import SkillRegistry
+        import utils.llm_client as lc
+
+        registry = SkillRegistry()
+        registry.discover()
+        from utils.config import load_config
+        skill = registry.instantiate("summarization", config=load_config().to_dict())
+
+        def refusing(self, operation, what=None):
+            self._last_failure = self.FAILURE_RATE_LIMIT
+            return None
+
+        with patch.object(lc.LLMClient, "_run_with_rotation", refusing):
+            with self.assertLogs("docagent.skill.summarization", level="WARNING") as cm:
+                out = skill.safe_execute(SkillInput(data={
+                    "full_text": "A depot report. " * 200,
+                    "doc_type": "normal_document", "domain": "Technical",
+                    "summary_length": "Exhaustive", "summary_tone": "Professional"}))
+
+        self.assertTrue(out.success)
+        self.assertEqual(out.data["method"], "extractive")
+        self.assertIn("REFUSED the request size", " ".join(cm.output))
+        self.assertTrue(any("per-minute token limit" in w for w in out.warnings),
+                        "the user needs to be told a shorter length would fit")
+
+
 class TestBudgetsAtCallSites(unittest.TestCase):
     """Budgets measured against this model rather than guessed."""
 

@@ -242,10 +242,30 @@ class SummarizationSkill(BaseSkill):
                     warnings=skill_warnings,
                     duration_ms=(time.monotonic() - start) * 1000,
                 )
-            self.logger.warning(
-                f"LLM ({self._llm.provider_label}) failed — falling back to extractive."
-            )
-            reason = f"LLM provider ({self._llm.provider_label}) failed or timed out"
+            # Name the cause. "failed or timed out" covered a tier refusal and
+            # a dead model equally, and those need different responses: one is
+            # "ask for less or wait", the other is "your configuration is
+            # wrong". This path is how Exhaustive dropped to extractive in
+            # silence for months.
+            if getattr(self._llm, "_last_failure", None) == \
+                    getattr(self._llm, "FAILURE_RATE_LIMIT", "rate_limit_refused"):
+                self.logger.warning(
+                    f"LLM ({self._llm.provider_label}) REFUSED the request size "
+                    f"on every key — the per-minute tier budget could not fit "
+                    f"prompt + max_tokens. Falling back to extractive. A shorter "
+                    f"summary length would fit; this is not a model failure."
+                )
+                reason = (f"the {self._llm.provider_label} tier refused this "
+                          f"request size (per-minute token limit)")
+                skill_warnings.append(
+                    "Summary length reduced to extractive: the provider's "
+                    "per-minute token limit could not fit this request. "
+                    "Try a shorter summary length.")
+            else:
+                self.logger.warning(
+                    f"LLM ({self._llm.provider_label}) failed — falling back to extractive."
+                )
+                reason = f"LLM provider ({self._llm.provider_label}) failed or timed out"
         else:
             reason = "no LLM provider configured"
 
