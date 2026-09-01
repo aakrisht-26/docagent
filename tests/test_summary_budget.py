@@ -64,10 +64,34 @@ class TestTheClampProtectsWhatAlreadyWorked(unittest.TestCase):
     """
 
     def test_a_preset_at_the_ceiling_is_not_pushed_over_it(self):
-        content = _LENGTH_CONFIGS["Exhaustive"]["max_tokens"]
-        self.assertEqual(_with_reasoning_room(content), content,
-                         "the allowance must not turn 'sometimes works' into "
-                         "'never works'")
+        """Asserted on the rule, not on a preset that happens to sit there.
+
+        Exhaustive used to BE the ceiling, so this test read its value. It is
+        now 6000 and nothing triggers the clamp, but the rule still has to hold
+        for anyone who raises a preset later.
+        """
+        self.assertEqual(_with_reasoning_room(_PROVIDER_REQUEST_CEILING),
+                         _PROVIDER_REQUEST_CEILING,
+                         "the allowance must not push a request past what any "
+                         "key could ever serve")
+
+    def test_every_shipped_preset_now_sits_below_the_ceiling(self):
+        """Exhaustive was lowered from 8000 because it never used the room:
+        its longest measured output was 3783 tokens."""
+        for name, cfg in _LENGTH_CONFIGS.items():
+            with self.subTest(preset=name):
+                self.assertLess(_with_reasoning_room(cfg["max_tokens"]),
+                                _PROVIDER_REQUEST_CEILING + 1)
+
+    def test_exhaustive_is_still_the_largest_budget(self):
+        """Lowering it must not cost it its place in the ordering."""
+        budgets = {n: c["max_tokens"] for n, c in _LENGTH_CONFIGS.items()}
+        self.assertEqual(max(budgets, key=budgets.get), "Exhaustive")
+
+    def test_exhaustive_clears_the_longest_output_ever_measured(self):
+        """3783 tokens on sample_dense_manual. A budget below that would
+        truncate the preset whose whole point is completeness."""
+        self.assertGreater(_LENGTH_CONFIGS["Exhaustive"]["max_tokens"], 3783)
 
     def test_nothing_ever_asks_for_more_than_the_ceiling(self):
         for name, cfg in _LENGTH_CONFIGS.items():
