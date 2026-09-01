@@ -77,9 +77,29 @@ from agents.document_agent import DocumentAgent  # noqa: E402
 from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402
 from utils.config import load_config  # noqa: E402
+from utils.youtube_errors import (  # noqa: E402
+    BLOCKED, explain, is_external_block)
 
 STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag",
           "questionnaire", "empty")
+
+# ── What a run's exit code means ────────────────────────────────────────────
+# A stage that could not run must report neither PASS nor FAIL.
+#
+# The preflight below already established half of this: a PASS has to mean the
+# thing under test ran, which it learned when a retired model turned every
+# stage green while testing nothing. BLOCKED is the other half. FAIL means "the
+# code is wrong", and a red run that means "YouTube rate-limited this IP" is a
+# red run nobody can read — after a few of those, a real failure gets waved
+# through as "probably the bot check again". That is the same disease as a
+# false green, arriving from the other side.
+#
+# So a blocked run is neither. It exits 3, prints BLOCKED, and says in words
+# that the stage verified nothing.
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_USAGE = 2
+EXIT_BLOCKED = 3
 
 
 def _agent_config() -> dict:
@@ -216,6 +236,36 @@ def _require(path: Path) -> Path:
     return path
 
 
+def _blocked_reason(result) -> str:
+    """The reported text if this failure is an external block, else "".
+
+    NARROW ON PURPOSE, in three ways, because the cost of a false BLOCKED is a
+    silently skipped regression:
+
+      1. Only a DOWNLOAD failure qualifies. If the download succeeded and
+         transcription, classification or summarisation then failed, that is
+         our code and stays a FAIL whatever the message says.
+      2. Only signatures on the allowlist in utils/youtube_errors qualify.
+         Unrecognised text classifies as UNKNOWN, which is a FAIL.
+      3. A removed or private video is NOT a block. It is outside the repo, but
+         it means this fixture URL needs replacing, which is work for this
+         project and must stay red.
+    """
+    errors = " ".join(str(e) for e in (result.errors or []))
+    if "extraction failed" not in errors.lower():
+        return ""            # got past the download; any failure after is ours
+    if not is_external_block(errors):
+        return ""
+    # Report what YOUTUBE said, not the explanation this project wrapped around
+    # it. The full message contains both, and echoing our own prose back under
+    # the label "Reported by YouTube" is noise pretending to be evidence.
+    marker = "(underlying error:"
+    if marker in errors:
+        underlying = errors.split(marker, 1)[1].strip()
+        return underlying[:-1].strip() if underlying.endswith(")") else underlying
+    return errors.strip()
+
+
 def run_stage(stage: str) -> int:
     agent = DocumentAgent(config=_agent_config())
     t0 = time.monotonic()
@@ -341,6 +391,18 @@ def run_stage(stage: str) -> int:
     elif stage == "youtube":
         result = agent.run_youtube(YT_URL)
         show(result)
+        if not result.success:
+            blocked = _blocked_reason(result)
+            if blocked:
+                print()
+                print(f"  BLOCKED: [{stage}] YouTube refused this machine, "
+                      f"so the stage did not run.")
+                print(f"           {explain(BLOCKED)}")
+                print(f"           Reported by YouTube: {blocked}")
+                print( "           NOTHING WAS VERIFIED. This is not a pass:")
+                print( "           the YouTube path is untested on this run, "
+                       "and a regression in it would look identical.")
+                return EXIT_BLOCKED
         ok = result.success and check_llm_ran(result, stage)
 
     elif stage == "rag":
@@ -381,10 +443,10 @@ def run_stage(stage: str) -> int:
 
     else:
         print(__doc__)
-        return 2
+        return EXIT_USAGE
 
     print(f"\n[{stage}] wall clock: {time.monotonic() - t0:.1f}s")
-    return 0 if ok else 1
+    return EXIT_PASS if ok else EXIT_FAIL
 
 
 def main(argv: list) -> int:
@@ -392,7 +454,7 @@ def main(argv: list) -> int:
 
     if stage != "all" and stage not in STAGES:
         print(__doc__)
-        return 2
+        return EXIT_USAGE
 
     # Before anything else: a PASS has to mean the thing under test ran.
     preflight()
@@ -403,10 +465,28 @@ def main(argv: list) -> int:
             print(f"\n########## STAGE: {s} ##########")
             results[s] = run_stage(s)
         print("\n" + "#" * 70)
+        labels = {EXIT_PASS: "PASS", EXIT_BLOCKED: "BLOCKED"}
         for s, code in results.items():
-            print(f"  {s:9s} {'PASS' if code == 0 else 'FAIL'}")
+            print(f"  {s:9s} {labels.get(code, 'FAIL')}")
+
+        # A genuine failure outranks a block: if anything is actually broken the
+        # run is red and the block is a footnote. Only when nothing failed does
+        # BLOCKED decide the code — and it is still not 0, because part of the
+        # suite did not run, and reporting that as success is the false green
+        # this harness exists to prevent.
+        blocked = [k for k, c in results.items() if c == EXIT_BLOCKED]
+        failed = [k for k, c in results.items()
+                  if c not in (EXIT_PASS, EXIT_BLOCKED)]
+        if blocked:
+            print()
+            print(f"  {len(blocked)} stage(s) BLOCKED externally and did not "
+                  f"run: {', '.join(blocked)}")
+            print( "  These verified nothing. Re-run from a different network "
+                   "to cover them.")
         print("#" * 70)
-        return 0 if all(c == 0 for c in results.values()) else 1
+        if failed:
+            return EXIT_FAIL
+        return EXIT_BLOCKED if blocked else EXIT_PASS
 
     return run_stage(stage)
 

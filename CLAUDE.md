@@ -195,6 +195,40 @@ p(questionnaire) is 0.01–0.04 on normal documents and 0.96 on the questionnair
 against a 0.571 boundary — the headroom is enormous and the ceiling costs
 nothing.
 
+### The YouTube path can fail for reasons outside this repo
+
+YouTube answers some downloads with "Sign in to confirm you're not a bot". It
+is keyed on **IP reputation**, not on the request: observed on a home
+connection minutes after the same video downloaded fine, and far more frequent
+from shared egress (Streamlit Community Cloud, CI, VPNs, NAT). Documented as a
+known limitation in README and DEPLOYMENT.md.
+
+**The cause used to be destroyed twice on its way out.** The skill replaced
+yt-dlp's text with `"Failed to download audio from YouTube"`, and
+`run_youtube` replaced that with `"YouTube audio extraction failed"` — so a bot
+check, a deleted video, a missing ffmpeg and a genuine bug all reached the user
+and the harness as the same sentence. Both now carry the reason through.
+
+`utils/youtube_errors.classify_download_error()` sorts it into **BLOCKED**
+(transient refusal of this client), **UNAVAILABLE** (the video: removed,
+private, age-gated, geo-blocked), **SETUP** (ffmpeg missing) or **UNKNOWN**.
+
+**UNKNOWN is the default, and that asymmetry is the whole design.** This
+classifier decides whether the e2e harness treats a red `youtube` stage as a
+real failure. Guessing "probably external" on unrecognised text would turn
+every genuine YouTube bug into a skipped stage. A missed BLOCKED signature only
+costs a confusing red run; a false BLOCKED hides a bug silently.
+
+**The harness has a third outcome: `BLOCKED`, exit code 3.** Not PASS (the
+stage verified nothing) and not FAIL (the code is fine). An ambiguous red is
+its own hazard — after a few runs where red meant "the bot check again", a real
+regression gets waved through. `_blocked_reason()` is narrow in three ways:
+only a failure at the **download step** qualifies, only allowlisted signatures
+qualify, and a **removed video does NOT** (that means the fixture needs
+replacing, which is work for this repo and stays red). A genuine failure
+anywhere outranks a block. All of it is mutation-tested in
+`tests/test_youtube_blocked.py`.
+
 ### PDF Parsing Fallback Chain
 
 `PDFReaderSkill` escalates: pdfplumber → PyMuPDF → Tesseract OCR (with Gaussian equalization + adaptive thresholding for scanned docs).

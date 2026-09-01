@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.models import DocumentChunk, ParsedDocument, SkillInput, SkillOutput
+from utils.youtube_errors import classify_download_error, explain
 from skills.base_skill import BaseSkill
 from utils.file_handler import extract_youtube_video_id, is_audio_file, make_temp_dir, cleanup_temp_dir
 from utils.logger import get_logger
@@ -36,6 +37,11 @@ class AudioReaderSkill(BaseSkill):
     Config keys:
         groq (dict) — LLM client configuration (api_keys, model, timeout_seconds, temperature)
     """
+
+    #: Why the last YouTube download failed, as text from yt-dlp, or None.
+    #: A class-level default so the error path can always read it, including
+    #: when the download returned before ever reaching the network.
+    _last_download_error = None
 
     name = "audio_reader"
     description = "Transcribes audio files and YouTube videos using Groq Whisper API."
@@ -92,10 +98,19 @@ class AudioReaderSkill(BaseSkill):
             # Download audio
             audio_file = self._download_youtube_audio(youtube_url)
             if not audio_file:
+                # Say WHY. `classify_download_error` turns YouTube's prose into
+                # one of four causes, and the message names the one that
+                # applies, because "failed to download" is equally true of a
+                # bot-check, a deleted video and a missing ffmpeg — which need
+                # three different responses from whoever reads it.
+                reason = classify_download_error(self._last_download_error)
+                detail = self._last_download_error or "no further detail"
                 return SkillOutput(
                     success=False,
                     data=None,
-                    error="Failed to download audio from YouTube",
+                    error=(f"Failed to download audio from YouTube "
+                           f"[{reason}]: {explain(reason)} "
+                           f"(underlying error: {detail})"),
                 )
 
             # Transcribe
@@ -245,6 +260,9 @@ class AudioReaderSkill(BaseSkill):
         # Use mp3 (not wav) — WAV is uncompressed and will exceed Groq's 25 MB limit
         # for any video longer than ~5 minutes.
         output_template = str(self._temp_dir / "%(title)s")
+        # Cleared per attempt: a reason left over from an earlier download would
+        # be reported against this one.
+        self._last_download_error = None
         self.logger.info(f"Downloading audio from YouTube: {youtube_url}")
 
         # ── Locate ffmpeg before downloading ──────────────────────────
@@ -252,6 +270,7 @@ class AudioReaderSkill(BaseSkill):
         # conversion with a long traceback. Fail early with a clear message.
         ffmpeg_dir = self._find_ffmpeg()
         if not ffmpeg_dir:
+            self._last_download_error = "ffprobe and ffmpeg not found"
             self.logger.error(
                 "ffmpeg not found — it is required to convert YouTube audio to MP3. "
                 "Quick fix (no admin rights needed):  pip install imageio-ffmpeg\n"
@@ -292,6 +311,14 @@ class AudioReaderSkill(BaseSkill):
                 return None
 
         except Exception as exc:
+            # Record the reason as well as logging it. yt-dlp relays YouTube's
+            # own prose, and that prose is the ONLY thing distinguishing "this
+            # IP is being bot-checked right now" from "the video is gone" from
+            # "a real bug in this code". It used to go to the log and nowhere
+            # else, so every one of those reached the user, and the e2e
+            # harness, as the same five words: "Failed to download audio from
+            # YouTube".
+            self._last_download_error = str(exc)
             self.logger.error(f"YouTube download failed: {exc}", exc_info=True)
             return None
 
@@ -345,13 +372,16 @@ class AudioReaderSkill(BaseSkill):
                 timeout=300,
             )
             if completed.returncode != 0:
+                self._last_download_error = completed.stderr.strip()
                 self.logger.error(f"yt-dlp CLI failed: {completed.stderr.strip()}")
                 return False
             return True
         except subprocess.TimeoutExpired:
+            self._last_download_error = "yt-dlp CLI timed out after 300s"
             self.logger.error("yt-dlp CLI timed out after 300s")
             return False
         except Exception as exc:
+            self._last_download_error = str(exc)
             self.logger.error(f"yt-dlp CLI error: {exc}")
             return False
 
