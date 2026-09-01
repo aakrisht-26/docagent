@@ -303,15 +303,29 @@ throttled key and rotates to the next, so this surfaces as `tokens/min headroom
 low` warnings rather than failures — but with a single key it would be a stall.
 Configure several keys via `GROQ_API_KEYS` for anything beyond casual use.
 
+**A summary falls back to extractive with a "per-minute token limit" warning.**
+The tier refused the request size on every key. This is the free tier's rolling
+per-minute allowance, not a broken model — the same request often succeeds a
+minute later. Pick a shorter summary length, or add more keys via
+`GROQ_API_KEYS` so rotation has somewhere to go. The log distinguishes this
+from a model failure explicitly, and says so in those words.
+
 **The "Exhaustive" summary length falls back to extractive.**
-Expected on the free tier, and it predates the reasoning allowance. Groq counts
-prompt + `max_tokens` against the per-minute limit and **refuses** the request
-with a 413 rather than truncating it, so an 8,000-token request cannot fit an
-8,000 TPM key alongside any prompt at all. Measured across eight keys: 5000 is
-accepted by seven, 8000 refused by six, 9024 refused by all eight. Concise,
-Standard and Detailed are unaffected. Either use a key on a higher tier, or pick
-Detailed — lowering the Exhaustive budget would change what the preset means, so
-it has been left alone deliberately.
+**Fixed** — Exhaustive is now 6000 rather than 8000, and a 413 rotates to
+another key instead of ending the call. Both were needed for different reasons.
+
+The rotation is the substantive fix: a 413 is the tier declining a request
+against its ROLLING per-minute allowance, so it describes one key at one moment
+and another key will usually serve it. Previously a single refusal returned
+None and the summary dropped to extractive silently.
+
+The lower value is cleanup: Exhaustive never used 8000. Measured across three
+documents its longest output was 3783 tokens. 6000 keeps it the largest budget
+with ~2200 tokens of headroom while shrinking the request by 976.
+
+**Neither makes acceptance certain.** The window is time-varying, so a large
+document at a long summary length can still be refused on every key at a busy
+moment. It will now say so plainly rather than quietly shortening your summary.
 
 **Summaries are short and flat, and the method reads `extractive`.**
 The LLM is not running. Two causes, and they need different fixes. If the log

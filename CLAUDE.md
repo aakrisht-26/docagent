@@ -104,13 +104,31 @@ for an entire model migration. Domain fell back to `General`, which gates
   does scale with the directive (Standard 34, Exhaustive 902), and it is noisy
   run to run — hence a flat constant clearing the worst observation rather than
   a fitted curve.
-- **Groq refuses, it does not truncate.** prompt + `max_tokens` over the
-  per-minute limit returns 413, so the allowance is clamped to
-  `_PROVIDER_REQUEST_CEILING`. Measured across eight keys: 5000 accepted by
-  seven, 8000 refused by six, 9024 refused by all. "Exhaustive" (8000) already
-  exceeded the free tier before the allowance existed; the clamp stops it being
-  made worse. Whether 8000 is the right number for that preset is a product
-  question, not a bug.
+- **Groq refuses, it does not truncate** — and the limit is a ROLLING WINDOW,
+  not a per-request size cap. prompt + `max_tokens` over what remains of the
+  per-minute allowance returns 413. The same key accepted a 34,072-token
+  request and refused an 8,600-token one minutes later, and two measurement
+  sessions disagreed about which keys refuse what. A refusal describes that key
+  at that instant, not the request.
+
+  **So no preset value is guaranteed to be accepted, and none is claimed to
+  be.** What makes a refusal survivable is that `_run_with_rotation` now
+  rotates to another key on a 413 instead of returning None; previously one
+  unlucky key selection dropped the whole summary to extractive in silence.
+  When every key refuses, the give-up log says it was the tier declining the
+  size rather than the model failing, `_last_failure` carries
+  `FAILURE_RATE_LIMIT`, and the user gets a warning saying a shorter length
+  would fit.
+
+  "Exhaustive" was lowered 8000 → **6000**, not for reliability but because it
+  never used the room: measured across three documents its longest output was
+  3783 tokens. Only Standard comes near its ceiling (3722 against 4024). Above
+  roughly 4000, length is set by the DIRECTIVE and not by `max_tokens` —
+  which is also why the four presets are not reliably ordered by length.
+  Concise is clearly distinct at 5.5–7.7x; Standard, Detailed and Exhaustive
+  overlap within run-to-run variance (Standard measured 15830 chars in one run
+  and 13232 in another). Re-spacing the numbers cannot fix an ordering the
+  numbers do not control.
 
 ### Hybrid Classification
 
