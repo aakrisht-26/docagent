@@ -179,11 +179,20 @@ class TestDocumentClassifierSkill:
         assert result.doc_type == "questionnaire"
         assert result.confidence >= 0.3
 
-    def test_empty_text_returns_normal(self):
+    def test_empty_text_is_not_given_a_verdict(self):
+        """Renamed from `test_empty_text_returns_normal`, which asserted the
+        bug: empty text was classified `normal_document`, and that verdict then
+        rendered as "100% confidence" on a document with zero words in it.
+
+        There is nothing to classify, so the skill reports `unknown`. Fuller
+        cover, including why the agent's is_empty gate makes this unreachable
+        end-to-end, is in tests/test_empty_document.py.
+        """
         skill = self._make_skill()
         out = skill.safe_execute(SkillInput(data={"full_text": ""}))
         assert out.success
-        assert out.data.doc_type == "normal_document"
+        assert out.data.doc_type == "unknown"
+        assert out.data.method == "none"
 
     def test_signals_populated(self):
         skill = self._make_skill()

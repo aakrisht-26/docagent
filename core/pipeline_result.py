@@ -86,14 +86,15 @@ class PipelineResult:
         # classifier's best work. The UI was corrected for this; the downloadable
         # report was missed.
         from core.models import confidence_in_verdict
-        conf_pct = f"{confidence_in_verdict(self.classification_confidence, self.doc_type):.0%}"
+        _conf = confidence_in_verdict(self.classification_confidence, self.doc_type)
+        conf_pct = "not classified" if _conf is None else f"{_conf:.0%} confidence"
 
         lines: List[str] = [
             "# DocAgent — Analysis Report",
             "",
             f"> **File:** `{self.file_name}`  ",
             f"> **Format:** {self.file_type.upper()}  |  **Document Type:** {doc_label}  |  **Domain:** {self.domain}  ",
-            f"> **Classification:** {conf_pct} confidence via *{self.classification_method}*  ",
+            f"> **Classification:** {conf_pct} via *{self.classification_method}*  ",
             f"> **Words:** {self.word_count:,}  |  **Pages / Sheets:** {self.page_count}  ",
             f"> **Processing time:** {self.processing_time_ms / 1000:.2f}s",
             "",

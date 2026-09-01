@@ -44,8 +44,18 @@ class TestConfidenceInVerdict(unittest.TestCase):
                 self.assertAlmostEqual(confidence_in_verdict(0.5, doc_type), 0.5)
 
     def test_it_tolerates_the_shapes_a_reloaded_result_can_carry(self):
+        """A missing SCORE is not a missing VERDICT.
+
+        This test used to also assert `confidence_in_verdict(0.0, "") == 1.0`,
+        under the same heading of tolerating stored shapes. That assertion was
+        the bug, written down and locked in: an empty doc_type means nothing was
+        classified, and calling that "100% confident" is what let a failed
+        YouTube download render as "Normal Document, 100% confidence". Tolerating
+        a shape is not the same as inventing an answer for it. The empty
+        doc_type case now lives in tests/test_empty_document.py, where it
+        asserts None.
+        """
         self.assertEqual(confidence_in_verdict(None, "normal_document"), 1.0)
-        self.assertEqual(confidence_in_verdict(0.0, ""), 1.0)
 
     def test_case_does_not_change_the_answer(self):
         self.assertEqual(confidence_in_verdict(0.672, "Questionnaire"),

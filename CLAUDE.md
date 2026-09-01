@@ -153,6 +153,38 @@ it is persisted in `history.db`, asserted on in tests, and `doc_type` derives
 from it via the 0.4 threshold, so changing its meaning would be a data
 migration rather than a display fix.
 
+**`confidence_in_verdict` IS PARTIAL — it returns `Optional[float]`, and None
+means there is no verdict.** It is defined on `questionnaire` and
+`normal_document` (`CLASSIFIED_DOC_TYPES`) and undefined on everything else.
+Handle the None; do not coerce it to 0.0, which reads as a confident negative
+rather than an absence.
+
+The first version was total, treating anything that was not `questionnaire` as
+`normal_document`. So `unknown` — the doc_type a failed parse or download
+carries — mapped to 1 - 0.0 = **100%, rendered green**, and a failed YouTube
+download displayed "Normal Document · Domain: General · 100% confidence" above
+"0 words · 0 pages". The maths was right at every step; nothing asked whether
+there had been any content to classify.
+
+**Three layers independently invented that verdict**, and all three are fixed:
+the confidence function (above), `_dict_to_pipeline_result`'s reload default,
+and the results banner's `else` branch. Fixing any one alone leaves the other
+two lying. `ui/components/results_view._banner_for()` and
+`confidence_in_verdict` normalise against the same constant so the label and
+the number cannot disagree.
+
+**The classifier's own empty-text branch reports `unknown`, and no end-to-end
+test can reach it** — the agent gates on `ParsedDocument.is_empty` before step
+3. Verified by mutation rather than assumed: reverting that branch leaves the
+`empty` e2e stage green, while reverting `confidence_in_verdict` turns it red.
+It is covered by `tests/test_empty_document.py`, which mutation-tests all four
+layers; the end-to-end case is `tests/e2e/e2e.py::empty` over
+`sample_blank.pdf`.
+
+Two shipped tests had asserted the old behaviour —
+`confidence_in_verdict(0.0, "") == 1.0` under the heading of "tolerating stored
+shapes", and `test_empty_text_returns_normal`. Both were the bug written down.
+
 **The 0.70 ceiling is intended.** With a silent heuristic the blend cannot
 exceed 0.70, so the top of the range is unreachable. That is not a bug to
 normalise away: it makes the LLM conviction needed to reach the 0.4 threshold

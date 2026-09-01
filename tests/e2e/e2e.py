@@ -78,7 +78,8 @@ from core.models import SkillInput  # noqa: E402
 from core.skill_registry import SkillRegistry  # noqa: E402
 from utils.config import load_config  # noqa: E402
 
-STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag", "questionnaire")
+STAGES = ("pdf", "scanned", "excel", "audio", "youtube", "rag",
+          "questionnaire", "empty")
 
 
 def _agent_config() -> dict:
@@ -98,8 +99,10 @@ def show(r) -> None:
     # the label "conf" is what made it look broken across three sessions.
     from core.models import confidence_in_verdict
     _verdict_conf = confidence_in_verdict(r.classification_confidence, r.doc_type)
+    _shown = ("NOT CLASSIFIED" if _verdict_conf is None
+              else f"{_verdict_conf:.0%} confident")
     print(f"  doc_type    : {r.doc_type}  ({r.classification_method}, "
-          f"{_verdict_conf:.0%} confident; p(questionnaire)={r.classification_confidence:.2f})")
+          f"{_shown}; p(questionnaire)={r.classification_confidence:.2f})")
     print(f"  domain      : {r.domain}")
     print(f"  words/pages : {r.word_count} / {r.page_count}")
     print(f"  tables      : {len(r.tables)}")
@@ -292,6 +295,47 @@ def run_stage(stage: str) -> int:
                   f"        The planner gates question_extraction on doc_type, so "
                   f"this is\n        the extraction step failing, not the "
                   f"classifier.")
+            ok = False
+
+    elif stage == "empty":
+        # A document with no content must produce NO VERDICT.
+        #
+        # This is the shape the project keeps rediscovering: a stage with no
+        # input still emitting a confident-looking answer. Here a failed
+        # YouTube download rendered as "Normal Document, Domain: General, 100%
+        # confidence" in green, over zero words. The arithmetic was right --
+        # empty text scores 0 on the heuristic, the LLM never runs -- and
+        # nothing asked whether there had been anything to classify.
+        result = agent.run(_require(SAMPLES / "sample_blank.pdf"))
+        show(result)
+
+        from core.models import confidence_in_verdict
+        verdict_conf = confidence_in_verdict(
+            result.classification_confidence, result.doc_type)
+        print(f"  EMPTY CHECK : success={result.success} "
+              f"words={result.word_count} doc_type={result.doc_type!r} "
+              f"verdict_confidence={verdict_conf!r}")
+
+        ok = True
+        if result.word_count != 0:
+            print(f"  FAIL: [{stage}] the fixture parsed {result.word_count} "
+                  f"words; it is supposed to have none. Has it been "
+                  f"regenerated with content?")
+            ok = False
+        if result.doc_type in ("questionnaire", "normal_document"):
+            print(f"  FAIL: [{stage}] classified as {result.doc_type!r} with no "
+                  f"text to classify. A stage with no input must not produce a "
+                  f"verdict.")
+            ok = False
+        if verdict_conf is not None:
+            print(f"  FAIL: [{stage}] reports {verdict_conf:.0%} confidence in a "
+                  f"verdict it never reached. This is the original bug: "
+                  f"confidence_in_verdict must return None when doc_type is "
+                  f"not a real class.")
+            ok = False
+        if result.success:
+            print(f"  FAIL: [{stage}] reported success on a document with no "
+                  f"extractable text.")
             ok = False
 
     elif stage == "youtube":

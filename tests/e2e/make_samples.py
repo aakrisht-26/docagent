@@ -371,10 +371,29 @@ def build_mixed_topic_pdf() -> Path:
     return out
 
 
+def build_blank_pdf() -> Path:
+    """A structurally valid PDF with a page and no text on it.
+
+    The zero-content fixture. A YouTube download that fails, a scan OCR finds
+    nothing on, and this all reach the pipeline the same way: parse succeeds or
+    fails, `full_text` is empty, and no stage runs. The UI then had nothing to
+    render but rendered a verdict anyway -- "Normal Document, 100% confidence,
+    green" over a document with zero words.
+    """
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.platypus import SimpleDocTemplate, Spacer
+
+    out = SAMPLES / "sample_blank.pdf"
+    doc = SimpleDocTemplate(str(out), pagesize=LETTER)
+    doc.build([Spacer(1, 10)])
+    return out
+
+
 if __name__ == "__main__":
     for path in (build_pdf(), build_excel(), build_audio(), build_scanned_pdf(),
                  build_large_pdf(), build_large_excel(), build_dense_pdf(),
-                 build_questionnaire_pdf(), build_mixed_topic_pdf()):
+                 build_questionnaire_pdf(), build_mixed_topic_pdf(),
+                 build_blank_pdf()):
         if path is not None:
             print(f"  wrote {path.name:24s} {path.stat().st_size / 1024:8.1f} KB")
     print(f"\nSamples in {SAMPLES}")
