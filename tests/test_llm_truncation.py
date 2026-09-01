@@ -148,6 +148,111 @@ class TestHealthyCompletion(_ClientCase):
             self.assertIsNone(self._chat(response))
 
 
+class TestRateLimitRefusalRotates(unittest.TestCase):
+    """A 413 is key-specific and must move to the next key, not end the call.
+
+    It used to fall through to the catch-all: log once, return None. Every
+    caller then saw an indistinguishable empty result, and on the summarisation
+    path that was a silent drop to extractive.
+
+    Reading 413 as a per-request SIZE cap is what made that look correct. It is
+    not one — it is a rolling per-minute consumption window. Measured on the
+    real keys: one key accepted a 34,072-token request and refused an
+    8,600-token one minutes later. A refusal describes that key right now, not
+    the request, which is precisely what rotation is for.
+    """
+
+    def setUp(self):
+        from utils.config import load_config
+        from utils.llm_client import LLMClient
+        cfg = load_config().to_dict()
+        cfg["groq"] = dict(cfg["groq"])
+        cfg["groq"]["api_key"] = ""
+        cfg["groq"]["api_keys"] = ",".join(f"gsk_stub_key_{i}" for i in range(4))
+        self.client = LLMClient.from_config(cfg)
+        self.client._cache = None
+
+    @staticmethod
+    def _error_413():
+        import httpx
+        import openai
+        request = httpx.Request("POST", "https://api.groq.com/v1/chat/completions")
+        response = httpx.Response(413, request=request, json={"error": {
+            "message": "Request too large ... tokens per minute (TPM): "
+                       "Limit 8000, Requested 9585",
+            "type": "tokens", "code": "rate_limit_exceeded"}})
+        return openai.APIStatusError("Request too large", response=response, body=None)
+
+    def test_a_refusal_on_one_key_completes_on_the_next(self):
+        calls = {"n": 0}
+
+        def operation(_sdk):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise self._error_413()
+            return "served"
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            result = self.client._run_with_rotation(operation, what="chat")
+        self.assertEqual(result, "served")
+        self.assertEqual(calls["n"], 2, "it must try a second key, not give up")
+
+    def test_it_advances_the_key_pointer(self):
+        """Retrying the same key would just be refused again."""
+        seen = []
+
+        def operation(_sdk):
+            seen.append(self.client._current_key_idx)
+            if len(seen) == 1:
+                raise self._error_413()
+            return "served"
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            self.client._run_with_rotation(operation, what="chat")
+        self.assertNotEqual(seen[0], seen[1])
+
+    def test_every_key_refusing_gives_up_bounded(self):
+        """If the request really is too large for all of them, stop cleanly."""
+        calls = {"n": 0}
+
+        def operation(_sdk):
+            calls["n"] += 1
+            raise self._error_413()
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            result = self.client._run_with_rotation(operation, what="chat")
+        self.assertIsNone(result)
+        budget = len(self.client.api_keys) + self.client.max_total_retries
+        self.assertLessEqual(calls["n"], budget)
+
+    def test_the_warning_names_the_key_and_the_cause(self):
+        def operation(_sdk):
+            raise self._error_413()
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING") as cm:
+            self.client._run_with_rotation(operation, what="chat")
+        logged = " ".join(cm.output)
+        self.assertIn("413", logged)
+        self.assertIn("per-minute budget", logged)
+
+    def test_other_status_errors_still_end_the_call(self):
+        """Rotation is for capacity, not for a malformed request."""
+        import httpx
+        import openai
+        request = httpx.Request("POST", "https://api.groq.com/v1/chat/completions")
+        response = httpx.Response(400, request=request,
+                                  json={"error": {"message": "bad request"}})
+        calls = {"n": 0}
+
+        def operation(_sdk):
+            calls["n"] += 1
+            raise openai.APIStatusError("bad", response=response, body=None)
+
+        with self.assertLogs("docagent.utils.llm_client", level="WARNING"):
+            self.assertIsNone(self.client._run_with_rotation(operation, what="chat"))
+        self.assertEqual(calls["n"], 1, "a 400 must not be retried across keys")
+
+
 class TestBudgetsAtCallSites(unittest.TestCase):
     """Budgets measured against this model rather than guessed."""
 

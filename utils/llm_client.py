@@ -605,6 +605,9 @@ class LLMClient:
             start working).
           - HTTP 429 / rate limit → transient. Rotate to the next live key and
             back off before retrying.
+          - HTTP 413 → the key has less per-minute budget left than this request
+            needs. Key-specific and time-varying, so rotate immediately to an
+            untried key without backing off.
           - Connection / timeout / 5xx → transient. Retry with backoff.
           - Anything else → not retryable; give up and return None.
 
@@ -757,6 +760,36 @@ class LLMClient:
                     )
                     _rotate()
                     continue  # another key may work; no point backing off
+                if exc.status_code == 413:
+                    # "Request too large ... tokens per minute (TPM)". Read as a
+                    # per-request size cap this looks fatal, so it used to fall
+                    # through to the catch-all below: log once, return None, and
+                    # every caller sees an indistinguishable empty result. On
+                    # the summarisation path that meant a silent drop to
+                    # extractive.
+                    #
+                    # It is not a size cap. It is a ROLLING per-minute
+                    # consumption window, and the same key gives different
+                    # verdicts minutes apart: one key here accepted a
+                    # 34,072-token request and refused an 8,600-token one a few
+                    # minutes later. So a refusal says something about that key
+                    # right now, not about the request — which is exactly the
+                    # situation rotation exists for, and 401 and 5xx were
+                    # already using it.
+                    #
+                    # No backoff: an untried key has its own window and sleeping
+                    # before it is dead time, the same reasoning the 429 handler
+                    # applies. If every key refuses, the loop exhausts its
+                    # attempts and returns None as before.
+                    transient_hits += 1
+                    logger.warning(
+                        f"{what}: {key_label} refused this request size "
+                        f"(413, per-minute budget); trying the next key "
+                        f"[attempt {attempt + 1}/{attempts}]"
+                    )
+                    _rotate()
+                    continue
+
                 if exc.status_code >= 500:
                     transient_hits += 1
                     delay = self._backoff_seconds(attempt)
