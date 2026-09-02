@@ -19,3 +19,7 @@ packages.txt text eol=lf
 *.flac  binary
 *.ogg   binary
 *.webm  binary
+
+# Vendored fonts for the PDF export. Binary — a line-ending rewrite corrupts a
+# TTF exactly as it would a PDF fixture.
+*.ttf   binary

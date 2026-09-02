@@ -24,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core.models import CLASSIFIED_DOC_TYPES
+from ui.components.pdf_fonts import register_pdf_fonts, sanitise_for_pdf
 from core.pipeline_result import PipelineResult
 
 
@@ -66,26 +67,46 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
     DARK = HexColor("#1a1a2a")
     GRAY = HexColor("#64748b")
 
+    # Register a Unicode font before any style is built. The default is base-14
+    # Helvetica, whose WinAnsi encoding is 224 characters, and everything
+    # outside it rendered as a filled box — see ui/components/pdf_fonts.py.
+    FONT, FONT_B, FONT_I, _FONT_BI = register_pdf_fonts()
+
     sw_s  = getSampleStyleSheet()
     title_s = ParagraphStyle("DA_Title",   parent=sw_s["Title"],
+                              fontName=FONT_B,
                               fontSize=22, textColor=NAVY, spaceAfter=6, leading=26)
     h1_s    = ParagraphStyle("DA_H1",      parent=sw_s["Heading1"],
+                              fontName=FONT_B,
                               fontSize=13, textColor=HexColor("#111827"), spaceBefore=16, spaceAfter=4)
     h2_s    = ParagraphStyle("DA_H2",      parent=sw_s["Heading2"],
+                              fontName=FONT_B,
                               fontSize=11, textColor=TEAL, spaceBefore=10, spaceAfter=3)
     body_s  = ParagraphStyle("DA_Body",    parent=sw_s["Normal"],
+                              fontName=FONT,
                               fontSize=font_size, leading=16, spaceAfter=4, textColor=DARK)
     meta_k  = ParagraphStyle("DA_MetaKey", parent=sw_s["Normal"],
-                              fontSize=9, textColor=HexColor("#374151"), fontName="Helvetica-Bold")
+                              fontSize=9, textColor=HexColor("#374151"), fontName=FONT_B)
     meta_v  = ParagraphStyle("DA_MetaVal", parent=sw_s["Normal"],
+                              fontName=FONT,
                               fontSize=9, textColor=GRAY)
     note_s  = ParagraphStyle("DA_Note",    parent=sw_s["Normal"],
+                              fontName=FONT,
                               fontSize=8, textColor=GRAY, spaceAfter=2)
+    cell_s  = ParagraphStyle("DA_Cell",    parent=sw_s["Normal"],
+                              fontName=FONT, fontSize=8.5, leading=11,
+                              textColor=DARK)
+    cellh_s = ParagraphStyle("DA_CellHead", parent=sw_s["Normal"],
+                              fontName=FONT_B, fontSize=8.5, leading=11,
+                              textColor=colors.white)
 
     def md_to_rl(text: str) -> str:
         """Markdown to ReportLab tag converter (**bold**, *italic*, bullets)."""
         if not text:
             return ""
+        # Emoji survive the font swap as boxes because no text font carries
+        # them; this is the only class DejaVu cannot draw. See pdf_fonts.py.
+        text = sanitise_for_pdf(text)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         safe = re.sub(r"(\*\*|__)(.*?)\1", r"<b>\2</b>", safe)
         safe = re.sub(r"(?<![a-zA-Z0-9])(\*|_)([^\*_]+)\1(?![a-zA-Z0-9])", r"<i>\2</i>", safe)
@@ -102,8 +123,68 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
         if is_md:
             safe = md_to_rl(text)
         else:
-            safe = (text or "").replace("&", "&amp;")
+            safe = sanitise_for_pdf(text or "").replace("&", "&amp;")
         return Paragraph(safe, style or body_s)
+
+    def md_table_rows(block: str):
+        """Parse a markdown table block into rows, or return None.
+
+        Requires a pipe row FOLLOWED BY a separator row (|---|---|), which is
+        what distinguishes a table from a line of prose that happens to contain
+        a pipe. Without that check, "Revenue | up 4%" in a sentence would be
+        silently restructured into a one-cell table.
+        """
+        lines = [ln.strip() for ln in block.strip().split("\n") if ln.strip()]
+        if len(lines) < 2:
+            return None
+        if not all(ln.startswith("|") or "|" in ln for ln in lines[:2]):
+            return None
+        sep = lines[1].replace("|", "").replace(":", "").replace("-", "").strip()
+        if sep or "-" not in lines[1] or "|" not in lines[1]:
+            return None
+
+        rows = []
+        for i, ln in enumerate(lines):
+            if i == 1:
+                continue                      # the |---|---| separator
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            if cells:
+                rows.append(cells)
+        if len(rows) < 2:
+            return None
+        width = max(len(r) for r in rows)
+        return [r + [""] * (width - len(r)) for r in rows]
+
+    def make_table(rows):
+        """A real ReportLab table, styled to match the metadata tables below.
+
+        WHY A TABLE AND NOT REFLOWED TEXT. The model emits these constantly and
+        they arrived as one run-on paragraph of pipes — the worst legibility
+        problem in the export. Converting to bullets or key/value pairs was the
+        alternative and it loses the thing a table is for: a cell is addressed
+        by BOTH its row and its column, and prose can only carry one of those.
+        A real table also fixes the reading artefact where adjacent cells ran
+        together ("15 msClassify") when the PDF text was copied, because each
+        cell becomes its own text object rather than a run in one paragraph.
+        """
+        header, body = rows[0], rows[1:]
+        avail = A4[0] - 2 * margin * inch
+        ncols = len(header)
+        data = [[Paragraph(md_to_rl(c), cellh_s) for c in header]] + [
+            [Paragraph(md_to_rl(c), cell_s) for c in r] for r in body
+        ]
+        tbl = Table(data, colWidths=[avail / ncols] * ncols, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",     (0, 0), (-1, 0), HexColor("#1E3A5F")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#f8f9fa"), colors.white]),
+            ("GRID",           (0, 0), (-1, -1), 0.25, HexColor("#d1d5db")),
+            ("VALIGN",         (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",    (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING",   (0, 0), (-1, -1), 5),
+            ("TOPPADDING",     (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+        ]))
+        return tbl
 
     def hr():
         return HRFlowable(width="100%", thickness=0.5, color=HexColor("#d1d5db"), spaceAfter=8)
@@ -150,20 +231,30 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
             lines_in_block = block.split("\n")
             first = lines_in_block[0].strip()
             rest  = "\n".join(lines_in_block[1:]).strip()
+            def emit(text: str) -> None:
+                """Body text, as a table when it is one."""
+                rows = md_table_rows(text)
+                if rows:
+                    story.append(Spacer(1, 4))
+                    story.append(make_table(rows))
+                    story.append(Spacer(1, 6))
+                else:
+                    story.append(p(text, is_md=True))
+
             if first.startswith("## "):
                 story.append(p(first[3:].strip(), h1_s))
                 if rest:
-                    story.append(p(rest, is_md=True))
+                    emit(rest)
             elif first.startswith("### "):
                 story.append(p(first[4:].strip(), h2_s))
                 if rest:
-                    story.append(p(rest, is_md=True))
+                    emit(rest)
             else:
-                story.append(p(block, is_md=True))
+                emit(block)
     story.append(Spacer(1, 10))
 
     if result.questions:
-        story.append(p(f"❓  Extracted Questions  ({len(result.questions)} found)", h1_s))
+        story.append(p(f"Extracted Questions  ({len(result.questions)} found)", h1_s))
         story.append(hr())
         for i, q in enumerate(result.questions, 1):
             story.append(p(f"{i}.   {q}"))
@@ -171,7 +262,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
 
     clean_meta = {k: v for k, v in result.metadata.items() if v and k not in ("engine",)}
     if clean_meta:
-        story.append(p("ℹ️  Document Metadata", h1_s))
+        story.append(p("Document Metadata", h1_s))
         story.append(hr())
         table_data = [["Key", "Value"]] + [
             [Paragraph(str(k), meta_k), Paragraph(str(v)[:120], meta_v)]
@@ -181,7 +272,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
         tbl.setStyle(TableStyle([
             ("BACKGROUND",  (0, 0), (-1, 0),  HexColor("#1E3A5F")),
             ("TEXTCOLOR",   (0, 0), (-1, 0),  colors.white),
-            ("FONTNAME",    (0, 0), (-1, 0),  "Helvetica-Bold"),
+            ("FONTNAME",    (0, 0), (-1, 0),  FONT_B),
             ("FONTSIZE",    (0, 0), (-1, 0),  9),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#f8f9fa"), colors.white]),
             ("GRID",        (0, 0), (-1, -1),  0.25, HexColor("#d1d5db")),
@@ -195,7 +286,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
         story.append(Spacer(1, 10))
 
     if result.skill_timings:
-        story.append(p("⏱  Skill Timing Breakdown", h1_s))
+        story.append(p("Skill Timing Breakdown", h1_s))
         story.append(hr())
         timing_data = [["Skill Component", "Duration (ms)"]]
         for skill, ms in result.skill_timings.items():
@@ -207,7 +298,7 @@ def generate_pdf_bytes(result: PipelineResult, font_size: int = 11, margin: floa
         t_tbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), HexColor("#f3f4f6")),
             ("TEXTCOLOR",  (0, 0), (-1, 0), NAVY),
-            ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME",   (0, 0), (-1, 0), FONT_B),
             ("FONTSIZE",   (0, 0), (-1, 0), 10),
             ("GRID",       (0, 0), (-1, -1), 0.5, HexColor("#e5e7eb")),
             ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
@@ -251,14 +342,20 @@ def generate_filled_pdf(markdown_text: str, margin: float = 0.9) -> bytes:
         topMargin=margin * inch,  bottomMargin=margin * inch,
     )
 
+    # Same Unicode font as the analysis export. This generator had the same
+    # base-14 Helvetica defect, and it is the one that renders a FILLED FORM —
+    # where a dropped character is a wrong answer, not just an ugly one.
+    FONT, FONT_B, _FI, _FBI = register_pdf_fonts()
+
     sw_s  = getSampleStyleSheet()
     from reportlab.lib.colors import HexColor
-    body_s = ParagraphStyle("Body", parent=sw_s["Normal"], fontSize=11, leading=16, spaceAfter=8, textColor=HexColor("#1e1e2e"))
-    h1_s   = ParagraphStyle("H1",   parent=sw_s["Heading1"], fontSize=16, leading=20, spaceAfter=8, spaceBefore=12, textColor=HexColor("#1e1e2e"))
-    h2_s   = ParagraphStyle("H2",   parent=sw_s["Heading2"], fontSize=14, leading=18, spaceAfter=6, spaceBefore=10, textColor=HexColor("#1e1e2e"))
-    h3_s   = ParagraphStyle("H3",   parent=sw_s["Heading3"], fontSize=12, leading=16, spaceAfter=6, spaceBefore=8,  textColor=HexColor("#1e1e2e"))
+    body_s = ParagraphStyle("Body", parent=sw_s["Normal"], fontName=FONT, fontSize=11, leading=16, spaceAfter=8, textColor=HexColor("#1e1e2e"))
+    h1_s   = ParagraphStyle("H1",   parent=sw_s["Heading1"], fontName=FONT_B, fontSize=16, leading=20, spaceAfter=8, spaceBefore=12, textColor=HexColor("#1e1e2e"))
+    h2_s   = ParagraphStyle("H2",   parent=sw_s["Heading2"], fontName=FONT_B, fontSize=14, leading=18, spaceAfter=6, spaceBefore=10, textColor=HexColor("#1e1e2e"))
+    h3_s   = ParagraphStyle("H3",   parent=sw_s["Heading3"], fontName=FONT_B, fontSize=12, leading=16, spaceAfter=6, spaceBefore=8,  textColor=HexColor("#1e1e2e"))
 
     def md_to_rl(text: str) -> str:
+        text = sanitise_for_pdf(text)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         safe = re.sub(r"(\*\*|__)(.*?)\1", r"<b>\2</b>", safe)
         safe = re.sub(r"(?<![a-zA-Z0-9])(\*|_)([^\*_]+)\1(?![a-zA-Z0-9])", r"<i>\2</i>", safe)
