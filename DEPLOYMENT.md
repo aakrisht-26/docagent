@@ -118,6 +118,58 @@ could flip a case silently. Newer wheels exist; parity is worth more than
 novelty here. If you ever change this line, re-run the eval (below) — it is
 free.
 
+### `paddlepaddle` and `paddleocr` are excluded from the deployment
+
+Both lines carry `; sys_platform != "linux"`, so **neither is installed on
+Community Cloud.** That is deliberate, and it costs the deployment nothing.
+
+`StructureRecognitionSkill` gates on a CUDA GPU *before* importing anything
+paddle-shaped: `_cuda_driver_present()` returns False on a GPU-less host, so
+`_detect_gpu()` short-circuits without `import paddle`, and `execute()` returns
+the document untouched long before `_get_engine()` — the only `paddleocr`
+import site — is reached. Community Cloud has no GPU, so PP-Structure was never
+going to run there. Basic table extraction from the parser is unaffected; it
+does not use paddle.
+
+What it saves is not trivial, and it was measured rather than estimated by
+resolving the hosted set both ways against cp312:
+
+| | packages | wheels |
+|---|---|---|
+| with paddle | 130 | ~788 MB |
+| without | 100 | ~503 MB |
+| **saved** | **30** | **~285 MB** |
+
+That is into a **~1 GB container** where out-of-memory kills are already a
+documented failure mode (see below).
+
+**It also removes a second OpenCV from the deployment, which matters more than
+the megabytes.** `paddleocr` pulls `paddlex[ocr-core]`, which depends on
+**`opencv-contrib-python==4.10.0.84`** — installed alongside this project's
+pinned `opencv-python-headless==4.8.1.78`. Two OpenCV distributions at two
+versions, in the environment that runs the OCR path.
+
+`DEPENDENCIES.md` section 1 documents exactly this hazard and records it as
+resolved locally on 2026-07-29: *"Reinstalling any of the three silently changes
+the OpenCV that the OCR path executes against, with no import error to signal
+it"*, and `minAreaRect`'s angle convention changed across the 4.x line while the
+deskew step branches on that angle. **The fix was applied locally and the hosted
+build was quietly reintroducing the problem** — on a deployment that installs
+`tesseract-ocr` and runs scanned PDFs. Excluding paddle leaves one OpenCV, the
+pinned one.
+
+**The marker is a proxy, and an imperfect one.** pip has no marker for "has a
+GPU", so `sys_platform != "linux"` stands in for it. The cost is that a *Linux*
+developer with a GPU stops getting paddle automatically and must install it by
+hand. That path is not supported today regardless — `GPU_SETUP.md` is written
+for Windows and the installer is a `.bat` file.
+
+**They are excluded, not deleted, and that is load-bearing.**
+`install_gpu_paddle.py` refuses to run when the CPU wheel is missing (*"paddlepaddle
+is not installed in THIS Python environment"*), so dropping the lines outright
+would break the documented GPU upgrade path on the machine that actually uses
+it. Local installs on Windows and macOS are unchanged.
+
 ### `packages.txt`
 
 The whole file, and it must stay this literal:
@@ -167,6 +219,81 @@ reader's third-tier fallback for scanned pages with no text layer. Without it a
 scanned PDF yields no text at all. On Linux, `PDFReaderSkill` leaves
 `tesseract_cmd` unset and `pytesseract` finds this on PATH; the hardcoded
 Windows path in that skill sits inside a platform guard and never runs here.
+
+---
+
+## The Python version — pin it to 3.12, in the deploy dialog
+
+**This is not set by any file in this repository.** Community Cloud takes it
+from the **Python version** dropdown in the **Advanced settings** modal when you
+deploy. There is no `runtime.txt` or `.python-version` support — if you skip the
+dropdown you get the platform default, and the default is not stable over time.
+
+> **It cannot be changed after deployment.** Streamlit's own documentation is
+> explicit: *"Python itself can't be changed after deployment."* Changing it
+> means deleting the app and redeploying — so note the subdomain, the GitHub
+> coordinates and the secrets first, and restore the secrets afterwards.
+
+### Why 3.12 and not something newer
+
+**`numpy==1.26.4` is the binding constraint. Its last manylinux wheel is
+`cp312`.** Everything else in the file reaches further — `torch==2.7.1+cpu`
+publishes cp39–cp313, `paddlepaddle` cp39–cp313 — so the intersection of the
+current pins is **cp39 through cp312**, and 3.12 is the top of it.
+
+3.12 is also **exactly the local development version (3.12.7)**, which matters
+more than it looks. The whole reason `torch` is pinned at all (see
+`requirements.txt`) is that four retrieval-eval margins sit between 0.028 and
+0.047, narrow enough that numerical drift could flip a scored case with no
+visible symptom — so the measured environment and the deployed environment are
+supposed to match. Pinning Python to 3.12 preserves that. Pinning it to 3.11
+would also build, but it would introduce a *new* mismatch against the machine
+the eval was measured on, for no benefit.
+
+### What happened on 3.14
+
+The build got Python 3.14.7 and pip failed on three of the pins at once:
+
+| pin | what 3.14 did |
+|---|---|
+| `torch==2.7.1+cpu` | no wheel with a matching ABI tag — 2.7.1 stops at cp313 |
+| `numpy==1.26.4` | no cp314 wheel, so pip fell back to building from source |
+| `paddlepaddle>=2.6.2` | `from versions: none` — no cp314 Linux wheel exists at all |
+
+apt succeeded; `ffmpeg` and `tesseract-ocr` installed fine. This was entirely a
+Python-version problem, and **no change to the pins was needed to fix it.**
+
+### This pin has an expiry date
+
+Community Cloud supports released Python versions that still receive security
+updates, and **force-upgrades apps whose version falls out of support**, which
+may break them. Python 3.12 receives security fixes until **October 2028**.
+
+Before then — or sooner, if you want a newer Python — the move is to raise
+`numpy` first, since it is the constraint, then re-run
+`tests/e2e/rag_eval/run_eval.py` to confirm the retrieval numbers still hold.
+Do not raise the Python version and the pins in the same change; you will not
+know which one moved a score.
+
+### Verifying a pin change before you deploy
+
+A six-minute build is a slow way to discover a missing wheel. Resolve it
+locally first, for the target interpreter and platform:
+
+```bash
+pip install --dry-run --ignore-installed --only-binary=:all: --python-version 3.12 --implementation cp --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 -r requirements.txt
+```
+
+Two traps, both of which produced false results while writing this:
+
+- **Pass `manylinux_2_28_x86_64`.** `torch` 2.7+ ships only that tag, so a
+  resolve restricted to `manylinux2014` reports the pin as unsatisfiable when
+  it is fine.
+- **`--platform` does not affect marker evaluation.** pip evaluates
+  `sys_platform` against the machine you are on, so on Windows the `torch`
+  line is skipped and the `paddle` lines are *included* — the opposite of the
+  hosted install both times. To check the real hosted set, evaluate the markers
+  against `sys_platform == "linux"` yourself and resolve the resulting list.
 
 ---
 

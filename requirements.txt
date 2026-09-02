@@ -10,8 +10,39 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 opencv-python-headless==4.8.1.78
 numpy==1.26.4
-paddlepaddle>=2.6.2
-paddleocr>=2.6.0.3
+# NOT INSTALLED ON LINUX, which is what the hosted deployment runs. Full
+# reasoning in DEPLOYMENT.md; the short version:
+#
+# StructureRecognitionSkill gates on a CUDA GPU before it imports anything
+# paddle-shaped. `_cuda_driver_present()` returns False on a GPU-less host, so
+# `_detect_gpu()` short-circuits WITHOUT importing paddle, and `execute()`
+# returns the document untouched before `_get_engine()` (the only paddleocr
+# import site, line ~192) is ever reached. Community Cloud has no GPU, so on
+# the deployment this is 30 packages and ~285 MB of wheels (measured by
+# resolving the hosted set both ways) that are downloaded, unpacked, and never
+# imported — into a ~1 GB container where out-of-memory kills are already a
+# documented failure mode.
+#
+# It also removes a SECOND OpenCV. paddleocr -> paddlex[ocr-core] depends on
+# opencv-contrib-python==4.10.0.84, which lands beside the pinned
+# opencv-python-headless==4.8.1.78. DEPENDENCIES.md section 1 records that
+# hazard — a silent OpenCV swap changes OCR output with no import error,
+# because minAreaRect's angle convention moved across 4.x and the deskew step
+# branches on it — and records it as fixed locally on 2026-07-29. The hosted
+# build was reintroducing it.
+#
+# The marker is `!= "linux"` because that is the only axis pip can express;
+# there is no marker for "has a GPU". The cost is that a LINUX developer with a
+# GPU no longer gets paddle automatically and must install it by hand. That
+# path is not currently supported anyway: GPU_SETUP.md is written for Windows
+# and install_gpu_paddle.bat is a Windows batch file.
+#
+# Do NOT drop these lines entirely. install_gpu_paddle.py refuses to run when
+# the CPU wheel is absent ("paddlepaddle is not installed in THIS Python
+# environment"), so removing them outright would break the documented GPU
+# upgrade path on the machine that actually uses it.
+paddlepaddle>=2.6.2 ; sys_platform != "linux"
+paddleocr>=2.6.0.3 ; sys_platform != "linux"
 
 # Excel / CSV Parsing
 openpyxl>=3.1.2
