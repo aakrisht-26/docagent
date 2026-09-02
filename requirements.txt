@@ -18,9 +18,18 @@ numpy==1.26.4
 # `_detect_gpu()` short-circuits WITHOUT importing paddle, and `execute()`
 # returns the document untouched before `_get_engine()` (the only paddleocr
 # import site, line ~192) is ever reached. Community Cloud has no GPU, so on
-# the deployment this is 195 MB of wheel, plus the paddlex tree, that is
-# downloaded, unpacked, and never imported — into a ~1 GB container where
-# out-of-memory kills are already a documented failure mode.
+# the deployment this is 30 packages and ~285 MB of wheels (measured by
+# resolving the hosted set both ways) that are downloaded, unpacked, and never
+# imported — into a ~1 GB container where out-of-memory kills are already a
+# documented failure mode.
+#
+# It also removes a SECOND OpenCV. paddleocr -> paddlex[ocr-core] depends on
+# opencv-contrib-python==4.10.0.84, which lands beside the pinned
+# opencv-python-headless==4.8.1.78. DEPENDENCIES.md section 1 records that
+# hazard — a silent OpenCV swap changes OCR output with no import error,
+# because minAreaRect's angle convention moved across 4.x and the deskew step
+# branches on it — and records it as fixed locally on 2026-07-29. The hosted
+# build was reintroducing it.
 #
 # The marker is `!= "linux"` because that is the only axis pip can express;
 # there is no marker for "has a GPU". The cost is that a LINUX developer with a

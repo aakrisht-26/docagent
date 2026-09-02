@@ -131,9 +131,32 @@ import site — is reached. Community Cloud has no GPU, so PP-Structure was neve
 going to run there. Basic table extraction from the parser is unaffected; it
 does not use paddle.
 
-What it saves is not trivial: **a 195 MB `paddlepaddle` wheel plus the
-`paddlex` dependency tree**, downloaded and unpacked into a **~1 GB container**
-where out-of-memory kills are already a documented failure mode (see below).
+What it saves is not trivial, and it was measured rather than estimated by
+resolving the hosted set both ways against cp312:
+
+| | packages | wheels |
+|---|---|---|
+| with paddle | 130 | ~788 MB |
+| without | 100 | ~503 MB |
+| **saved** | **30** | **~285 MB** |
+
+That is into a **~1 GB container** where out-of-memory kills are already a
+documented failure mode (see below).
+
+**It also removes a second OpenCV from the deployment, which matters more than
+the megabytes.** `paddleocr` pulls `paddlex[ocr-core]`, which depends on
+**`opencv-contrib-python==4.10.0.84`** — installed alongside this project's
+pinned `opencv-python-headless==4.8.1.78`. Two OpenCV distributions at two
+versions, in the environment that runs the OCR path.
+
+`DEPENDENCIES.md` section 1 documents exactly this hazard and records it as
+resolved locally on 2026-07-29: *"Reinstalling any of the three silently changes
+the OpenCV that the OCR path executes against, with no import error to signal
+it"*, and `minAreaRect`'s angle convention changed across the 4.x line while the
+deskew step branches on that angle. **The fix was applied locally and the hosted
+build was quietly reintroducing the problem** — on a deployment that installs
+`tesseract-ocr` and runs scanned PDFs. Excluding paddle leaves one OpenCV, the
+pinned one.
 
 **The marker is a proxy, and an imperfect one.** pip has no marker for "has a
 GPU", so `sys_platform != "linux"` stands in for it. The cost is that a *Linux*

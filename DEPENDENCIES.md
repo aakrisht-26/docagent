@@ -15,6 +15,14 @@ commands to resolve them.
 
 ## 1. Three conflicting OpenCV distributions — ✅ RESOLVED
 
+> **Resolved on 2026-07-29 LOCALLY. The hosted build was still reintroducing
+> it until the paddle exclusion** — `paddleocr` pulls `paddlex[ocr-core]`, which
+> depends on `opencv-contrib-python==4.10.0.84`, so a Community Cloud container
+> installed that beside the pinned `opencv-python-headless==4.8.1.78`. Found by
+> resolving the hosted set against cp312; see DEPLOYMENT.md. Both paddle lines
+> are now `sys_platform != "linux"`, so the deployment has one OpenCV again.
+> Fixing an environment locally does not fix the one you ship.
+>
 > **Resolved on 2026-07-29.** The commands in this section were run. The
 > environment now has a single OpenCV distribution:
 >
