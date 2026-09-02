@@ -397,7 +397,7 @@ def _render_header() -> None:
     st.markdown("""
     <div class="hero-header fade-in">
       <h1 class="hero-title">DocAgent</h1>
-      <p class="hero-subtitle">Intelligent document analysis</p>
+      <p class="hero-subtitle">Turn a document, spreadsheet or recording into something you can question</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -904,7 +904,7 @@ def main() -> None:
         # rather than prose, and because it uses the width the layout now has.
         st.markdown("""
         <div class="empty-state fade-in" style="padding: 2.5rem 1rem 1.5rem">
-          <h3>Turn a document, spreadsheet or recording into something you can question</h3>
+          <h3>What happens when you upload something</h3>
           <p>Everything runs through the same six-stage pipeline: parse, clean,
           classify, find structure, summarise, extract questions.</p>
         </div>
