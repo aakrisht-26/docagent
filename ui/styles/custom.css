@@ -419,6 +419,60 @@ html, body, [class*="css"] {
   white-space: nowrap;
 }
 
+/* ── Summary tables, rules and inline code ────────────
+   The summariser emits markdown tables constantly. Before these rules the
+   renderer had no case for them and they arrived as one run-on paragraph of
+   pipes -- the worst legibility problem on the page, and the same defect the
+   PDF export had. Tokens only, so both themes follow automatically. */
+.summary-table-wrap {
+  overflow-x: auto;            /* a wide table scrolls itself, never the page */
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.summary-table th {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.summary-table td {
+  padding: 7px 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.summary-table tbody tr:last-child td { border-bottom: none; }
+.summary-table tbody tr:hover td { background: var(--bg-hover); }
+.summary-table td strong { color: var(--text-primary); }
+
+/* The model separates sections with `---`, which used to print literally. */
+.summary-rule {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 18px 0;
+}
+
+.summary-para em, .summary-bullet em { color: var(--text-primary); }
+.summary-para code, .summary-bullet code, .summary-table code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.78em;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--text-primary);
+}
+
 /* ── Chat bubbles ───────────────────────────────────────── */
 .chat-bubble-user {
   background: var(--accent-soft);

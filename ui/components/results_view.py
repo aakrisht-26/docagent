@@ -386,11 +386,85 @@ def generate_filled_pdf(markdown_text: str, margin: float = 0.9) -> bytes:
 
 # ── Summary rendering helpers ─────────────────────────────────────────────────
 
+def _inline_md(text: str) -> str:
+    """Inline markdown the summariser actually emits, in one place.
+
+    Previously bold was applied in the bullet branches and citations only in
+    the paragraph branch, so a citation inside a bullet stayed raw and italics
+    were handled nowhere at all. One helper, used by every branch.
+
+    ORDER MATTERS. Citations run first because the model wraps them in
+    asterisks — `*[Source: Page 1]*` — and if italics ran first that would
+    become `<em>[Source: Page 1]</em>` and the badge would never match. Bold
+    runs before italic so `**x**` is consumed before the single-asterisk rule
+    can see it.
+    """
+    if not text:
+        return ""
+    # Citations. The current model emits *[Source: Page 1]*; the previous one
+    # emitted [Source: Page 1]. Accept both, and swallow the asterisks either
+    # way — matching only the bare form is why the badge rendered with stray
+    # `*` on both sides.
+    text = re.sub(r"\*?\[Source:\s*(Pages?[^\]]*?)\s*\]\*?",
+                  r'<span class="citation-tag">[\1]</span>', text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<![a-zA-Z0-9*])\*([^*\n]+?)\*(?![a-zA-Z0-9*])",
+                  r"<em>\1</em>", text)
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    return text
+
+
+def _is_table_separator(line: str) -> bool:
+    """True for the |---|:--:|---| row that makes a table a table.
+
+    Requiring it is what stops an ordinary sentence containing a pipe from
+    being restructured into a one-cell table.
+    """
+    stripped = line.strip()
+    if "|" not in stripped or "-" not in stripped:
+        return False
+    return not stripped.replace("|", "").replace(":", "").replace("-", "").strip()
+
+
+def _split_row(line: str) -> list:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _table_html(rows: list) -> str:
+    """A real table.
+
+    Styled by `.summary-table` against theme tokens, so it is correct in both
+    themes without a second rule — the stylesheet's own instruction is that
+    every colour is a role and never a literal.
+    """
+    header, body = rows[0], rows[1:]
+    head = "".join(f"<th>{_inline_md(c)}</th>" for c in header)
+    out = ['<div class="summary-table-wrap"><table class="summary-table">',
+           f"<thead><tr>{head}</tr></thead><tbody>"]
+    for row in body:
+        cells = "".join(f"<td>{_inline_md(c)}</td>" for c in row)
+        out.append(f"<tr>{cells}</tr>")
+    out.append("</tbody></table></div>")
+    return "".join(out)
+
+
 def _render_summary_structured(summary: str) -> None:
     """
     Render a summary string with rich formatting.
-    Detects markdown headings, bullets, and key-value lines,
-    and renders each with appropriate Streamlit components.
+
+    Handles the markdown the CURRENT model emits. The previous version was
+    written for an earlier one and understood headings, `- ` bullets and
+    `**bold**` only, so three things the model now emits constantly fell
+    through to a branch that printed them verbatim:
+
+      - markdown TABLES arrived as one run-on paragraph of pipes, which is the
+        same defect the PDF export had;
+      - `---` printed as three dashes rather than a rule;
+      - `*italic*` kept its asterisks, italics being unsupported entirely.
+
+    And the citation badge matched only the bare `[Source: Page 1]` form, so
+    the asterisk-wrapped form the model emits now produced a correct badge with
+    a stray `*` on either side of it.
     """
     if not summary:
         _html("""
@@ -401,7 +475,7 @@ def _render_summary_structured(summary: str) -> None:
         return
 
     lines = summary.split("\n")
-    buffer: list[str] = []
+    buffer: list = []
 
     def flush():
         if buffer:
@@ -410,47 +484,58 @@ def _render_summary_structured(summary: str) -> None:
                 _html(f'<div class="summary-para fade-in">{chunk}</div>')
             buffer.clear()
 
-    for line in lines:
-        stripped = line.strip()
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
 
-        # Markdown H1 → document title (rendered once, prominently)
-        if stripped.startswith("# "):
+        # ── Tables ────────────────────────────────────────────────────
+        # The separator row is checked by lookahead BEFORE committing to a
+        # table, so prose containing a pipe is left as prose.
+        if (stripped.startswith("|") and i + 1 < len(lines)
+                and _is_table_separator(lines[i + 1])):
             flush()
-            title = stripped[2:].strip()
-            _html(f'<div class="summary-title">{title}</div>')
-        # Markdown H2/H3 headings → section dividers
+            rows = [_split_row(stripped)]
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                rows.append(_split_row(lines[j]))
+                j += 1
+            width = max(len(r) for r in rows)
+            _html(_table_html([r + [""] * (width - len(r)) for r in rows]))
+            i = j
+            continue
+
+        # ── Horizontal rule ───────────────────────────────────────────
+        if stripped in ("---", "***", "___"):
+            flush()
+            _html('<hr class="summary-rule" />')
+
+        # ── Headings ──────────────────────────────────────────────────
+        elif stripped.startswith("# "):
+            flush()
+            _html(f'<div class="summary-title">{_inline_md(stripped[2:].strip())}</div>')
         elif stripped.startswith("## "):
             flush()
-            heading = stripped[3:].strip()
-            _html(f'<div class="summary-section-heading">{heading}</div>')
+            _html(f'<div class="summary-section-heading">'
+                  f'{_inline_md(stripped[3:].strip())}</div>')
         elif stripped.startswith("### "):
             flush()
-            heading = stripped[4:].strip()
-            _html(f'<div class="summary-subsection-heading">{heading}</div>')
-        # Bullet points → render as styled list items
+            _html(f'<div class="summary-subsection-heading">'
+                  f'{_inline_md(stripped[4:].strip())}</div>')
+
+        # ── Lists ─────────────────────────────────────────────────────
         elif stripped.startswith(("- ", "• ", "* ")):
-            text = stripped[2:].strip()
-            # Bold leading label (e.g. "**Key Finding:** …")
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
-            buffer.append(f'<div class="summary-bullet">◆ {text}</div>')
-        # Numbered list
+            buffer.append(f'<div class="summary-bullet">◆ '
+                          f'{_inline_md(stripped[2:].strip())}</div>')
         elif re.match(r"^\d+\.\s", stripped):
-            text = re.sub(r"^\d+\.\s*", "", stripped)
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
-            buffer.append(f'<div class="summary-bullet">◆ {text}</div>')
-        # Blank line → flush paragraph
+            body = re.sub(r"^\d+\.\s*", "", stripped)
+            buffer.append(f'<div class="summary-bullet">◆ '
+                          f'{_inline_md(body)}</div>')
+
         elif not stripped:
             flush()
         else:
-            # Inline bold
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", stripped)
-            # Feature 5: render citation tags as styled badges
-            text = re.sub(
-                r'\[Source: (Pages? [^\]]+)\]',
-                r'<span class="citation-tag">[\1]</span>',
-                text,
-            )
-            buffer.append(text)
+            buffer.append(_inline_md(stripped))
+        i += 1
 
     flush()
 
@@ -558,6 +643,43 @@ def _banner_for(doc_type: str) -> tuple:
     if normalised == "questionnaire":
         return "Questionnaire / Form", "questionnaire"
     return "Normal Document", "normal"
+
+
+def summary_method_label(method: str) -> str:
+    """How the summary was produced, in words a reader recognises.
+
+    The badge used to show the raw identifier title-cased -- "Llm Single Groq"
+    -- which names an internal code path and reads as unfinished. The method
+    string carries a provider suffix (llm_single_groq, llm_map_reduce_groq), so
+    this matches on the prefix rather than enumerating providers.
+
+    The raw value is not thrown away: callers put it in a tooltip, because it
+    is genuinely useful when a summary looks wrong.
+    """
+    m = (method or "").lower()
+    if m.startswith("llm_map_reduce"):
+        return "AI summary, section by section"
+    if m.startswith("llm"):
+        return "AI summary"
+    if m.startswith("extractive"):
+        return "Extractive fallback"
+    if m in ("skipped", "none", ""):
+        return "Not summarised"
+    return method.replace("_", " ").capitalize()
+
+
+def classification_method_label(method: str) -> str:
+    """Same treatment for the classifier, which showed `hybrid_groq` raw."""
+    m = (method or "").lower()
+    if m.startswith("hybrid"):
+        return "heuristics + AI"
+    if m.startswith("llm"):
+        return "AI"
+    if m.startswith("heuristic"):
+        return "heuristics only"
+    if m in ("none", ""):
+        return "not classified"
+    return method.replace("_", " ")
 
 
 def _confidence_text(result: Any) -> str:
@@ -684,7 +806,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
           <span style="font-weight:400;opacity:.7;font-size:0.85rem;margin-left:.5rem">Domain: {result.domain}</span>
         </div>
         <div style="font-size:0.75rem;opacity:.65;font-weight:400;margin-top:2px">
-          {conf_pct} · {result.classification_method}
+          {conf_pct} · {classification_method_label(result.classification_method)}
         </div>
       </div>
     </div>
@@ -715,36 +837,32 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
 
 
     # ── Stats row ──────────────────────────────────────────────────────
+    # Questions and Tables are dropped when the document has none. A normal
+    # document never has either, so two of six tiles read "0" on most runs —
+    # absence rendered as data, in the most prominent row on the page. Words,
+    # pages, characters and processing time are always shown because zero is a
+    # real and interesting answer for them.
     char_count = len(result.raw_text)
     char_label = f"{char_count / 1000:.1f}k" if char_count >= 1000 else str(char_count)
-    _html(f"""
-    <div class="stat-grid fade-in">
-      <div class="stat-card">
-        <div class="stat-value">{result.word_count:,}</div>
-        <div class="stat-label">Words</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{result.page_count}</div>
-        <div class="stat-label">Pages / Sheets</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{len(result.questions)}</div>
-        <div class="stat-label">Questions</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{len(result.tables)}</div>
-        <div class="stat-label">Tables</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{char_label}</div>
-        <div class="stat-label">Characters</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{result.processing_time_ms / 1000:.1f}s</div>
-        <div class="stat-label">Processing</div>
-      </div>
-    </div>
-    """)
+
+    tiles = [
+        (f"{result.word_count:,}", "Words"),
+        (f"{result.page_count}", "Pages / Sheets"),
+    ]
+    if result.questions:
+        tiles.append((f"{len(result.questions)}", "Questions"))
+    if result.tables:
+        tiles.append((f"{len(result.tables)}", "Tables"))
+    tiles.append((char_label, "Characters"))
+    tiles.append((f"{result.processing_time_ms / 1000:.1f}s", "Processing"))
+
+    cards = "".join(
+        f'<div class="stat-card">'
+        f'<div class="stat-value">{value}</div>'
+        f'<div class="stat-label">{label}</div></div>'
+        for value, label in tiles
+    )
+    _html(f'<div class="stat-grid fade-in">{cards}</div>')
 
     # ── Exports ────────────────────────────────────────────────────────
     # Built here (the PDF render is the slow part) but drawn after the tabs,
@@ -776,8 +894,9 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
     # ── Tab 1: Summary ─────────────────────────────────────────────────
     with tabs[0]:
         if result.summary:
-            method_label = result.summary_method.replace("_", " ").title()
-            _html(f'<span class="badge badge-blue" style="margin-bottom:.75rem">{method_label}</span>')
+            _html(f'<span class="badge badge-blue" style="margin-bottom:.75rem" '
+                  f'title="{result.summary_method}">'
+                  f'{summary_method_label(result.summary_method)}</span>')
             _render_summary_structured(result.summary)
 
             # ── Read-aloud speaker button (modulated Web Speech API) ──────
