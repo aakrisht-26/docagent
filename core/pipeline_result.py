@@ -106,6 +106,27 @@ class PipelineResult:
             "",
         ]
 
+        # Key fields sit ABOVE the questions and BELOW the summary, mirroring
+        # the results view. The extraction was previously absent from this
+        # export entirely -- it reached a reader only through the JSON download,
+        # which is not a document anyone reads.
+        if self.extracted_entities:
+            lines += ["---", "", "## Key fields", "",
+                      "| Field | Value |", "|---|---|"]
+            for key, value in self.extracted_entities.items():
+                if isinstance(value, (list, tuple)):
+                    shown = "; ".join(str(v) for v in value if str(v).strip())
+                elif isinstance(value, dict):
+                    shown = "; ".join(f"{k}: {v}" for k, v in value.items())
+                else:
+                    shown = str(value)
+                shown = shown.strip().replace("|", "\\|")
+                shown = " ".join(shown.split())
+                if shown:
+                    label = key.replace("_", " ").strip().capitalize()
+                    lines.append(f"| {label} | {shown} |")
+            lines.append("")
+
         if self.questions:
             lines += [
                 "---",

@@ -253,6 +253,110 @@ replacing, which is work for this repo and stays red). A genuine failure
 anywhere outranks a block. All of it is mutation-tested in
 `tests/test_youtube_blocked.py`.
 
+### Structured extraction, and what its eval does and does not tell you
+
+`StructuredExtractionSkill` fills a domain schema (Financial, Legal,
+Healthcare, Research, General; 6-7 fields each) chosen from
+`ClassificationResult.domain` via `_DOMAIN_ALIASES`.
+
+Score it with `python tests/e2e/extraction_eval/run_eval.py`, `--regex` for the
+fallback path, `--verbose` for per-field detail. 28 scored fields over five
+documents, one per schema. Full method and per-case reasoning in
+`tests/e2e/extraction_eval/RESULTS.md`.
+
+**Measured: LLM path 27-28/28 across five runs; regex fallback 0/28.**
+
+**THE CORRECTNESS METRIC SATURATES, and that is the honest reading.** The
+fixtures carry deliberate near misses -- prior-year revenue beside this year's,
+a guarantor and two law firms beside the contracting parties, the signature date
+beside the effective date, the arbitration seat beside the governing law, cited
+authors beside the paper's own, a ruled-out differential and family history
+beside the diagnoses, a discontinued drug beside the current ones -- and the LLM
+path rejects essentially all of them. Read the number as a REGRESSION GUARD with
+no headroom, not as a score to improve. What still discriminates is the path:
+28 versus 0 is what a silent fallback costs.
+
+**The regex fallback cannot produce a valid field for most schemas.** It emits
+only `dates`, `monetary_values`, `percentages`, `emails`, and the caller keeps
+only keys that are fields of the selected schema: Financial 0/4, Legal 0/4,
+Research 0/4, Healthcare 1/4, General 2/4. `percentages` and `emails` are
+fields of no schema and are always discarded. It is not a degraded mode, it is
+an elaborate way of returning `{}` while reporting `success=True`.
+
+**FIXED, and the fixes are the interesting part.**
+
+*The budget was sized against the reply.* `max_tokens=1500`, while measurement
+across eight documents showed content flat at 166-261 tokens and REASONING
+scaling 231->1278 with the prompt. `sample_dense_manual.pdf` needed 1539 and
+truncated by 39 tokens, returning nothing and reporting success -- the same bug
+as `_llm_classify`'s 80 tokens for a 25-token reply. It is now
+`_CONTENT_TOKENS` 400 + `_REASONING_ALLOWANCE` 2048 = **2448**, each sized from
+its own measurement. Summarisation's 1024 allowance was sized against its worst
+reasoning of 902 and is NOT reusable here. Measured effect: that document went
+from 0 fields to 5 of 6. The cost is a likelier 413, which is survivable
+because keys rotate and the caller now names the failure.
+
+*Four failures shared one method name.* Truncation, rate-limit refusal, an
+unusable reply and no-LLM-configured all became `regex_fallback` with
+`success=True`. They are now `unavailable_truncated`,
+`unavailable_rate_limited`, `unavailable_llm_failed`, `unavailable_unparseable`
+and `unavailable_no_llm`, each with its own sentence, and **`success=False`**
+when nothing was produced -- a stage that produced nothing must not look like it
+worked. `_diagnose()` reads `_last_finish_reason` and `_last_failure`, the same
+distinction the 413 handling makes for summarisation. The warning is carried
+into `PipelineResult.warnings` by the agent, so it does not stop at the log.
+
+*The regex path is a supplement, not a fallback.* It still runs, and on a
+General-schema document with ISO dates or currency amounts it recovers real
+fields (`regex_partial`, `success=True`, with a warning saying what was lost).
+It is never allowed to stand in for the LLM path on a typed schema, where it
+cannot produce a field at all. `tests/test_structured_extraction.py` pins that
+structural claim, so if the regexes ever grow to serve those schemas the test
+says the demotion should be revisited.
+
+**Five of the eval's own expectations were wrong on the first pass and all five
+flattered the eval**, which is the same direction this project has been caught
+by four times. Four asserted semantics the schema never stated (the General
+schema's fields are enumerative -- "named organisations" is satisfied by any
+organisation named), and one demanded the raw MRN from a field whose schema says
+*anonymise*. The matcher is borrowed from `rag_eval` rather than rewritten, so
+it inherits those corrections instead of rediscovering them.
+
+**THE STAGE COSTS 54% OF A FREE-TIER MINUTE** -- 1905 prompt + 2448 budget =
+4353 tokens, at 2.3-25.6s, competing with summarisation for the same window.
+Its output used to be rendered nowhere: `grep -rn extracted_entities ui/`
+returned a store and a restore, and `to_markdown()` omitted it, so a user met it
+only by downloading the JSON. Two changes make that cost defensible.
+
+**It is displayed.** A compact "Key fields" table above the summary prose in the
+Summary tab, and a table in the markdown export, both shown only when there are
+fields. Above the prose because these are LOOKUP values and the summary is
+narrative: for a contract, `parties`, `effective_date`, `termination_date` and
+`governing_law` as four addressable rows beat the same facts spread through
+seven thousand characters, even though the prose does mention them.
+
+**The General schema is gated out**, and that was checked before it was done
+rather than argued from the schema wording. Read against a real General summary,
+the extraction's values -- the amounts, the sites, the people, the consultancy --
+were already in the prose, with comparisons and interpretation the field list
+does not carry. So the call bought a subset of the summary and the planner now
+skips it.
+
+**Measured, not estimated: 4 of 11 documents resolve to General, so the gate
+removes 36% of extraction calls** (I had estimated "roughly half").
+
+**What the gate costs, stated plainly.** Domain classification is imperfect and
+the gate makes that consequential: `research_paper` classifies as `Technical`,
+resolves to General, and is now skipped entirely rather than getting a General
+field list -- a document whose true domain is typed but which the classifier
+misroutes loses extraction altogether. `DOCAGENT_EXTRACT_GENERAL=true` restores
+the old behaviour without a code change.
+
+`tests/test_extraction_eval.py` guards the instrument: that the ceiling is
+reachable, that every distractor actually appears in its document (one did not
+and could never have fired), and that loading the eval does not leave
+`fixture_content` shadowed for other tests.
+
 ### PDF Parsing Fallback Chain
 
 `PDFReaderSkill` escalates: pdfplumber → PyMuPDF → Tesseract OCR (with Gaussian equalization + adaptive thresholding for scanned docs).

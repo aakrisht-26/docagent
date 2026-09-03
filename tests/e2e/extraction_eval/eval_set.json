@@ -1,0 +1,313 @@
+{
+  "_comment": [
+    "Expected values for the structured-extraction eval.",
+    "",
+    "Each case names a fixture, the domain that selects the schema, and the",
+    "fields that are scored. A field is CORRECT only when every fragment in",
+    "must_contain is present AND no fragment in must_not_contain is.",
+    "",
+    "must_not_contain is the distractor list, and it is what stops the metric",
+    "saturating. Every entry is a near miss that exists in the same document:",
+    "last year's revenue, the signature date rather than the effective date,",
+    "the arbitration seat rather than the governing law, a cited paper's",
+    "authors, a family-history condition, a discontinued drug. An answer that",
+    "hedges by listing candidates fails, because listing candidates is not",
+    "extraction.",
+    "",
+    "Fields NOT listed here are unscored. Some schema fields have no answer in",
+    "a given fixture (a quarterly report has no `guidance` beyond the outlook",
+    "line, a discharge summary has no `patient_id` worth asserting beyond the",
+    "MRN) and asserting on them would measure the fixture, not the extractor."
+  ],
+  "cases": [
+    {
+      "id": "fin-01",
+      "fixture": "fin_quarterly",
+      "domain": "Financial",
+      "fields": {
+        "revenue": {
+          "must_contain": [
+            "412.7"
+          ],
+          "must_not_contain": [
+            "388.1",
+            "401.2",
+            "430",
+            "445",
+            "96.4",
+            "214.5"
+          ],
+          "note": "388.1 is prior year, 401.2 is Q2, 430-445 is guidance, 96.4 and 214.5 are segments"
+        },
+        "net_income": {
+          "must_contain": [
+            "38.9"
+          ],
+          "must_not_contain": [
+            "61.2",
+            "180.3"
+          ],
+          "note": "61.2 is operating income, 180.3 is gross profit"
+        },
+        "eps": {
+          "must_contain": [
+            "2.14"
+          ],
+          "must_not_contain": [],
+          "note": "2.14 is diluted. 2.21 (basic) is NOT treated as a distractor: the schema says only 'Earnings per share' and does not name a basis, so an answer giving both, labelled, is correct. Requiring its absence scored a preference the system was never told."
+        },
+        "fiscal_period": {
+          "must_contain": [],
+          "must_contain_any": [
+            [
+              "q3",
+              "third quarter"
+            ]
+          ],
+          "must_not_contain": [
+            "second quarter"
+          ],
+          "note": "Either spelling is correct. The model answered 'Third Quarter, Fiscal Year 2025' and the first version of this case called it wrong for not saying 'Q3', which scored format. 'q2' was also listed as a distractor and removed: the document never writes 'Q2', only 'second quarter', so that assertion could never fire. Caught by test_every_distractor_appears_in_its_document."
+        },
+        "guidance": {
+          "must_contain": [
+            "430",
+            "445"
+          ],
+          "must_not_contain": [
+            "412.7"
+          ],
+          "note": "guidance is the forward range, not the reported quarter"
+        },
+        "risks": {
+          "must_contain": [
+            "foundry",
+            "currency",
+            "export"
+          ],
+          "must_not_contain": [],
+          "note": "all three named risks; a partial list is incomplete, not wrong"
+        }
+      }
+    },
+    {
+      "id": "legal-01",
+      "fixture": "legal_msa",
+      "domain": "Legal",
+      "fields": {
+        "parties": {
+          "must_contain": [
+            "northwind logistics",
+            "calder freight"
+          ],
+          "must_not_contain": [
+            "barrowfield",
+            "hensleigh",
+            "draycott"
+          ],
+          "note": "Barrowfield is the guarantor; the other two are law firms"
+        },
+        "effective_date": {
+          "must_contain": [
+            "1 march 2026"
+          ],
+          "must_not_contain": [
+            "14 february 2026",
+            "3 june 2026"
+          ],
+          "note": "14 Feb is the signature date, 3 Jun is an amendment"
+        },
+        "termination_date": {
+          "must_contain": [
+            "28 february 2029"
+          ],
+          "must_not_contain": [
+            "1 march 2026",
+            "14 february 2026"
+          ],
+          "note": ""
+        },
+        "governing_law": {
+          "must_contain": [
+            "england"
+          ],
+          "must_not_contain": [
+            "new york"
+          ],
+          "note": "New York is the arbitration seat, not the governing law"
+        },
+        "penalties": {
+          "must_contain": [
+            "0.5",
+            "8"
+          ],
+          "must_not_contain": [],
+          "note": "0.5 percent per week capped at 8 percent; the 2 percent service credit is explicitly not a penalty"
+        }
+      }
+    },
+    {
+      "id": "research-01",
+      "fixture": "research_paper",
+      "domain": "Research",
+      "fields": {
+        "title": {
+          "must_contain": [
+            "thermal drift compensation"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "authors": {
+          "must_contain": [
+            "raghunathan",
+            "eklund",
+            "osei-bonsu"
+          ],
+          "must_not_contain": [
+            "nakamura",
+            "vestergaard",
+            "oyelaran",
+            "marchetti"
+          ],
+          "note": "the four excluded names are authors of CITED work"
+        },
+        "hypothesis": {
+          "must_contain": [
+            "third-order"
+          ],
+          "must_not_contain": [],
+          "note": "a third-order correction over 0-60 C removes most thermal drift"
+        },
+        "findings": {
+          "must_contain": [
+            "41.3",
+            "6.8"
+          ],
+          "must_not_contain": [],
+          "note": "drift fell from 41.3 to 6.8 milli-g"
+        },
+        "limitations": {
+          "must_contain": [
+            "single manufacturer"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "datasets": {
+          "must_contain": [
+            "ardleigh mems drift set"
+          ],
+          "must_not_contain": [
+            "caltrans",
+            "helsinki"
+          ],
+          "note": "the two excluded corpora are named only as related work"
+        }
+      }
+    },
+    {
+      "id": "health-01",
+      "fixture": "health_note",
+      "domain": "Healthcare",
+      "fields": {
+        "diagnoses": {
+          "must_contain": [
+            "pneumonia",
+            "diabetes"
+          ],
+          "must_not_contain": [
+            "pulmonary embolism",
+            "coronary artery",
+            "asthma"
+          ],
+          "note": "PE was ruled out; coronary artery disease and asthma are family history"
+        },
+        "medications": {
+          "must_contain": [
+            "amoxicillin",
+            "metformin"
+          ],
+          "must_not_contain": [
+            "ibuprofen"
+          ],
+          "note": "ibuprofen was discontinued at discharge"
+        },
+        "procedures": {
+          "must_contain": [
+            "bronchoscopy"
+          ],
+          "must_not_contain": [],
+          "note": "CT pulmonary angiogram also acceptable but bronchoscopy is unambiguous"
+        },
+        "physician": {
+          "must_contain": [
+            "whitcombe"
+          ],
+          "must_not_contain": [
+            "ngoma"
+          ],
+          "note": "Ngoma is the referring physician, explicitly not responsible for inpatient care"
+        },
+        "allergies": {
+          "must_contain": [
+            "penicillin"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "patient_id": {
+          "must_contain": [],
+          "must_not_contain": [
+            "55-40182"
+          ],
+          "note": "INVERTED on purpose. The schema field reads 'Patient identifier or MRN (anonymise if present)', so emitting the raw MRN is the FAILURE and withholding it is correct. The first version of this case demanded the MRN, which asserted a violation of the schema's own instruction and scored the model wrong for obeying it. Now it tests that the anonymisation instruction is actually honoured."
+        }
+      }
+    },
+    {
+      "id": "general-01",
+      "fixture": "general_ops",
+      "domain": "Technical",
+      "fields": {
+        "organisations": {
+          "must_contain": [
+            "halloway"
+          ],
+          "must_not_contain": [],
+          "note": "The schema asks for 'Named organisations or companies', which Brandt and Fielding is. Excluding it asserted a semantic the schema does not state. See RESULTS.md: the General schema's fields are enumerative and cannot be scored for exclusion."
+        },
+        "people": {
+          "must_contain": [
+            "calderon",
+            "oyelowo"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "locations": {
+          "must_contain": [
+            "coventry",
+            "gdansk"
+          ],
+          "must_not_contain": [],
+          "note": "Same: 'Named locations, cities, countries'. Porto and Rotterdam are both named locations in the document, whatever their relationship to the company."
+        },
+        "monetary_values": {
+          "must_contain": [
+            "2.4"
+          ],
+          "must_not_contain": [],
+          "note": "Same: 'Monetary amounts with currency'. All three figures are monetary amounts stated in the document."
+        },
+        "dates": {
+          "must_contain": [
+            "12 march 2026"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        }
+      }
+    }
+  ]
+}

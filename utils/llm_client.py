@@ -917,11 +917,19 @@ class LLMClient:
             #
             # The return contract stays Optional[str] deliberately: of the eight
             # call sites, four treat a falsy reply as a hard error and three use
-            # it as a legitimate fallback signal (structured_extraction drops to
-            # regex, question_extraction returns no questions, the classifier
-            # drops to heuristics). Raising here would turn three working
-            # fallbacks into crashes. So the fix is to make the reason visible,
-            # not to change what is returned.
+            # it as a fallback signal (question_extraction returns no
+            # questions, the classifier drops to heuristics, and
+            # structured_extraction now reports WHICH failure happened rather
+            # than silently substituting regex output). Raising here would turn
+            # those into crashes. So the fix is to make the reason visible, not
+            # to change what is returned.
+            #
+            # structured_extraction was listed here as a "legitimate fallback"
+            # and was not one: its regex path scored 0/28 on the extraction eval
+            # and cannot produce a valid field for the Financial, Legal or
+            # Research schemas at all. It now uses `_last_finish_reason` and
+            # `_last_failure` below to say whether it was truncated or rate
+            # limited, which is what this block exists to enable.
             #
             # Why it matters: a reasoning model spends a variable prefix of the
             # budget thinking, so an under-sized max_tokens produces
