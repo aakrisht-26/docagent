@@ -219,6 +219,125 @@ class TestTheRegexPathIsASupplementNotAFallback(unittest.TestCase):
         self.assertNotIn("regex_partial", UNAVAILABLE_METHODS)
 
 
+class TestFindingNothingIsNotAFailure(unittest.TestCase):
+    """"Unparseable" used to mean two different things.
+
+    `sample_sales.xlsx` -- a real fixture in the e2e harness -- returned
+    `{"revenue": null, "net_income": null, ...}` on every run. That is perfect
+    JSON. The filter drops falsy values, the result was `{}`, and the stage
+    reported `unavailable_unparseable`: the parser blamed for the model being
+    right.
+
+    A sales sheet has no net income, no EPS, no guidance, no risks and no
+    STATED total revenue -- only a Revenue column. The prompt tells the model to
+    use null for what is not there and to extract only what is explicitly
+    stated, so null is the correct answer.
+
+    That the refusal is right was checked rather than assumed: asked the same
+    document without the "only explicitly stated" instruction, the model
+    returned `revenue: "$2,379,900"`, exactly the sum of the Revenue column and
+    a figure that appears nowhere in the sheet.
+
+    So a correct refusal to invent data is the system working, and it now
+    reports `no_fields_found` with success=True.
+    """
+
+    def setUp(self):
+        self.skill = _skill()
+        self._real_chat = self.skill._llm.chat
+
+    def tearDown(self):
+        self.skill._llm.chat = self._real_chat
+
+    def _reply(self, content):
+        self.skill._llm.chat = lambda **kw: content
+        self.skill._llm._last_finish_reason = "stop"
+        self.skill._llm._last_failure = None
+        if not self.skill._llm.available:
+            self.skipTest("no LLM configured")
+        return _run(self.skill)
+
+    def test_all_null_json_is_not_a_failure(self):
+        out = self._reply('{"revenue": null, "net_income": null, "eps": null}')
+        self.assertEqual(out.data["method"], "no_fields_found")
+        self.assertTrue(out.success)
+        self.assertIsNone(out.error)
+
+    def test_all_empty_strings_are_the_same_outcome(self):
+        out = self._reply('{"revenue": "", "net_income": "", "eps": ""}')
+        self.assertEqual(out.data["method"], "no_fields_found")
+        self.assertTrue(out.success)
+
+    def test_it_still_explains_itself(self):
+        """Success is not silence: the reader needs to know why the panel is
+        empty, and that it is the document rather than a fault."""
+        out = self._reply('{"revenue": null}')
+        self.assertTrue(out.warnings)
+        self.assertIn("found none", out.warnings[0])
+
+    def test_a_reply_with_no_json_is_still_a_failure(self):
+        """The other half of the split. This one really is unparseable."""
+        out = self._reply("I could not find those fields in the document.")
+        self.assertEqual(out.data["method"], "unavailable_unparseable")
+        self.assertFalse(out.success)
+
+    def test_malformed_json_is_still_a_failure(self):
+        out = self._reply('{"revenue": "412.7", "net_income":')
+        self.assertEqual(out.data["method"], "unavailable_unparseable")
+        self.assertFalse(out.success)
+
+    def test_the_two_outcomes_are_different_methods(self):
+        empty = self._reply('{"revenue": null}').data["method"]
+        broken = self._reply("not json").data["method"]
+        self.assertNotEqual(empty, broken)
+
+    def test_no_fields_found_is_not_an_unavailable_method(self):
+        """It is the difference between 'the stage did not run' and 'the stage
+        ran and the document has none of these fields'."""
+        self.assertNotIn("no_fields_found", UNAVAILABLE_METHODS)
+
+    def test_a_populated_reply_is_unaffected(self):
+        out = self._reply('{"revenue": "412.7 million dollars", "eps": null}')
+        self.assertTrue(out.data["method"].startswith("llm_"))
+        self.assertEqual(out.data["entities"], {"revenue": "412.7 million dollars"})
+
+
+class TestTheJsonFinderHandlesNesting(unittest.TestCase):
+    """The old finder was a regex for a brace pair and could not match an
+    object containing an object -- which is what a list-of-dicts field value
+    produces. That made a well-formed reply look unparseable."""
+
+    def test_a_nested_object_is_found(self):
+        from skills.structured_extraction_skill import _first_json_object
+        found = _first_json_object('prose {"a": {"b": 1}, "c": 2} trailing')
+        self.assertEqual(found, '{"a": {"b": 1}, "c": 2}')
+
+    def test_braces_inside_strings_do_not_confuse_it(self):
+        from skills.structured_extraction_skill import _first_json_object
+        found = _first_json_object('{"note": "a } brace", "x": 1}')
+        self.assertEqual(found, '{"note": "a } brace", "x": 1}')
+
+    def test_no_object_returns_empty(self):
+        from skills.structured_extraction_skill import _first_json_object
+        self.assertEqual(_first_json_object("no json here"), "")
+
+    def test_a_nested_reply_parses_end_to_end(self):
+        skill = _skill()
+        real = skill._llm.chat
+        skill._llm.chat = lambda **kw: (
+            'Here you go: {"revenue": "412.7", "key_metrics": {"a": "1"}}')
+        skill._llm._last_finish_reason = "stop"
+        skill._llm._last_failure = None
+        try:
+            if not skill._llm.available:
+                self.skipTest("no LLM configured")
+            out = _run(skill)
+        finally:
+            skill._llm.chat = real
+        self.assertTrue(out.data["method"].startswith("llm_"))
+        self.assertIn("revenue", out.data["entities"])
+
+
 class TestTheGeneralSchemaIsGated(unittest.TestCase):
     """The stage no longer runs when the domain resolves to General.
 
