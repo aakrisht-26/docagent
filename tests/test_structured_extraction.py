@@ -33,6 +33,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import unittest
 
 from core.models import SkillInput
@@ -216,6 +217,77 @@ class TestTheRegexPathIsASupplementNotAFallback(unittest.TestCase):
 
     def test_regex_partial_is_not_an_unavailable_method(self):
         self.assertNotIn("regex_partial", UNAVAILABLE_METHODS)
+
+
+class TestTheGeneralSchemaIsGated(unittest.TestCase):
+    """The stage no longer runs when the domain resolves to General.
+
+    One call reserves 4353 tokens, 54% of a free-tier minute. The General
+    schema's fields are enumerative, and read against a real General summary
+    its values -- the amounts, the sites, the people, the consultancy -- were
+    already in the prose, with comparisons the field list does not carry. The
+    call bought a subset of the summary.
+
+    Measured over 11 documents: 4 resolve to General, so this removes 36% of
+    extraction calls. The cost is that a document whose true domain is typed
+    but which the classifier routes to General now gets nothing at all --
+    `research_paper` classifies as Technical and is skipped. That is why the
+    escape hatch exists and has a test.
+    """
+
+    def _plan(self, domain, **kw):
+        from agents.planner import DocStats, PipelinePlanner
+        stats = DocStats(file_type=kw.pop("file_type", "pdf"),
+                         word_count=500, domain=domain, **kw)
+        return PipelinePlanner().plan(stats)
+
+    def test_typed_schemas_still_run(self):
+        for domain in ("Financial", "Legal", "Healthcare", "Research"):
+            with self.subTest(domain=domain):
+                self.assertIn("structured_extraction", self._plan(domain))
+
+    def test_general_resolving_domains_are_skipped(self):
+        """Technical, Educational, Environmental and HR all alias to General,
+        and so does any domain with no alias at all."""
+        for domain in ("Technical", "Educational", "Environmental", "HR",
+                       "General", "Generic", "SomethingUnmapped"):
+            with self.subTest(domain=domain):
+                self.assertNotIn("structured_extraction", self._plan(domain))
+
+    def test_the_escape_hatch_restores_the_old_behaviour(self):
+        """Removing behaviour without a way back is worse than the behaviour."""
+        os.environ["DOCAGENT_EXTRACT_GENERAL"] = "true"
+        try:
+            self.assertIn("structured_extraction", self._plan("Technical"))
+        finally:
+            os.environ.pop("DOCAGENT_EXTRACT_GENERAL", None)
+
+    def test_the_hatch_is_off_unless_explicitly_set(self):
+        for value in ("", "false", "no", "0", "maybe"):
+            with self.subTest(value=value):
+                os.environ["DOCAGENT_EXTRACT_GENERAL"] = value
+                try:
+                    self.assertNotIn("structured_extraction", self._plan("Technical"))
+                finally:
+                    os.environ.pop("DOCAGENT_EXTRACT_GENERAL", None)
+
+    def test_the_older_skips_still_apply(self):
+        """A questionnaire and an audio transcript were already skipped and
+        must stay skipped even on a typed domain."""
+        self.assertNotIn("structured_extraction",
+                         self._plan("Financial", doc_type="questionnaire"))
+        self.assertNotIn("structured_extraction",
+                         self._plan("Financial", file_type="audio"))
+
+    def test_the_planner_and_the_skill_agree_on_the_schema(self):
+        """The planner asks the skill rather than keeping a second copy of the
+        alias map, so the two cannot drift."""
+        from skills.structured_extraction_skill import (
+            _DOMAIN_ALIASES, schema_for_domain)
+        for domain, expected in _DOMAIN_ALIASES.items():
+            with self.subTest(domain=domain):
+                self.assertEqual(schema_for_domain(domain), expected)
+        self.assertEqual(schema_for_domain("NoSuchDomain"), "General")
 
 
 class TestUnchangedBehaviour(unittest.TestCase):

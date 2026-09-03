@@ -322,20 +322,35 @@ organisation named), and one demanded the raw MRN from a field whose schema says
 *anonymise*. The matcher is borrowed from `rag_eval` rather than rewritten, so
 it inherits those corrections instead of rediscovering them.
 
-**IS THE STAGE WORTH ITS COST? The extraction is good; the wiring is not.**
-One call reserves 1905 prompt + 2448 budget = **4353 tokens, 54% of a free-tier
-minute**, and takes 2.3-25.6s, competing with summarisation for the same window.
-Its output is **never rendered in the UI and absent from the markdown export** --
-`grep -rn extracted_entities ui/` finds only a store and a restore. It reaches a
-user only through the JSON download. And `Technical`, `Educational`,
-`Environmental` and `HR` all alias to the **General** schema, whose enumerative
-fields largely restate the summary and cannot be scored for correctness.
+**THE STAGE COSTS 54% OF A FREE-TIER MINUTE** -- 1905 prompt + 2448 budget =
+4353 tokens, at 2.3-25.6s, competing with summarisation for the same window.
+Its output used to be rendered nowhere: `grep -rn extracted_entities ui/`
+returned a store and a restore, and `to_markdown()` omitted it, so a user met it
+only by downloading the JSON. Two changes make that cost defensible.
 
-The recommendation in RESULTS.md is to display it, and to consider gating the
-stage to typed schemas so General documents skip it. Neither is done: both are
-product decisions. If neither is taken, the honest position is that the stage
-should be removed, because an accurate answer nobody can see is not worth half
-a minute of the rate limit.
+**It is displayed.** A compact "Key fields" table above the summary prose in the
+Summary tab, and a table in the markdown export, both shown only when there are
+fields. Above the prose because these are LOOKUP values and the summary is
+narrative: for a contract, `parties`, `effective_date`, `termination_date` and
+`governing_law` as four addressable rows beat the same facts spread through
+seven thousand characters, even though the prose does mention them.
+
+**The General schema is gated out**, and that was checked before it was done
+rather than argued from the schema wording. Read against a real General summary,
+the extraction's values -- the amounts, the sites, the people, the consultancy --
+were already in the prose, with comparisons and interpretation the field list
+does not carry. So the call bought a subset of the summary and the planner now
+skips it.
+
+**Measured, not estimated: 4 of 11 documents resolve to General, so the gate
+removes 36% of extraction calls** (I had estimated "roughly half").
+
+**What the gate costs, stated plainly.** Domain classification is imperfect and
+the gate makes that consequential: `research_paper` classifies as `Technical`,
+resolves to General, and is now skipped entirely rather than getting a General
+field list -- a document whose true domain is typed but which the classifier
+misroutes loses extraction altogether. `DOCAGENT_EXTRACT_GENERAL=true` restores
+the old behaviour without a code change.
 
 `tests/test_extraction_eval.py` guards the instrument: that the ceiling is
 reachable, that every distractor actually appears in its document (one did not

@@ -21,9 +21,13 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from skills.structured_extraction_skill import (
+    GENERAL_SCHEMA, schema_for_domain)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -131,8 +135,41 @@ class PipelinePlanner:
         # Entity/KV extraction — useful for contracts, reports, invoices.
         # Skip for questionnaires (their value is in the questions, not KV)
         # and audio transcripts (no structured fields expected).
-        if stats.doc_type != "questionnaire" and stats.file_type != "audio":
+        #
+        # ALSO SKIPPED when the domain resolves to the General schema, which is
+        # a deliberate removal of behaviour and is measured rather than assumed.
+        # One extraction call reserves 1905 prompt + 2448 budget = 4353 tokens,
+        # 54% of a free-tier minute. The General schema's fields are enumerative
+        # ("all important dates", "named organisations"), and read against a
+        # real General summary its values -- the amounts, the sites, the people,
+        # the consultancy -- were already in the prose with comparisons the
+        # field list does not carry. So the call bought a subset of the summary.
+        #
+        # Measured over 11 documents: 4 route to General, so this removes 36%
+        # of extraction calls.
+        #
+        # WHAT IT COSTS, stated rather than glossed. The classifier's domain is
+        # imperfect, and the gate makes that consequential: `research_paper`
+        # classifies as Technical, resolves to General, and is now skipped
+        # entirely rather than getting a General field list. A document whose
+        # true domain is typed but which the classifier routes to General loses
+        # extraction altogether. Set DOCAGENT_EXTRACT_GENERAL=true to restore
+        # the old behaviour without a code change.
+        skip_general = (
+            schema_for_domain(stats.domain) == GENERAL_SCHEMA
+            and os.getenv("DOCAGENT_EXTRACT_GENERAL", "").strip().lower()
+            not in ("1", "true", "yes")
+        )
+        if (stats.doc_type != "questionnaire" and stats.file_type != "audio"
+                and not skip_general):
             plan.append("structured_extraction")
+        elif skip_general:
+            logger.info(
+                f"Planner: skipping structured_extraction — domain "
+                f"{stats.domain!r} resolves to the General schema, whose fields "
+                f"restate the summary. Set DOCAGENT_EXTRACT_GENERAL=true to run "
+                f"it anyway."
+            )
         else:
             logger.debug(
                 f"Planner: skipping structured_extraction "

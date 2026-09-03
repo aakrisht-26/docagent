@@ -231,6 +231,37 @@ Two changes would settle it, and the first is the minimum:
 If neither is done, the honest position is that this stage should be removed:
 an accurate answer that no one can see is not worth 54% of a minute.
 
-**Neither change is made in this branch.** Task 3 was scoped to the fallback,
-and both of these are product decisions about what to show and what to skip.
+### Both changes were subsequently made
+
+**Displayed.** A compact "Key fields" table above the summary prose, and a table
+in the markdown export. Above the prose because these are lookup values and the
+summary is narrative.
+
+**General gated out.** Checked before acting rather than argued from the schema
+wording: read against a real General summary, the extraction's values were
+already in the prose with comparisons the field list does not carry.
+
+**Measured: 4 of 11 documents resolve to General — a 36% reduction in extraction
+calls.** I had estimated "roughly half"; measurement corrected that downward.
+
+| document | classifier domain | schema | runs? |
+|---|---|---|---|
+| sample_report.pdf | Technical | General | skipped |
+| sample_large_report.pdf | Financial | Financial | runs |
+| sample_dense_manual.pdf | Generic | General | skipped |
+| sample_mixed_topics.pdf | Technical | General | skipped |
+| sample_sales.xlsx | Financial | Financial | runs |
+| sample_large_sales.xlsx | Financial | Financial | runs |
+| fin_quarterly | Financial | Financial | runs |
+| legal_msa | Legal | Legal | runs |
+| research_paper | **Technical** | **General** | **skipped** |
+| health_note | Healthcare | Healthcare | runs |
+| general_ops | Financial | Financial | runs |
+
+**What it costs.** The `research_paper` row is the cost in one line: its true
+domain is Research, the classifier says Technical, and it is now skipped
+entirely rather than getting a General field list. Domain routing was always
+imperfect; the gate makes that imperfection consequential.
+`DOCAGENT_EXTRACT_GENERAL=true` restores the old behaviour without a code
+change.
 

@@ -90,6 +90,16 @@ _DOMAIN_ALIASES: Dict[str, str] = {
     "HR":           "General",
 }
 
+#: The schema a domain resolves to. Exposed so the planner can ask the same
+#: question this skill asks, rather than keeping a second copy of the alias map
+#: that would drift from this one.
+GENERAL_SCHEMA = "General"
+
+
+def schema_for_domain(domain: str) -> str:
+    return _DOMAIN_ALIASES.get(domain, GENERAL_SCHEMA)
+
+
 # Fallback regex patterns for LLM-less extraction ─────────────────────────────
 
 _RE_DATES = re.compile(
