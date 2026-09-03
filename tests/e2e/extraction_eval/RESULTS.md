@@ -76,6 +76,57 @@ guaranteed by construction, not by the document.
 It is not a degraded mode. It is an elaborate way of returning `{}` while
 reporting `success=True`.
 
+### What was done about it
+
+**It is no longer a fallback.** It is a supplement, and the stage now says when
+extraction did not run.
+
+- A failure of the LLM path no longer substitutes regex output silently. The
+  method names the cause — `unavailable_truncated`, `unavailable_rate_limited`,
+  `unavailable_llm_failed`, `unavailable_unparseable`, `unavailable_no_llm` —
+  and `success` is **False**, because a stage that produced nothing must not
+  look like it worked.
+- The regex path is kept and demoted. On a General-schema document with ISO
+  dates or currency-marked amounts it does recover real fields, and one field
+  beats none; that outcome is `regex_partial` with `success=True` and a warning
+  saying what was lost. It is never allowed to stand in for the LLM path on a
+  typed schema, where it cannot produce a field at all.
+- The warning travels with the result rather than stopping at the log, so the
+  reader learns whether to raise a budget or wait a minute.
+
+### The budget that caused most of it
+
+`max_tokens` was **1500**, sized against the expected reply. Measured across
+eight documents at a 6000-token budget so nothing truncated:
+
+| document | prompt | reasoning | content | total out |
+|---|---|---|---|---|
+| health_note | 520 | 326 | 166 | 492 |
+| research_paper | 578 | 231 | 244 | 475 |
+| legal_msa | 635 | 314 | 207 | 521 |
+| fin_quarterly | 660 | 400 | 214 | 614 |
+| general_ops | 471 | 524 | 200 | 724 |
+| sample_large_report | 1710 | 710 | 241 | 951 |
+| sample_mixed_topics | 1825 | 930 | 221 | 1151 |
+| **sample_dense_manual** | 1905 | **1278** | 261 | **1539** |
+
+**Content is flat at 166–261 regardless of document size; reasoning is what
+scales.** `sample_dense_manual` needed 1539 and had 1500 — it truncated by 39
+tokens, which is the whole of the silent fallback this eval was built to find.
+
+The budget is now `_CONTENT_TOKENS` 400 + `_REASONING_ALLOWANCE` 2048 =
+**2448**, each sized from its own measurement with margin (+53% on content,
++60% on reasoning). Summarisation's allowance of 1024 was sized against its own
+worst reasoning of 902 and would not have been enough.
+
+**Measured effect:** `sample_dense_manual.pdf` went from **0 fields to 5 of 6**.
+
+The cost is stated rather than hidden: Groq counts prompt + `max_tokens` against
+the per-minute window, so a larger budget makes a 413 refusal likelier. That is
+the right trade only because a refusal is survivable — keys rotate, and the
+caller now says which failure happened — whereas truncation produced a
+guaranteed zero that reported success.
+
 ## One genuine defect the eval found
 
 `patient_id` is specified as *"Patient identifier or MRN (anonymise if

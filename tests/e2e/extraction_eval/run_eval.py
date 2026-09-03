@@ -158,7 +158,9 @@ def extract(fixture: str, domain: str, skill, use_regex: bool) -> Tuple[Dict, st
         # for data the caller never receives.
         entities = {k: v for k, v in entities.items() if k in schema}
         return entities, method
-    return skill._llm_extract(text, "normal_document", domain, schema)
+    entities, method, _warning = skill._llm_extract(
+        text, "normal_document", domain, schema)
+    return entities, method
 
 
 def main(argv: List[str]) -> int:

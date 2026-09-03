@@ -331,6 +331,13 @@ class DocumentAgent(BaseAgent):
 
             if se_out.success and se_out.data:
                 extracted_entities = se_out.data.get("entities", {})
+            # Carry the skill's warning through, the same way summarisation's
+            # is carried above. Without this the reason extraction produced
+            # nothing -- truncated budget, or every key rate-limited -- reaches
+            # the log and stops there, and the user sees an empty entities
+            # block with no explanation. The skill distinguishes those two
+            # causes precisely so somebody can act on the difference.
+            warnings.extend(se_out.warnings)
         else:
             self._log_stage_skipped("structured_extraction", "not selected by planner")
 

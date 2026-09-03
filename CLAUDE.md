@@ -283,10 +283,36 @@ Research 0/4, Healthcare 1/4, General 2/4. `percentages` and `emails` are
 fields of no schema and are always discarded. It is not a degraded mode, it is
 an elaborate way of returning `{}` while reporting `success=True`.
 
-**Two separate causes reach that fallback silently**, and neither is logged as a
-degradation: `chat()` returning None under rate pressure, and TRUNCATION --
-`max_tokens=1500` against measured reasoning of 1260 tokens, which is the same
-budget-sized-for-the-reply bug documented above for `_llm_classify`.
+**FIXED, and the fixes are the interesting part.**
+
+*The budget was sized against the reply.* `max_tokens=1500`, while measurement
+across eight documents showed content flat at 166-261 tokens and REASONING
+scaling 231->1278 with the prompt. `sample_dense_manual.pdf` needed 1539 and
+truncated by 39 tokens, returning nothing and reporting success -- the same bug
+as `_llm_classify`'s 80 tokens for a 25-token reply. It is now
+`_CONTENT_TOKENS` 400 + `_REASONING_ALLOWANCE` 2048 = **2448**, each sized from
+its own measurement. Summarisation's 1024 allowance was sized against its worst
+reasoning of 902 and is NOT reusable here. Measured effect: that document went
+from 0 fields to 5 of 6. The cost is a likelier 413, which is survivable
+because keys rotate and the caller now names the failure.
+
+*Four failures shared one method name.* Truncation, rate-limit refusal, an
+unusable reply and no-LLM-configured all became `regex_fallback` with
+`success=True`. They are now `unavailable_truncated`,
+`unavailable_rate_limited`, `unavailable_llm_failed`, `unavailable_unparseable`
+and `unavailable_no_llm`, each with its own sentence, and **`success=False`**
+when nothing was produced -- a stage that produced nothing must not look like it
+worked. `_diagnose()` reads `_last_finish_reason` and `_last_failure`, the same
+distinction the 413 handling makes for summarisation. The warning is carried
+into `PipelineResult.warnings` by the agent, so it does not stop at the log.
+
+*The regex path is a supplement, not a fallback.* It still runs, and on a
+General-schema document with ISO dates or currency amounts it recovers real
+fields (`regex_partial`, `success=True`, with a warning saying what was lost).
+It is never allowed to stand in for the LLM path on a typed schema, where it
+cannot produce a field at all. `tests/test_structured_extraction.py` pins that
+structural claim, so if the regexes ever grow to serve those schemas the test
+says the demotion should be revisited.
 
 **Five of the eval's own expectations were wrong on the first pass and all five
 flattered the eval**, which is the same direction this project has been caught
