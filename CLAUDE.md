@@ -322,6 +322,21 @@ organisation named), and one demanded the raw MRN from a field whose schema says
 *anonymise*. The matcher is borrowed from `rag_eval` rather than rewritten, so
 it inherits those corrections instead of rediscovering them.
 
+**IS THE STAGE WORTH ITS COST? The extraction is good; the wiring is not.**
+One call reserves 1905 prompt + 2448 budget = **4353 tokens, 54% of a free-tier
+minute**, and takes 2.3-25.6s, competing with summarisation for the same window.
+Its output is **never rendered in the UI and absent from the markdown export** --
+`grep -rn extracted_entities ui/` finds only a store and a restore. It reaches a
+user only through the JSON download. And `Technical`, `Educational`,
+`Environmental` and `HR` all alias to the **General** schema, whose enumerative
+fields largely restate the summary and cannot be scored for correctness.
+
+The recommendation in RESULTS.md is to display it, and to consider gating the
+stage to typed schemas so General documents skip it. Neither is done: both are
+product decisions. If neither is taken, the honest position is that the stage
+should be removed, because an accurate answer nobody can see is not worth half
+a minute of the rate limit.
+
 `tests/test_extraction_eval.py` guards the instrument: that the ceiling is
 reachable, that every distractor actually appears in its document (one did not
 and could never have fired), and that loading the eval does not leave

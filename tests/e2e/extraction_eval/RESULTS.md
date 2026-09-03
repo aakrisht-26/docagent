@@ -167,3 +167,70 @@ misclassification cannot move the score. Domain routing is a real failure path
 — `_DOMAIN_ALIASES` has no entry for `Generic`, which the classifier does emit,
 and it falls through to `General` — and it is deliberately kept out of the
 headline so that two different failures do not share one number.
+
+---
+
+## Is the stage worth what it costs?
+
+**The extraction is good. The stage, as currently wired, is not paying for
+itself.** Those are separate judgements and the numbers separate them cleanly.
+
+### What it costs
+
+| | |
+|---|---|
+| tokens reserved per document | 1905 prompt + 2448 budget = **4353** |
+| free-tier window | 8000 tokens/minute |
+| **share of one minute, per document** | **54%** |
+| measured latency | 2.3s (small) to 25.6s (dense) |
+
+It competes for that window with summarisation, which is the stage users
+actually read. On a free-tier key, running both on a dense document is most of
+a minute's allowance.
+
+### What it returns
+
+Accurate output: **27–28/28** against documents built to trap it.
+
+### Where that output goes
+
+| destination | present? |
+|---|---|
+| the UI | **no — never rendered anywhere** |
+| markdown export | **no** |
+| JSON export | yes |
+| `history.db` | yes |
+| e2e harness stdout | yes (printed, asserted on by nothing) |
+
+`grep -rn extracted_entities ui/` returns two lines: one restoring it from
+history, one storing it. **No component displays it.** A user meets this
+stage's output only by downloading the JSON.
+
+### And roughly half of documents get the schema that says least
+
+`_DOMAIN_ALIASES` routes `Technical`, `Educational`, `Environmental` and `HR`
+to **General**, whose fields are enumerative — "all important dates", "named
+organisations", "up to 5 other important facts". Those largely restate what the
+summary already says in prose, and as the eval found, they cannot be scored for
+correctness at all because anything named in the document satisfies them. The
+four typed schemas are where the value is, and they are a minority of runs.
+
+### The verdict
+
+**Keep the capability; fix the wiring.** The waste is not extraction quality —
+it is spending the scarcest resource in the system on a result nobody is shown.
+Two changes would settle it, and the first is the minimum:
+
+1. **Display it.** The result is accurate and already paid for. A field table
+   under the results tabs would make the stage's cost defensible immediately.
+2. **Gate it to typed schemas.** Skipping `structured_extraction` when the
+   schema resolves to General would remove roughly half the calls and drop the
+   half whose output duplicates the summary. That is a planner change and a
+   product decision, so it is recommended here rather than made.
+
+If neither is done, the honest position is that this stage should be removed:
+an accurate answer that no one can see is not worth 54% of a minute.
+
+**Neither change is made in this branch.** Task 3 was scoped to the fallback,
+and both of these are product decisions about what to show and what to skip.
+
