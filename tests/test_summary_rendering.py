@@ -218,6 +218,98 @@ class TestRulesAndCitationsInContext(unittest.TestCase):
         self.assertIn("<code>94 min</code>", html)
 
 
+class TestKeyFieldsReachTheReader(unittest.TestCase):
+    """The extraction output used to be rendered nowhere.
+
+    It was stored, persisted and printed by the e2e harness, and no component
+    displayed it -- `grep -rn extracted_entities ui/` returned a store and a
+    restore. A user met it only by downloading the JSON, while the stage spent
+    54% of a free-tier minute producing it.
+
+    It is now a compact table above the summary prose, and a table in the
+    markdown export. Above the prose rather than beside it because these are
+    lookup values: for a contract, four addressable rows beat the same facts
+    spread through seven thousand characters of narrative.
+    """
+
+    def _render_fields(self, entities):
+        captured = []
+        original = rv._html
+        rv._html = lambda html: captured.append(html)
+        try:
+            rv._render_key_fields(type("R", (), {"extracted_entities": entities}))
+        finally:
+            rv._html = original
+        return "\n".join(captured)
+
+    def test_fields_are_rendered(self):
+        html = self._render_fields({"parties": "Northwind Ltd",
+                                    "effective_date": "1 March 2026"})
+        self.assertIn("key-fields", html)
+        self.assertIn("Parties", html)
+        self.assertIn("Northwind Ltd", html)
+        self.assertIn("Effective date", html)
+
+    def test_snake_case_keys_become_readable_labels(self):
+        html = self._render_fields({"termination_date": "x"})
+        self.assertIn("Termination date", html)
+        self.assertNotIn("termination_date", html)
+
+    def test_a_list_value_is_joined_not_printed_as_a_list(self):
+        html = self._render_fields({"parties": ["Northwind Ltd", "Calder GmbH"]})
+        self.assertIn("Northwind Ltd; Calder GmbH", html)
+        self.assertNotIn("[", html)
+
+    def test_nothing_renders_when_there_is_nothing(self):
+        """No empty panel on a document the stage skipped or that produced
+        no fields."""
+        for entities in ({}, None):
+            with self.subTest(entities=entities):
+                self.assertEqual(self._render_fields(entities), "")
+
+    def test_a_field_with_an_empty_value_is_dropped(self):
+        html = self._render_fields({"parties": "Northwind Ltd", "penalties": "  "})
+        self.assertIn("Parties", html)
+        self.assertNotIn("Penalties", html)
+
+    def test_values_are_html_escaped(self):
+        """Field values are model output landing in raw HTML."""
+        html = self._render_fields({"parties": "<script>x</script>"})
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+
+class TestKeyFieldsInTheMarkdownExport(unittest.TestCase):
+    def _md(self, entities):
+        from core.pipeline_result import PipelineResult
+        return PipelineResult(
+            file_name="c.pdf", file_type="pdf", doc_type="normal_document",
+            domain="Legal", classification_confidence=0.03,
+            classification_method="hybrid_groq", summary="# T\n\nBody.",
+            summary_method="llm", questions=[], question_extraction_method="n",
+            raw_text="t", word_count=1, page_count=1, metadata={},
+            extracted_entities=entities).to_markdown()
+
+    def test_the_export_carries_the_fields(self):
+        md = self._md({"parties": ["Northwind Ltd", "Calder GmbH"],
+                       "effective_date": "1 March 2026"})
+        self.assertIn("## Key fields", md)
+        self.assertIn("| Parties | Northwind Ltd; Calder GmbH |", md)
+        self.assertIn("| Effective date | 1 March 2026 |", md)
+
+    def test_a_pipe_in_a_value_does_not_break_the_table(self):
+        """An unescaped pipe would split one value into two columns."""
+        md = self._md({"penalties": "0.5 percent | capped at 8 percent"})
+        self.assertIn("0.5 percent \\| capped at 8 percent", md)
+
+    def test_a_newline_in_a_value_does_not_break_the_row(self):
+        md = self._md({"obligations": "first line\nsecond line"})
+        self.assertIn("| Obligations | first line second line |", md)
+
+    def test_no_section_when_there_are_no_fields(self):
+        self.assertNotIn("## Key fields", self._md({}))
+
+
 class TestMethodLabels(unittest.TestCase):
     """The badge showed the raw identifier title-cased — "Llm Single Groq" —
     which names an internal code path. The method string carries a provider

@@ -419,6 +419,49 @@ html, body, [class*="css"] {
   white-space: nowrap;
 }
 
+/* ── Key fields ────────────────────────────────────
+   The extracted schema fields, above the summary prose. Deliberately compact
+   and quiet: this is a lookup strip, not a section competing with the summary.
+   Tokens only, so both themes follow. */
+.key-fields {
+  margin: 0 0 18px 0;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 12px 14px;
+}
+.key-fields-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* --text-secondary, not --text-muted. Muted measured 3.97:1 against the card
+     in dark mode, under the 4.5 AA needs at this size; secondary is 6.1. */
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.key-fields-table { width: 100%; border-collapse: collapse; }
+.key-fields-table th.kf-key {
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  width: 1%;
+  padding: 4px 14px 4px 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.key-fields-table td.kf-val {
+  vertical-align: top;
+  padding: 4px 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.key-fields-table tr + tr th.kf-key,
+.key-fields-table tr + tr td.kf-val { border-top: 1px solid var(--border); }
+
 /* ── Summary tables, rules and inline code ────────────
    The summariser emits markdown tables constantly. Before these rules the
    renderer had no case for them and they arrived as one run-on paragraph of

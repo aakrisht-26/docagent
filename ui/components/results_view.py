@@ -448,6 +448,65 @@ def _table_html(rows: list) -> str:
     return "".join(out)
 
 
+def _field_label(key: str) -> str:
+    """`termination_date` -> `Termination date`. Schema keys are snake_case."""
+    return key.replace("_", " ").strip().capitalize()
+
+
+def _render_key_fields(result: Any) -> None:
+    """The extracted schema fields, as a compact lookup table.
+
+    WHERE AND WHY. Above the summary prose, inside the Summary tab, and only
+    when there is something to show.
+
+    The output was previously rendered NOWHERE. It reached a user only by
+    downloading the JSON, while costing 54% of a free-tier minute per document
+    to produce -- an accurate answer nobody could see.
+
+    The placement is the argument that it is not a duplicate section. These
+    fields answer "what are this document's key facts" at a glance; the summary
+    answers "what does this document say" in prose. For a contract, `parties`,
+    `effective_date`, `termination_date` and `governing_law` as four addressable
+    rows beat the same facts spread through seven thousand characters of
+    narrative, even though the narrative does mention them.
+
+    That argument only holds for the TYPED schemas, and it was measured rather
+    than assumed. Read against a real General-schema summary, the extraction's
+    values -- the amounts, the sites, the people, the consultancy -- were
+    already in the prose, with comparisons and interpretation the field list
+    does not carry. So General extraction genuinely was a subset of the summary,
+    and the planner now skips it rather than rendering a section that repeats
+    what sits directly below it.
+    """
+    entities = getattr(result, "extracted_entities", None)
+    if not entities:
+        return
+
+    rows = []
+    for key, value in entities.items():
+        if isinstance(value, (list, tuple)):
+            shown = "; ".join(str(v) for v in value if str(v).strip())
+        elif isinstance(value, dict):
+            shown = "; ".join(f"{k}: {v}" for k, v in value.items())
+        else:
+            shown = str(value)
+        shown = shown.strip()
+        if not shown:
+            continue
+        rows.append(
+            f'<tr><th class="kf-key">{_escape(_field_label(key))}</th>'
+            f'<td class="kf-val">{_escape(shown)}</td></tr>'
+        )
+    if not rows:
+        return
+
+    _html(
+        '<div class="key-fields fade-in">'
+        '<div class="key-fields-title">Key fields</div>'
+        f'<table class="key-fields-table">{"".join(rows)}</table>'
+        '</div>'
+    )
+
 def _render_summary_structured(summary: str) -> None:
     """
     Render a summary string with rich formatting.
@@ -897,6 +956,7 @@ def render_results(result: PipelineResult, export_cfg: Optional[Any] = None) -> 
             _html(f'<span class="badge badge-blue" style="margin-bottom:.75rem" '
                   f'title="{result.summary_method}">'
                   f'{summary_method_label(result.summary_method)}</span>')
+            _render_key_fields(result)
             _render_summary_structured(result.summary)
 
             # ── Read-aloud speaker button (modulated Web Speech API) ──────
