@@ -253,6 +253,54 @@ replacing, which is work for this repo and stays red). A genuine failure
 anywhere outranks a block. All of it is mutation-tested in
 `tests/test_youtube_blocked.py`.
 
+### Structured extraction, and what its eval does and does not tell you
+
+`StructuredExtractionSkill` fills a domain schema (Financial, Legal,
+Healthcare, Research, General; 6-7 fields each) chosen from
+`ClassificationResult.domain` via `_DOMAIN_ALIASES`.
+
+Score it with `python tests/e2e/extraction_eval/run_eval.py`, `--regex` for the
+fallback path, `--verbose` for per-field detail. 28 scored fields over five
+documents, one per schema. Full method and per-case reasoning in
+`tests/e2e/extraction_eval/RESULTS.md`.
+
+**Measured: LLM path 27-28/28 across five runs; regex fallback 0/28.**
+
+**THE CORRECTNESS METRIC SATURATES, and that is the honest reading.** The
+fixtures carry deliberate near misses -- prior-year revenue beside this year's,
+a guarantor and two law firms beside the contracting parties, the signature date
+beside the effective date, the arbitration seat beside the governing law, cited
+authors beside the paper's own, a ruled-out differential and family history
+beside the diagnoses, a discontinued drug beside the current ones -- and the LLM
+path rejects essentially all of them. Read the number as a REGRESSION GUARD with
+no headroom, not as a score to improve. What still discriminates is the path:
+28 versus 0 is what a silent fallback costs.
+
+**The regex fallback cannot produce a valid field for most schemas.** It emits
+only `dates`, `monetary_values`, `percentages`, `emails`, and the caller keeps
+only keys that are fields of the selected schema: Financial 0/4, Legal 0/4,
+Research 0/4, Healthcare 1/4, General 2/4. `percentages` and `emails` are
+fields of no schema and are always discarded. It is not a degraded mode, it is
+an elaborate way of returning `{}` while reporting `success=True`.
+
+**Two separate causes reach that fallback silently**, and neither is logged as a
+degradation: `chat()` returning None under rate pressure, and TRUNCATION --
+`max_tokens=1500` against measured reasoning of 1260 tokens, which is the same
+budget-sized-for-the-reply bug documented above for `_llm_classify`.
+
+**Five of the eval's own expectations were wrong on the first pass and all five
+flattered the eval**, which is the same direction this project has been caught
+by four times. Four asserted semantics the schema never stated (the General
+schema's fields are enumerative -- "named organisations" is satisfied by any
+organisation named), and one demanded the raw MRN from a field whose schema says
+*anonymise*. The matcher is borrowed from `rag_eval` rather than rewritten, so
+it inherits those corrections instead of rediscovering them.
+
+`tests/test_extraction_eval.py` guards the instrument: that the ceiling is
+reachable, that every distractor actually appears in its document (one did not
+and could never have fired), and that loading the eval does not leave
+`fixture_content` shadowed for other tests.
+
 ### PDF Parsing Fallback Chain
 
 `PDFReaderSkill` escalates: pdfplumber → PyMuPDF → Tesseract OCR (with Gaussian equalization + adaptive thresholding for scanned docs).
