@@ -216,7 +216,110 @@ Output at Coventry rose to 18,400 units, against 16,900 units in the previous
 quarter. Absence stood at 3.1 percent.
 """
 
+
+# ── Spreadsheet-derived documents ────────────────────────────────────────────
+#
+# WHY THESE EXIST. Every fixture above is PROSE, and prose was easy to author.
+# The app does not only receive prose. `ExcelReaderSkill` produces a tabular
+# dump, and the classifier routes those dumps to typed schemas: a sales sheet
+# reaches Financial, a ward census reaches Healthcare, a contract register
+# reaches Legal. So three of the four typed schemas are reachable from tabular
+# input and none of them had a tabular fixture.
+#
+# That was not a hypothetical gap. `sample_sales.xlsx` -- a real fixture in the
+# e2e harness -- returns ZERO of the seven Financial fields, while the prose
+# Financial fixture returns all seven. The eval was measuring prose
+# comprehension and reporting it as extraction quality.
+#
+# THE FORMAT IS COPIED FROM THE REAL READER, not invented: a `[Sheet: name]`
+# header, a `- Total Rows:` line, then right-aligned columns. Compare
+# `sample_sales.xlsx` parsed:
+#
+#     [Sheet: Q3 Sales]
+#     - Total Rows: 8
+#
+#     Region          Product Units Unit Price Revenue
+#      North Orion Controller   320       1250  400000
+#
+# DELIBERATELY NOT MADE EASIER. The sales sheet has NO totals row, because the
+# app's own sample_sales.xlsx has none and that absence is exactly what makes
+# `revenue` unavailable. Adding one would have raised the score by changing the
+# question rather than by extracting better.
+
+FIN_SALES_SHEET = """[Sheet: Q3 FY26 Sales]
+- Total Rows: 8
+
+Region          Product Units Unit Price Revenue
+ North Orion Controller   320       1250  400000
+ North     LIDAR Module   180        890  160200
+ South Orion Controller   210       1250  262500
+ South Service Contract    95       4200  399000
+  EMEA Orion Controller   410       1180  483800
+  EMEA     LIDAR Module   260        850  221000
+  APAC Orion Controller   140       1310  183400
+  APAC Service Contract    60       4500  270000
+
+[Sheet: Headcount]
+- Total Rows: 4
+
+ Department Q2 Q3 Open Roles
+Engineering 42 51          6
+      Sales 18 21          3
+    Support 12 15          2
+ Operations  9  9          0
+"""
+
+LEGAL_REGISTER_SHEET = """[Sheet: Contract Register]
+- Total Rows: 3
+
+     Counterparty        Status Effective    Expiry Governing Law Annual Value
+Northwind Logistics        Active 2026-03-01 2029-02-28       England      5000000
+Calder Freight GmbH        Active 2026-01-15 2028-01-14       Germany      3200000
+Barrowfield Holdings     Guarantor        -         -             -            0
+
+[Sheet: Advisers]
+- Total Rows: 2
+
+              Firm         Role Engaged
+ Hensleigh and Root     External 2026-02-10
+Draycott Vane Recht     External 2026-02-10
+
+[Sheet: Notes]
+- Total Rows: 2
+
+                                  Note
+Barrowfield is guarantor only and is not a contracting party.
+Advisers are not parties to the agreement.
+"""
+
+HEALTH_CENSUS_SHEET = """[Sheet: Ward Census]
+- Total Rows: 3
+
+    MRN            Diagnosis   Admitted  Discharged        Consultant   Allergy
+55-40182 Community-acquired  2026-05-04  2026-05-11 Alanna Whitcombe Penicillin
+55-40183          Cellulitis 2026-05-06  2026-05-13 Alanna Whitcombe       None
+55-40184               COPD  2026-05-07  2026-05-12      Peter Ngoma    Latex
+
+[Sheet: Discharge Medication]
+- Total Rows: 3
+
+     MRN        Drug     Dose Frequency Status
+55-40182 Amoxicillin   500 mg       TDS Active
+55-40182   Ibuprofen   400 mg       PRN Stopped
+55-40182   Metformin   850 mg        BD Active
+
+[Sheet: Procedures]
+- Total Rows: 2
+
+     MRN                  Procedure       Date
+55-40182 CT pulmonary angiogram 2026-05-05
+55-40182  Bronchoscopy with lavage 2026-05-06
+"""
+
 DOCUMENTS = {
+    "fin_sales_sheet":      FIN_SALES_SHEET,
+    "legal_register_sheet": LEGAL_REGISTER_SHEET,
+    "health_census_sheet":  HEALTH_CENSUS_SHEET,
     "fin_quarterly":   FIN_QUARTERLY,
     "legal_msa":       LEGAL_MSA,
     "research_paper":  RESEARCH_PAPER,

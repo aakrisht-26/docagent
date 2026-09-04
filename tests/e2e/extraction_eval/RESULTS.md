@@ -12,20 +12,70 @@ python tests/e2e/extraction_eval/run_eval.py --verbose  # per-field detail
 Research, Healthcare, General). Every expected value is present in its
 document, so the ceiling of 28/28 is reachable.
 
-## Headline
+## Headline — restated, because the first version measured prose
 
-| path | correct | wrong | missing | completeness | correctness |
-|---|---|---|---|---|---|
-| **LLM** (`openai/gpt-oss-120b`) | **27–28 / 28** | 0–1 | 0 | 100% | 96–100% |
-| **regex fallback** | **0 / 28** | 0 | 28 | **0%** | n/a |
+| input kind | correct | wrong | missing | |
+|---|---|---|---|---|
+| **prose** (5 documents, 28 fields) | **27–28 / 28** | 0–1 | 0 | **96–100%** |
+| **spreadsheet** (3 documents, 12 fields) | **7–9 / 12** | 3–4 | 0–1 | **58–75%** |
+| **regex fallback** (all) | 0 / 40 | 0 | 40 | 0% |
 
-Five consecutive LLM runs scored **28, 27, 27, 28, 28**. The only field that
-moves is `patient_id`; every other field was correct in every run.
+**The original headline of 27–28/28 was measured entirely on prose, and prose
+was easy to author.** The app does not only receive prose: `ExcelReaderSkill`
+emits a tabular dump, and the classifier routes those dumps to typed schemas —
+a sales sheet reaches Financial, a ward census reaches Healthcare, a contract
+register reaches Legal. Three of the four typed schemas are reachable from
+tabular input, and none of them had a tabular fixture.
 
-The runner prints a warning when it scores full marks, because a metric at its
-ceiling cannot discriminate and saying so is more useful than reporting a pass.
+That gap was not hypothetical. `sample_sales.xlsx`, a real fixture in the e2e
+harness, returned **zero** of the seven Financial fields while the prose
+Financial fixture returned all seven.
 
-## The correctness metric saturates, and that is the finding
+**The prose number still saturates; the spreadsheet number does not**, and the
+spreadsheet cases are where the eval now earns its keep.
+
+## What the spreadsheet fixtures found
+
+Three failures, all real, none of them a matcher artefact:
+
+| case | verdict | what happened |
+|---|---|---|
+| `fin-sheet-01` `revenue` | **WRONG** | emitted **2,379,900** — *exactly the sum of the Revenue column*, a figure in no document. The sheet has a Revenue column and no totals row, so no total is stated. The model did arithmetic and presented it as an extracted fact. |
+| `health-sheet-01` `medications` | **WRONG** | included **Ibuprofen**, whose Status column reads `Stopped`. On the PROSE health fixture the same model correctly excluded the discontinued drug; a `Status: Stopped` cell is not enough. |
+| `health-sheet-01` `patient_id` | **WRONG** | leaked all three MRNs. The schema says *"anonymise if present"*. On prose that instruction held in ~11 of 13 attempts; against a column of MRNs it fails outright. |
+
+The first and third are the two categories the eval now distinguishes:
+
+- **`must_be_absent` — fabrication.** The value is NOT in the document and must
+  not be invented.
+- **`must_be_withheld` — policy.** The value IS in the document and must not be
+  emitted anyway.
+
+Both make silence correct and a value wrong, but the fixture invariants are
+opposite, and the harness asserts both: a fabrication marker must be absent from
+the document, a withheld value must be present in it. Conflating them was caught
+by the eval's own harness test, not by review.
+
+## Schema coverage: what a document can support at all
+
+| case | input | assertable fields |
+|---|---|---|
+| `fin-01` | prose | 6 / 7 |
+| `fin-sheet-01` | **spreadsheet** | **2 / 7** |
+| `legal-01` | prose | 5 / 7 |
+| `legal-sheet-01` | **spreadsheet** | 4 / 7 |
+| `health-01` | prose | 6 / 7 |
+| `health-sheet-01` | **spreadsheet** | 6 / 7 |
+
+This separates "the extractor missed it" from "the document does not contain
+it". A sales spreadsheet supports **2 of the 7 Financial fields** — it states no
+net income, no EPS, no guidance, no risks and no total revenue. That is a
+schema-fit problem, not an extraction problem, and no amount of prompt work
+fixes it. A ward census, by contrast, supports 6 of 7 Healthcare fields: tabular
+input is not uniformly worse, it is worse where the schema asks for figures a
+narrative states and a table does not.
+
+## The prose metric saturates, and that is the finding
 
 **It should be read as a regression guard, not as a score with headroom.** The
 extractor sits at the ceiling on these fixtures, so the eval cannot rank an

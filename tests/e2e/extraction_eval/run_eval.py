@@ -123,9 +123,40 @@ def _flatten(value: Any) -> str:
 
 def judge_field(emitted: Any, spec: Dict[str, Any]) -> Tuple[str, str]:
     """Return (verdict, reason) for one expected field."""
+    text = _flatten(emitted) if emitted is not None else ""
+
+    # TWO DIFFERENT REASONS A FIELD SHOULD BE EMPTY, and they are not the same
+    # test. Conflating them was caught by the eval's own harness test.
+    #
+    #   must_be_absent   FABRICATION. The value is NOT in the document and must
+    #                    not be invented. A sales sheet with a Revenue column
+    #                    and no totals row states no total revenue, so emitting
+    #                    2,379,900 -- the column sum, present in no document --
+    #                    means the model did arithmetic and presented it as an
+    #                    extracted fact.
+    #
+    #   must_be_withheld POLICY. The value IS in the document and must not be
+    #                    emitted anyway. `patient_id` is specified as "anonymise
+    #                    if present", so a column of MRNs is a test of whether
+    #                    that instruction survives tabular input.
+    #
+    # Both make silence CORRECT and a value WRONG. They differ in what the
+    # fixture must contain, which is why the harness asserts opposite things
+    # about them, and in what a failure means to a reader: one is an invented
+    # number, the other is a leaked identifier.
+    if spec.get("must_be_absent") or spec.get("must_be_withheld"):
+        if not text.strip():
+            return CORRECT, ""
+        leaked = spec.get("must_be_withheld")
+        for fragment in spec.get("must_not_contain", []):
+            if _contains(text, fragment):
+                return WRONG, (f"leaked {fragment!r} (the schema says withhold it)"
+                               if leaked else
+                               f"invented {fragment!r} (not stated in the document)")
+        return WRONG, f"emitted {text[:60]!r} where the correct answer is none"
+
     if emitted is None:
         return MISSING, "field not emitted"
-    text = _flatten(emitted)
     if not text.strip():
         return MISSING, "field emitted but empty"
 
@@ -200,7 +231,8 @@ def main(argv: List[str]) -> int:
             details.append((field, verdict, reason, entities.get(field)))
         per_case.append((case, method, counts, details))
         n = sum(counts.values())
-        print(f"  {case['id']:12} {case['domain']:11} {method:16} "
+        kind = case.get("input_kind", "prose")
+        print(f"  {case['id']:15} {case['domain']:11} {kind:11} {method:20} "
               f"correct {counts[CORRECT]}/{n}   wrong {counts[WRONG]}   "
               f"missing {counts[MISSING]}")
         if args.verbose:
@@ -224,6 +256,35 @@ def main(argv: List[str]) -> int:
         print(f"  correctness (of what it emitted) : "
               f"{totals[CORRECT] / emitted:.0%}")
     print(f"  extraction methods used : {methods}")
+
+    # PROSE AND SPREADSHEET ARE REPORTED SEPARATELY, because averaging them
+    # hides the finding. Every fixture used to be prose, and prose was easy to
+    # author -- while the app routes spreadsheet dumps to Financial, Healthcare
+    # and Legal. The combined number was measuring prose comprehension.
+    print()
+    for kind in ("prose", "spreadsheet"):
+        rows = [(c, cnt) for c, _m, cnt, _d in per_case
+                if c.get("input_kind", "prose") == kind]
+        if not rows:
+            continue
+        ok = sum(cnt[CORRECT] for _c, cnt in rows)
+        bad = sum(cnt[WRONG] for _c, cnt in rows)
+        gone = sum(cnt[MISSING] for _c, cnt in rows)
+        tot = ok + bad + gone
+        print(f"  {kind:11} {ok:3}/{tot:<3} correct   {bad} wrong   {gone} missing"
+              f"   ({ok / tot:.0%})")
+
+    # SCHEMA COVERAGE: how many of a schema's fields the document can support at
+    # all. This is the number that separates "the extractor missed it" from
+    # "the document does not contain it", and it is where tabular input differs
+    # most from prose.
+    print()
+    print("  schema coverage — fields the document can support, of the schema's total")
+    for case, _method, _counts, _details in per_case:
+        schema = _DOMAIN_SCHEMAS[_DOMAIN_ALIASES.get(case["domain"], "General")]
+        scored = len(case["fields"])
+        kind = case.get("input_kind", "prose")
+        print(f"    {case['id']:15} {kind:11} {scored}/{len(schema)} fields assertable")
 
     if totals[CORRECT] == total:
         print("\n  NOTE: every field scored correct. A metric at its ceiling "

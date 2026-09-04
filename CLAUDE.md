@@ -264,7 +264,42 @@ fallback path, `--verbose` for per-field detail. 28 scored fields over five
 documents, one per schema. Full method and per-case reasoning in
 `tests/e2e/extraction_eval/RESULTS.md`.
 
-**Measured: LLM path 27-28/28 across five runs; regex fallback 0/28.**
+**Measured, and REPORTED BY INPUT KIND because averaging them hides the
+finding: prose 27-28/28 (96-100%), spreadsheet 7-9/12 (58-75%), regex
+fallback 0/40.**
+
+**The eval's fixtures were all prose, and prose was easy to author.** The app
+does not only receive prose: `ExcelReaderSkill` emits a tabular dump and the
+classifier routes those dumps to typed schemas -- a sales sheet reaches
+Financial, a ward census reaches Healthcare, a contract register reaches Legal.
+Three of the four typed schemas are reachable from tabular input and none had a
+tabular fixture. Research is the exception: a research spreadsheet classifies
+Technical, resolves to General, and is gated out, so its prose fixture is
+representative.
+
+That gap was not hypothetical. `sample_sales.xlsx`, a real e2e fixture,
+returned ZERO of the seven Financial fields while the prose Financial fixture
+returned all seven.
+
+**Three failures the spreadsheet fixtures found**, none a matcher artefact:
+`revenue` emitted 2,379,900 -- exactly the Revenue column's sum, a figure in no
+document; `medications` included a drug whose Status column reads `Stopped`,
+which the same model correctly excluded from the PROSE fixture; and
+`patient_id` leaked every MRN despite the schema saying "anonymise if present",
+which held on prose and fails outright against a column.
+
+**The eval distinguishes fabrication from policy**, because they are different
+tests with opposite fixture invariants: `must_be_absent` names a value that is
+NOT in the document and must not be invented, `must_be_withheld` names one that
+IS in the document and must not be emitted. The harness asserts both directions.
+Conflating them was caught by the harness, not by review.
+
+**Schema coverage is reported separately** -- how many of a schema's fields the
+document can support at all. A sales spreadsheet supports 2 of 7 Financial
+fields; a ward census supports 6 of 7 Healthcare fields. Tabular input is not
+uniformly worse, it is worse where the schema asks for figures a narrative
+states and a table does not. That is schema fit, not extraction quality, and no
+prompt work fixes it.
 
 **THE CORRECTNESS METRIC SATURATES, and that is the honest reading.** The
 fixtures carry deliberate near misses -- prior-year revenue beside this year's,

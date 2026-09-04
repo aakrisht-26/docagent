@@ -178,6 +178,12 @@ _M_RATE_LIMITED = "unavailable_rate_limited"
 _M_LLM_FAILED   = "unavailable_llm_failed"
 _M_NO_LLM       = "unavailable_no_llm"
 _M_UNPARSEABLE  = "unavailable_unparseable"
+
+#: Valid JSON, every value empty. NOT an unavailable method and NOT a failure:
+#: the document was read and genuinely contains none of the schema's fields.
+#: A sales spreadsheet has no net income, no EPS and no stated total revenue,
+#: and saying so is the extractor working rather than failing.
+_M_NO_FIELDS_FOUND = "no_fields_found"
 _M_REGEX_PARTIAL = "regex_partial"
 
 #: Every method that means "extraction did not run". Used by the caller to
@@ -186,6 +192,39 @@ _M_REGEX_PARTIAL = "regex_partial"
 UNAVAILABLE_METHODS = frozenset({
     _M_TRUNCATED, _M_RATE_LIMITED, _M_LLM_FAILED, _M_NO_LLM, _M_UNPARSEABLE,
 })
+
+
+def _first_json_object(text: str) -> str:
+    """The first balanced {...} in `text`, or "".
+
+    The previous version used a regex for a brace pair, which cannot match
+    an object containing a nested object -- and a schema whose values are lists
+    of dicts produces exactly that. Balancing braces costs nothing and removes a
+    class of false "unparseable".
+    """
+    start = text.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = escaped = False
+    for i, ch in enumerate(text[start:], start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return ""
 
 
 class StructuredExtractionSkill(BaseSkill):
@@ -389,16 +428,26 @@ class StructuredExtractionSkill(BaseSkill):
                 return salvaged, _M_REGEX_PARTIAL, warning
             return {}, method, warning
 
-        entities = self._parse_json_response(content, field_schema)
+        entities, json_found = self._parse_json_response(content, field_schema)
         if entities:
             return entities, f"llm_{self._llm.provider}", None
 
-        # A reply arrived and yielded no usable fields. That is a different
-        # failure again from an absent reply -- the model answered, and either
-        # the JSON was malformed or every value was empty -- so it gets its own
-        # method rather than being folded into the others.
+        # VALID JSON WITH NOTHING IN IT IS NOT A FAILURE. The model read the
+        # document, found none of the schema's fields, and said so in the shape
+        # it was asked for. On a sales spreadsheet that is the correct answer:
+        # there is no net income, no EPS, no guidance, and no STATED total
+        # revenue. Reporting it as a failure blamed the system for working.
+        if json_found:
+            return {}, _M_NO_FIELDS_FOUND, (
+                f"Structured extraction found none of the {len(field_schema)} "
+                f"fields the {domain} schema asks for. The document was read "
+                f"and the model reported no match, which is the correct answer "
+                f"when a document does not contain them."
+            )
+
+        # No JSON object at all. That IS a failure of the reply.
         salvaged = self._regex_supplement(full_text, field_schema)
-        cause = "the model replied but no schema field could be parsed from it"
+        cause = "the model replied but the reply contained no JSON object"
         warning = self._compose(cause, len(salvaged), len(field_schema))
         if salvaged:
             return salvaged, _M_REGEX_PARTIAL, warning
@@ -407,30 +456,42 @@ class StructuredExtractionSkill(BaseSkill):
     @staticmethod
     def _parse_json_response(
         content: str, field_schema: Dict[str, str]
-    ) -> Dict[str, Any]:
-        """Robustly extract a JSON object from LLM output."""
-        # Try the full response first
-        try:
-            obj = json.loads(content.strip())
-            if isinstance(obj, dict):
-                # Filter to known keys, remove null/empty values
-                return {k: v for k, v in obj.items() if v and k in field_schema}
-        except json.JSONDecodeError:
-            pass
+    ) -> Tuple[Dict[str, Any], bool]:
+        """Extract a JSON object from the reply.
 
-        # Try to find a JSON object in the response
-        match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
-        if match:
+        Returns (fields, json_found). The SECOND value is the point.
+
+        "No fields" used to mean two different things and both were reported as
+        `unavailable_unparseable`:
+
+          - the reply was not JSON at all, or held no object -- a real failure;
+          - the reply was perfect JSON in which every value was null -- the
+            model looking at the document and correctly finding nothing.
+
+        `sample_sales.xlsx` produces the second, every time. The model returns
+        `{"revenue": null, "net_income": null, ...}` because a sales sheet has
+        no net income, no EPS, no guidance and no STATED total revenue, and the
+        prompt tells it to use null for what is not there and to extract only
+        what is explicitly stated. Reporting that as a parse failure blamed the
+        parser for the model being right.
+
+        That the refusal is right was checked rather than assumed: asked the
+        same document WITHOUT the "only explicitly stated" instruction, the
+        model returned `revenue: "$2,379,900"` -- exactly the sum of the Revenue
+        column, a figure that appears nowhere in the sheet.
+        """
+        for candidate in (content.strip(),
+                          _first_json_object(content)):
+            if not candidate:
+                continue
             try:
-                obj = json.loads(match.group())
-                if isinstance(obj, dict):
-                    return {k: v for k, v in obj.items() if v and k in field_schema}
+                obj = json.loads(candidate)
             except json.JSONDecodeError:
-                pass
-
-        return {}
-
-    # ── Regex fallback ─────────────────────────────────────────────────────────
+                continue
+            if isinstance(obj, dict):
+                return ({k: v for k, v in obj.items() if v and k in field_schema},
+                        True)
+        return {}, False
 
     @staticmethod
     def _regex_extract(full_text: str) -> Tuple[Dict[str, Any], str]:

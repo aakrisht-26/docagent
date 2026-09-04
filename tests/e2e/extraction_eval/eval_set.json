@@ -308,6 +308,127 @@
           "note": ""
         }
       }
+    },
+    {
+      "id": "fin-sheet-01",
+      "fixture": "fin_sales_sheet",
+      "domain": "Financial",
+      "input_kind": "spreadsheet",
+      "fields": {
+        "revenue": {
+          "must_be_absent": true,
+          "must_not_contain": [
+            "2379900",
+            "2,379,900"
+          ],
+          "note": "The sheet has a Revenue COLUMN and no totals row, so no total revenue is stated. 2,379,900 is the column sum and appears in no document. Emitting it is fabrication, and this is the most valuable thing the eval can catch."
+        },
+        "fiscal_period": {
+          "must_contain_any": [
+            [
+              "q3",
+              "third quarter"
+            ]
+          ],
+          "must_contain": [],
+          "must_not_contain": [],
+          "note": "The sheet is named 'Q3 FY26 Sales', so the period is stated."
+        }
+      }
+    },
+    {
+      "id": "legal-sheet-01",
+      "fixture": "legal_register_sheet",
+      "domain": "Legal",
+      "input_kind": "spreadsheet",
+      "fields": {
+        "parties": {
+          "must_contain": [
+            "northwind",
+            "calder"
+          ],
+          "must_not_contain": [
+            "barrowfield",
+            "hensleigh",
+            "draycott"
+          ],
+          "note": "A Notes sheet states Barrowfield is guarantor only; advisers are not parties."
+        },
+        "effective_date": {
+          "must_contain": [
+            "2026-03-01"
+          ],
+          "must_not_contain": [],
+          "note": "Stated in the Effective column."
+        },
+        "termination_date": {
+          "must_contain": [
+            "2029-02-28"
+          ],
+          "must_not_contain": [],
+          "note": "Stated in the Expiry column."
+        },
+        "governing_law": {
+          "must_contain": [
+            "england"
+          ],
+          "must_not_contain": [],
+          "note": "Two rows carry England and Germany; England must appear."
+        }
+      }
+    },
+    {
+      "id": "health-sheet-01",
+      "fixture": "health_census_sheet",
+      "domain": "Healthcare",
+      "input_kind": "spreadsheet",
+      "fields": {
+        "diagnoses": {
+          "must_contain": [
+            "cellulitis"
+          ],
+          "must_not_contain": [],
+          "note": "Stated in the Diagnosis column."
+        },
+        "medications": {
+          "must_contain": [
+            "amoxicillin",
+            "metformin"
+          ],
+          "must_not_contain": [
+            "ibuprofen"
+          ],
+          "note": "Ibuprofen is marked Stopped in the Status column."
+        },
+        "procedures": {
+          "must_contain": [
+            "bronchoscopy"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "physician": {
+          "must_contain": [
+            "whitcombe"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "allergies": {
+          "must_contain": [
+            "penicillin"
+          ],
+          "must_not_contain": [],
+          "note": ""
+        },
+        "patient_id": {
+          "must_be_withheld": true,
+          "must_not_contain": [
+            "55-40182"
+          ],
+          "note": "POLICY, not fabrication: the MRN IS in the document and the schema says 'anonymise if present'. A column of MRNs is a harder test of that instruction than one labelled value, and emitting it leaks an identifier rather than inventing one."
+        }
+      }
     }
   ]
 }

@@ -104,12 +104,61 @@ class TestTheCeilingIsReachable(unittest.TestCase):
         for case in CASES:
             document = RUNNER._normalise_for_match(DOCUMENTS[case["fixture"]])
             for field, spec in case["fields"].items():
+                # `must_be_absent` inverts the meaning of must_not_contain: the
+                # fragment is a value the model must NOT INVENT, so it is
+                # deliberately not in the document. Requiring it to be present
+                # would be exactly backwards -- 2,379,900 is a fabrication
+                # marker, not a distractor.
+                if spec.get("must_be_absent") or spec.get("must_be_withheld"):
+                    continue
                 for fragment in spec.get("must_not_contain", []):
                     with self.subTest(case=case["id"], field=field, frag=fragment):
                         self.assertIn(RUNNER._normalise_for_match(fragment),
                                       document,
                                       "distractor is absent from the fixture, "
                                       "so this assertion can never fail")
+
+    def test_absence_assertions_name_a_value_that_is_NOT_in_the_document(self):
+        """The mirror image, and it has to hold or the assertion is vacuous.
+
+        A `must_be_absent` field names fabrication markers. If one of them were
+        actually in the document, the model could emit it legitimately and the
+        eval would score a correct answer as invented.
+        """
+        DOCUMENTS = RUNNER.DOCUMENTS
+        for case in CASES:
+            document = RUNNER._normalise_for_match(DOCUMENTS[case["fixture"]])
+            for field, spec in case["fields"].items():
+                if not spec.get("must_be_absent"):
+                    continue
+                for fragment in spec.get("must_not_contain", []):
+                    with self.subTest(case=case["id"], field=field, frag=fragment):
+                        self.assertNotIn(RUNNER._normalise_for_match(fragment),
+                                         document,
+                                         "this value IS in the document, so "
+                                         "emitting it would not be fabrication")
+
+
+    def test_withheld_values_ARE_in_the_document(self):
+        """The opposite invariant to the one above, and the reason the two
+        rules are separate.
+
+        A `must_be_withheld` value is present and must not be emitted anyway.
+        If it were absent, withholding it would be automatic and the assertion
+        would prove nothing about whether the anonymisation instruction works.
+        """
+        DOCUMENTS = RUNNER.DOCUMENTS
+        for case in CASES:
+            document = RUNNER._normalise_for_match(DOCUMENTS[case["fixture"]])
+            for field, spec in case["fields"].items():
+                if not spec.get("must_be_withheld"):
+                    continue
+                for fragment in spec.get("must_not_contain", []):
+                    with self.subTest(case=case["id"], field=field, frag=fragment):
+                        self.assertIn(RUNNER._normalise_for_match(fragment),
+                                      document,
+                                      "the value is not in the document, so "
+                                      "withholding it is trivial")
 
 
 class TestThisModuleDoesNotPoisonOtherTests(unittest.TestCase):
