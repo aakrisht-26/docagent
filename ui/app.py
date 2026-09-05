@@ -550,6 +550,48 @@ STAGE_POSITIONS = {
 TOTAL_STAGES = 6.0
 
 
+def _keys_status():
+    """The rotation's live view of the API keys, or None if it cannot be read.
+
+    Never raises: a failure to inspect the keys must not stop a run that would
+    otherwise have worked.
+    """
+    try:
+        from utils.llm_client import LLMClient
+        return LLMClient.from_config(_cfg.to_dict()).keys_status()
+    except Exception:                                   # pragma: no cover
+        return None
+
+
+def _report_unreachable(keys: dict) -> None:
+    """Say plainly that the model cannot be called, and why.
+
+    Split because the two causes need different actions from the reader: one is
+    a wait, the other is a deployment fix, and telling a user to check their
+    keys when the keys are fine wastes their time — which is exactly what the
+    give-up path used to do, reporting a spent quota as "known-invalid (401)".
+    """
+    from utils.llm_client import LLMClient
+
+    if keys["parked"] or keys.get("day_exhausted"):
+        st.error(
+            f"**The model cannot be reached right now.** All "
+            f"{keys['configured']} API key(s) have hit their rate limit. The "
+            f"quota resets {LLMClient.describe_reset(keys['seconds_until_reset'])}."
+            "\n\nNothing was analysed and no quota was spent — the run "
+            f"was stopped rather than left to produce a degraded summary. Try "
+            f"again after that.",
+            icon=":material/hourglass_top:",
+        )
+    else:
+        st.error(
+            f"**The model cannot be reached.** All {keys['configured']} API "
+            f"key(s) were rejected by the provider as invalid (401). This is a "
+            f"configuration problem, not a quota one: check `GROQ_API_KEYS`.",
+            icon=":material/key_off:",
+        )
+
+
 def _rerun_guard():
     """Return (holder, ui) for deferring a mid-run Streamlit rerun request.
 
@@ -618,6 +660,46 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             summary_length=overrides.get("summary_length", "Standard"),
             summary_tone=overrides.get("summary_tone", "Professional"),
         )
+
+        # ── Can the model be reached at all? ─────────────────────────────────
+        #
+        # The rotation already knew this and said nothing. It parks a key when
+        # the tier refuses it and derives the reset from the retry-after — but
+        # that knowledge stopped at the log, so a run with every key spent
+        # looked exactly like a slow one. The user waited through parse, clean
+        # and classify, then got an extractive summary with a note that names
+        # the symptom and not the cause.
+        #
+        # THREE STATES; only one is worth interrupting for.
+        #   some parked, some live  → normal. Nothing is said: rotation is
+        #                             doing its job and the run will succeed.
+        #   all parked              → the model cannot be called at all. Say
+        #                             so, say when it reopens, and STOP —
+        #                             running would spend a minute of the
+        #                             user's time on a knowingly degraded
+        #                             result. Not waiting: the window is
+        #                             minutes to hours, not seconds.
+        #   day_exhausted           → the same thing, and NOT covered by the
+        #                             row above. A daily refusal usually leaves
+        #                             its key live — the rotation parks it only
+        #                             once headroom drops below a small-request
+        #                             floor — so `live` reads 8 of 8 while the
+        #                             day is spent. Checking `live` alone was
+        #                             tested against a forced refusal and stayed
+        #                             silent through all of it.
+        #   none configured         → already surfaced, by _cfg.validate() in
+        #                             the sidebar config-health block. Left
+        #                             alone rather than duplicated.
+        #
+        # A fresh client is correct here, not a shortcut: `_shared_key_state`
+        # keys the parked/dead tables by the key LIST, so a client built from
+        # the same config sees the very state the pipeline's skills mutate.
+        # Construction is lazy — no socket is opened by asking.
+        _keys = _keys_status()
+        if _keys and _keys["configured"] and (
+                not _keys["live"] or _keys.get("day_exhausted")):
+            _report_unreachable(_keys)
+            return
 
         # Presentation only. The bar and the per-stage lines now sit inside an
         # st.status panel, so a run reads as a checklist that has a state
