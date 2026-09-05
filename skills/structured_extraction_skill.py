@@ -16,6 +16,7 @@ parseable output. Falls back to regex-based extraction if LLM is unavailable.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -194,6 +195,63 @@ UNAVAILABLE_METHODS = frozenset({
 })
 
 
+#: Numeric tokens, including thousands separators and decimals.
+_RE_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numeric_tokens(text: str) -> List[str]:
+    """Every number in `text`, commas stripped, as strings.
+
+    Strings rather than floats: "2.14" and "2.140" are different claims about a
+    document, and float equality would merge them.
+    """
+    return [m.group(0).replace(",", "").rstrip(".")
+            for m in _RE_NUMBER.finditer(text or "")]
+
+
+def unverified_numbers(value: object, source: str) -> List[str]:
+    """Numbers in `value` that do not appear anywhere in `source`.
+
+    THIS IS THE FABRICATION CHECK, and it exists because the model's refusal to
+    invent a total turned out to be an accident rather than a safeguard.
+
+    Measured: asked for Financial fields from a sales spreadsheet whose Revenue
+    column has no totals row, the model emitted 2,379,900 -- exactly the column
+    sum, a figure in no document -- on 20 of 20 interleaved runs of one text and
+    0 of 20 of another. The two texts differ by ONE LINE, and an A/B over the
+    two variables in that line found that BOTH perturbations independently
+    cause it: removing a 60-character separator, or adding "FY26" to a sheet
+    name. Only the exact original refuses, 0/26. The refusal is not the model
+    applying "extract only what is stated"; it is one input that happens to land
+    on the right side.
+
+    So a prompt instruction cannot be relied on here, and the arithmetic is
+    detectable after the fact: a number the model states as extracted should be
+    findable in the text it was extracted from.
+
+    DELIBERATELY NUMBERS ONLY. Prose can be legitimately paraphrased -- "Total
+    maintenance spend: 1.94 million (Northern depot)" restates the document in
+    words the document does not use, and that is correct behaviour. A FIGURE
+    cannot be paraphrased: 1.94 is either in the source or it is not. Checking
+    only numerals keeps the rule sharp enough to act on.
+
+    Returns the offending tokens, so the caller can name them.
+    """
+    if value is None:
+        return []
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    haystack = (source or "").replace(",", "")
+    missing = []
+    for token in _numeric_tokens(text):
+        # A bare year or a small integer is too common to be evidence of
+        # anything, and appears in dates, row counts and column headers. The
+        # figures worth catching are the ones a reader would act on.
+        if len(token.replace(".", "")) < 4:
+            continue
+        if token not in haystack:
+            missing.append(token)
+    return missing
+
 def _first_json_object(text: str) -> str:
     """The first balanced {...} in `text`, or "".
 
@@ -297,6 +355,55 @@ class StructuredExtractionSkill(BaseSkill):
         )
 
     # ── Why the LLM path produced nothing ──────────────────────────────────────
+
+    def _drop_unverified(
+        self, entities: Dict[str, Any], source: str
+    ) -> Tuple[Dict[str, Any], List[Tuple[str, List[str]]]]:
+        """Remove extracted values carrying numbers that are not in the source.
+
+        WHY DROP RATHER THAN FLAG. A wrong figure is worse than a missing one:
+        a missing revenue is visibly missing, a wrong one is a number somebody
+        may act on. The whole eval is built on that asymmetry, so the check acts
+        on it rather than annotating it.
+
+        WHY THIS IS SAFE ENOUGH TO DROP. Measured before switching it on: across
+        45 fields extracted from the eval's 8 documents it flagged 2, and BOTH
+        were genuine fabrications -- the 2,379,900 column sum, and a `key_facts`
+        entry asserting the year 2011, which appears nowhere in that document.
+        Zero false positives. That number is worth re-deriving if the schemas or
+        the model change; `tests/test_extraction_fabrication.py` pins the cases.
+
+        LIST ITEMS ARE DROPPED INDIVIDUALLY. `key_facts` held four sound facts
+        and one invented one; discarding the field would have lost the four to
+        punish the one.
+
+        Set DOCAGENT_EXTRACTION_VERIFY=false to disable, because silently
+        removing data the model produced is a behaviour change and should be
+        reversible without editing code.
+        """
+        if os.getenv("DOCAGENT_EXTRACTION_VERIFY", "").strip().lower() in (
+                "0", "false", "no"):
+            return entities, []
+
+        cleaned: Dict[str, Any] = {}
+        dropped: List[Tuple[str, List[str]]] = []
+        for key, value in entities.items():
+            if isinstance(value, (list, tuple)):
+                kept, bad = [], []
+                for item in value:
+                    missing = unverified_numbers(item, source)
+                    (bad.extend(missing) if missing else kept.append(item))
+                if bad:
+                    dropped.append((key, sorted(set(bad))))
+                if kept:
+                    cleaned[key] = kept
+                continue
+            missing = unverified_numbers(value, source)
+            if missing:
+                dropped.append((key, missing))
+            else:
+                cleaned[key] = value
+        return cleaned, dropped
 
     def _diagnose(self) -> Tuple[str, str]:
         """Which failure just happened, as (method, CAUSE clause).
@@ -430,6 +537,15 @@ class StructuredExtractionSkill(BaseSkill):
 
         entities, json_found = self._parse_json_response(content, field_schema)
         if entities:
+            entities, dropped = self._drop_unverified(entities, full_text)
+            if dropped:
+                names = "; ".join(f"{k} ({', '.join(nums)})" for k, nums in dropped)
+                return entities, f"llm_{self._llm.provider}", (
+                    f"Structured extraction discarded {len(dropped)} field(s) "
+                    f"carrying figures that do not appear in the document: "
+                    f"{names}. A number presented as extracted must be findable "
+                    f"in the text it was extracted from."
+                )
             return entities, f"llm_{self._llm.provider}", None
 
         # VALID JSON WITH NOTHING IN IT IS NOT A FAILURE. The model read the
