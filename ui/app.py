@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
+from streamlit.runtime.scriptrunner.exceptions import RerunException
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────────
 st.set_page_config(
@@ -549,6 +550,29 @@ STAGE_POSITIONS = {
 TOTAL_STAGES = 6.0
 
 
+def _rerun_guard():
+    """Return (holder, ui) for deferring a mid-run Streamlit rerun request.
+
+    `ui(call, *a, **kw)` makes a Streamlit call and captures a RerunException
+    into `holder["exc"]` instead of letting it unwind the caller. The caller is
+    expected to re-raise it once the work is safe.
+
+    Module level rather than a closure so it can be tested against the real
+    exception. See `tests/test_run_interruption.py`.
+    """
+    holder = {"exc": None}
+
+    def ui(call, *args, **kwargs):
+        try:
+            return call(*args, **kwargs)
+        except RerunException as exc:
+            if holder["exc"] is None:
+                holder["exc"] = exc
+            return None
+
+    return holder, ui
+
+
 def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
     """Run the document pipeline for a single file or YouTube URL."""
     from ui.components.results_view import render_results
@@ -609,6 +633,32 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # and the checklist was never visible while it mattered. Creating the
         # children off the container directly leaves the panel running until
         # the explicit update() calls below.
+        # ── Protecting the run from a mid-flight widget interaction ───────
+        #
+        # Streamlit services a queued interaction by raising RerunException at
+        # the next `st.*` call. `agent.run()` makes such calls through the
+        # progress wrapper below, so ANY widget touched while a document is
+        # analysing — the theme toggle, summary length, audience, the uploader,
+        # a history button — aborted the pipeline part-way and discarded work
+        # the user had already paid for in time and quota.
+        #
+        # Measured on sample_report.pdf, raising the real RerunException from
+        # the wrapper after stage 2: the run ended at 0.3s with nothing cached.
+        # Deferring it instead completed all 5 stages — 218 words, a
+        # 3,905-character summary — in 7.0s.
+        #
+        # So the interaction is DEFERRED, not dropped: captured here and
+        # honoured at the end of the function, once the result is safely in
+        # session state. The toggle still takes effect, one run later, and the
+        # analysis survives.
+        #
+        # Chosen over the alternatives deliberately. Disabling the controls for
+        # the duration needs a two-phase render (draw them disabled, then rerun
+        # to start the work) and still leaves the window between the click and
+        # that redraw, while taking the controls away rather than honouring
+        # them. Warning before discarding still discards.
+        _deferred_rerun, _ui = _rerun_guard()
+
         status_panel = st.status("Analysing document…", expanded=True)
         bar = status_panel.progress(0, text="Starting…")
         detail_placeholder = status_panel.empty()
@@ -640,18 +690,20 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             elapsed_s = time.monotonic() - start_ts
 
             if success:
-                bar.progress(pct, text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
+                _ui(bar.progress, pct,
+                    text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
                 completed.append(f"✓ {label.rstrip('…')} — {duration_ms / 1000:.1f}s")
             else:
                 # A failed stage must not read as progress.
-                bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
+                _ui(bar.progress, pct, text=f"Stage {stage_no}/6 · {label} FAILED")
                 completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
 
             # A vertical checklist rather than a truncated one-line caption:
             # inside the status panel there is room to keep every stage
             # visible, so a skipped or failed stage stays on screen instead of
             # scrolling out of the last-4 window.
-            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+            _ui(detail_placeholder.markdown,
+                "\n".join(f"- {c}" for c in completed))
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
@@ -666,10 +718,20 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # Always restore the original method so the cached agent stays clean
             agent._log_step = _orig_log  # type: ignore[method-assign]
 
+        # CACHED FIRST, before any further `st.*` call. Three of them sat
+        # between the pipeline returning and this assignment — the final
+        # progress update, the checklist, and the status container — and a
+        # rerun raised by any of them lost a run that had already finished.
+        if result.success:
+            st.session_state[state_key] = result
+            st.session_state[f"parsed_doc_{name}"] = result.parsed_document
+
         elapsed = time.monotonic() - start_ts
-        bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
+        _ui(bar.progress, 1.0,
+            text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:
-            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+            _ui(detail_placeholder.markdown,
+                "\n".join(f"- {c}" for c in completed))
 
         # Logged for every run, hosted or not. An analyse is by far the most
         # expensive operation the app performs, so it is the one worth counting.
@@ -681,8 +743,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
 
         with status_placeholder.container():
             if result.success:
-                st.session_state[state_key] = result
-                st.session_state[f"parsed_doc_{name}"] = result.parsed_document
+                # (already cached above, before any st.* call could raise)
                 # Auto-save to persistent history (non-blocking; errors are warnings).
                 #
                 # This step also embeds the document's chunks for search, which
@@ -744,6 +805,19 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 )
 
         render_results(result, export_cfg=_cfg.export)
+
+        # The run is finished and cached. NOW honour the interaction that
+        # arrived while it was working, so the user's toggle is applied
+        # rather than discarded — one run later than they clicked it.
+        if _deferred_rerun["exc"] is not None:
+            raise _deferred_rerun["exc"]
+
+    except RerunException:
+        # A rerun is control flow, not a failure. Without this clause the
+        # generic handler below caught it and rendered "Processing failed"
+        # over a run that had actually succeeded — and swallowed the
+        # rerun, so the interaction was lost as well as mislabelled.
+        raise
 
     except Exception as exc:
         # Log the full traceback before doing anything else, so the failure is
