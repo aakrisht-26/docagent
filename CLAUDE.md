@@ -288,6 +288,44 @@ which the same model correctly excluded from the PROSE fixture; and
 `patient_id` leaked every MRN despite the schema saying "anonymise if present",
 which held on prose and fails outright against a column.
 
+**EXTRACTION CAN INVENT A FIGURE, AND THE PROMPT DOES NOT PREVENT IT.** Asked
+to fill the Financial schema from a sales spreadsheet whose Revenue column has
+no totals row, the model computed the column sum -- 2,379,900, a figure in no
+document -- and returned it as extracted. The prompt already says to extract
+only what is explicitly stated.
+
+**It is deterministic per document, and the refusal is an accident.** Measured
+at 20 interleaved trials each: the app fixture 0/20, an eval fixture 20/20,
+Wilson 95% CIs [0%, 16%] and [84%, 100%]. The two documents differ by ONE LINE,
+and an A/B at 6 trials each found BOTH variables in that line independently
+cause it -- removing a 60-character separator, or adding "FY26" to a sheet name.
+Only the exact original refuses, 0 across 26 observations. So a document that
+refuses is one input landing on the right side of a boundary nobody controls;
+no untested document can be assumed safe. Do not spend a session tuning the
+prompt for this -- the instruction is already there and is not followed.
+
+**The fix is a post-extraction check, not a better instruction.**
+`unverified_numbers()` pulls the numerals out of each extracted value and drops
+any value carrying a number absent from the source, naming it in a warning.
+Prose can be paraphrased legitimately; a figure cannot. It is NUMBERS ONLY and
+ignores tokens under four digits.
+
+It DROPS rather than flags, and that is only defensible because the false
+positive rate was measured first: across 45 fields from 8 documents it flagged
+2, and both were real -- the column sum, and a `key_facts` entry asserting the
+year 2011 about a document whose only 4-digit number is 2026. Zero false
+positives. `DOCAGENT_EXTRACTION_VERIFY=false` disables it. Re-derive that
+number if the schemas or the model change; `tests/test_extraction_fabrication.py`
+pins the cases.
+
+**What it does not cover**, and this belongs next to the 27/27 citation figure
+rather than buried: a fabricated NAME, date range or claim carrying no digits
+passes it untouched, and two measured failures are unaddressed -- a medication
+whose Status column reads `Stopped` listed as current, and patient identifiers
+emitted from a schema that says to anonymise them. **Chat citations are 27/27
+with 0 wrong; extracted fields carry no equivalent guarantee and should be
+treated as a lead to verify.**
+
 **The eval distinguishes fabrication from policy**, because they are different
 tests with opposite fixture invariants: `must_be_absent` names a value that is
 NOT in the document and must not be invented, `must_be_withheld` names one that

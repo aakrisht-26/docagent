@@ -297,9 +297,9 @@ class TestFindingNothingIsNotAFailure(unittest.TestCase):
         self.assertNotIn("no_fields_found", UNAVAILABLE_METHODS)
 
     def test_a_populated_reply_is_unaffected(self):
-        out = self._reply('{"revenue": "412.7 million dollars", "eps": null}')
+        out = self._reply('{"revenue": "412,700 dollars", "eps": null}')
         self.assertTrue(out.data["method"].startswith("llm_"))
-        self.assertEqual(out.data["entities"], {"revenue": "412.7 million dollars"})
+        self.assertEqual(out.data["entities"], {"revenue": "412,700 dollars"})
 
 
 class TestTheJsonFinderHandlesNesting(unittest.TestCase):
@@ -324,8 +324,9 @@ class TestTheJsonFinderHandlesNesting(unittest.TestCase):
     def test_a_nested_reply_parses_end_to_end(self):
         skill = _skill()
         real = skill._llm.chat
+        # Same correction: $412,700 is in REGEX_READABLE, 412.7 is not.
         skill._llm.chat = lambda **kw: (
-            'Here you go: {"revenue": "412.7", "key_metrics": {"a": "1"}}')
+            'Here you go: {"revenue": "412,700", "key_metrics": {"a": "1"}}')
         skill._llm._last_finish_reason = "stop"
         skill._llm._last_failure = None
         try:
@@ -419,7 +420,12 @@ class TestUnchangedBehaviour(unittest.TestCase):
     def test_a_working_extraction_reports_the_provider(self):
         skill = _skill()
         real = skill._llm.chat
-        skill._llm.chat = lambda **kw: '{"revenue": "412.7 million dollars"}'
+        # The figure must be one that IS in REGEX_READABLE. This test used to
+        # inject "412.7 million dollars" against a source whose only such number
+        # is $412,700 -- a value the document does not contain. The fabrication
+        # check dropped it and the test failed, which was the check being right
+        # and the fixture being wrong.
+        skill._llm.chat = lambda **kw: '{"revenue": "412,700 dollars"}'
         skill._llm._last_finish_reason = "stop"
         skill._llm._last_failure = None
         try:
@@ -430,7 +436,7 @@ class TestUnchangedBehaviour(unittest.TestCase):
             skill._llm.chat = real
         self.assertTrue(out.success)
         self.assertTrue(out.data["method"].startswith("llm_"))
-        self.assertEqual(out.data["entities"]["revenue"], "412.7 million dollars")
+        self.assertEqual(out.data["entities"]["revenue"], "412,700 dollars")
         self.assertFalse(out.warnings)
 
 

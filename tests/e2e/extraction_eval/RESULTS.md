@@ -56,6 +56,85 @@ opposite, and the harness asserts both: a fabrication marker must be absent from
 the document, a withheld value must be present in it. Conflating them was caught
 by the eval's own harness test, not by review.
 
+## The revenue fabrication is deterministic, and the refusal is an accident
+
+The first investigation could not reproduce it and encoded it as a scored
+expectation instead. Measured properly, it is **not nondeterministic at all.**
+
+**20 trials per document, interleaved so timing cannot confound:**
+
+| document | fabricated | rate | 95% CI (Wilson) |
+|---|---|---|---|
+| `sample_sales.xlsx` (app fixture) | 0 / 20 | **0%** | [0%, 16%] |
+| `fin_sales_sheet` (eval fixture) | 20 / 20 | **100%** | [84%, 100%] |
+
+Perfectly separated, non-overlapping intervals. The earlier contradictory
+readings were 3–5 trials each — too few to see a split this sharp.
+
+**The two documents differ by exactly one line.** A unified diff of the full
+texts returns a single hunk:
+
+```
+- ────────────────────────────────────────────────────────────[Sheet: Q3 Sales]
++ [Sheet: Q3 FY26 Sales]
+```
+
+So there were two candidate variables. An A/B at 6 trials each isolates them:
+
+| variant | fabricated |
+|---|---|
+| **separator + `Q3 Sales`** (the app fixture) | **0 / 6** |
+| no separator + `Q3 Sales` | 6 / 6 |
+| separator + `Q3 FY26 Sales` | 6 / 6 |
+| no separator + `Q3 FY26 Sales` | 6 / 6 |
+
+**Both perturbations independently cause it.** Only the exact original refuses
+— 0 across 26 observations. Removing a 60-character separator line, or adding
+two characters to a sheet name, is enough to flip the model from declining to
+computing a total and presenting it as extracted.
+
+**That is the finding, and it is worse than nondeterminism would have been.**
+The refusal is not the model applying "extract only what is explicitly stated";
+it is one input landing on the right side of a boundary nobody controls. The
+instruction is in the prompt and it is not being followed. So the correct
+reading of `sample_sales.xlsx` returning null is luck, not a safeguard, and no
+document we have not already tested can be assumed safe.
+
+## The fabrication check
+
+A prompt instruction cannot be relied on here, but **a fabricated figure is
+detectable after the fact**: a number presented as extracted should be findable
+in the text it was extracted from. Prose can be legitimately paraphrased; a
+figure cannot. `1.94` is either in the source or it is not.
+
+`unverified_numbers()` extracts numerals from each value and checks them
+against the source, ignoring tokens under four digits (row counts, small
+integers and column indices are everywhere and would drown the signal).
+
+**Measured before switching it on: across 45 fields extracted from the eval's
+8 documents it flagged 2, and both were genuine fabrications.**
+
+| flagged | verdict |
+|---|---|
+| `revenue: 2,379,900` | the column sum, in no document |
+| `key_facts: …2011…` | an invented year; that document's only 4-digit number is 2026 |
+
+**Zero false positives.** That is why the check **drops** rather than flags: a
+wrong figure is worse than a missing one, and dropping is only defensible
+because the false-positive rate was measured first rather than assumed.
+
+List items are dropped individually — `key_facts` held four sound facts and one
+invented one, and discarding the field would have lost the four to punish the
+one. The caller is told what was removed and which figure triggered it, because
+removing a value silently would be its own failure.
+
+`DOCAGENT_EXTRACTION_VERIFY=false` disables it.
+
+**What it does not address.** It is numbers only, so the two remaining
+spreadsheet failures are untouched and correctly so: `medications` including a
+drug whose Status column reads `Stopped`, and `patient_id` leaking MRNs. Those
+are selection and policy failures, not arithmetic.
+
 ## Schema coverage: what a document can support at all
 
 | case | input | assertable fields |

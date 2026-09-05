@@ -229,6 +229,37 @@ that changes. The LLM-dependent figures — answer and citation correctness — 
 **33/33 answers, 27/27 correct prose citations with 0 wrong**, measured on
 `openai/gpt-oss-120b`.
 
+### Structured extraction can invent a figure, and that is a real limitation
+
+Chat citations are 27/27 correct with 0 wrong. **Structured extraction carries
+no equivalent guarantee, and the failure is worse in kind:** asked to fill a
+Financial schema from a sales spreadsheet whose Revenue column has no totals
+row, the model computed the column sum — **2,379,900, a figure that appears
+nowhere in the document** — and returned it as an extracted fact.
+
+The prompt already forbids this: it says to extract only what is explicitly
+stated. Measured, that instruction is not reliably followed. Two documents
+differing by **one line** produced 0/20 and 20/20 fabrication rates
+(non-overlapping 95% intervals), and an A/B showed **both** perturbations in
+that line independently cause it — removing a 60-character separator, or adding
+two characters to a sheet name. Only the exact original refuses. So the refusal
+is an accident of one input, not a safeguard, and no untested document can be
+assumed safe.
+
+**What is done about it.** A number presented as extracted is checked against
+the source text and **dropped if it is not there**, with a warning naming the
+figure. Prose can be paraphrased legitimately; a figure cannot. Across 45 fields
+from 8 documents the check flagged 2 and both were genuine fabrications — the
+column sum, and an invented year — with **zero false positives**, which is why
+it drops rather than merely flags. Disable with `DOCAGENT_EXTRACTION_VERIFY=false`.
+
+**What remains.** The check is numbers only. A fabricated *name*, date range or
+claim carrying no digits would pass it, and two measured failures it does not
+address are a medication whose status column reads `Stopped` being listed as
+current, and patient identifiers being emitted from a schema that says to
+anonymise them. Treat extracted fields as a lead to verify, not as a citation.
+Full method in [tests/e2e/extraction_eval/RESULTS.md](tests/e2e/extraction_eval/RESULTS.md).
+
 Sub-chunking improves **ranking, not recall** — page-level chunking already put
 the answer in the context on every case. Three cases moved from rank 2 to rank 1
 and none regressed. It also fixes a silent truncation bug: the embedding model
