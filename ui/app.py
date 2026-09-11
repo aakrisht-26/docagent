@@ -550,6 +550,88 @@ STAGE_POSITIONS = {
 TOTAL_STAGES = 6.0
 
 
+def _clock(seconds: float) -> str:
+    """A point on the run's own timeline: 0:07, 1:42."""
+    whole = max(0, int(round(seconds)))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def _describe_rotation_event(event: dict, start_ts: float) -> str | None:
+    """The live line under the stage checklist, for one rotation event.
+
+    Every time shown is a real event on the run's own clock -- when a request
+    went out, when a wait will end -- never a counter that looks live and is
+    not. That was the defect: "(3s elapsed)" written once and left standing for
+    27 seconds.
+    """
+    kind = event.get("kind")
+    keys = int(event.get("keys") or 0)
+    at = _clock(event.get("at", start_ts) - start_ts)
+    of = f" of {keys}" if keys > 1 else ""
+
+    if kind == "attempt":
+        return f"Waiting for the model — request sent at {at} on key {event.get('key')}{of}."
+    if kind == "rotated":
+        why = {
+            "size": "refused a request this size",
+            "rate_limit": "hit its per-minute limit",
+            "daily_limit": "hit its daily limit",
+            "invalid": "was rejected as invalid",
+        }.get(event.get("reason"), "failed")
+        nxt = event.get("next_key")
+        then = f" — trying key {nxt}{of}" if nxt else ""
+        return f"Key {event.get('key')}{of} {why} at {at}{then}."
+    if kind == "waiting":
+        until = _clock(event.get("at", start_ts) - start_ts
+                       + float(event.get("seconds") or 0))
+        if event.get("reason") == "rate_limit":
+            return (f"All {keys} usable keys are at their per-minute limit — "
+                    f"waiting until {until} for the first to reopen.")
+        return (f"The model service had a problem on key {event.get('key')}{of} "
+                f"— retrying at {until}.")
+    return None
+
+
+def _live_line(event: dict, start_ts: float, pending: dict) -> str | None:
+    """The live line for one event, keeping a key change's reason on screen.
+
+    A rotation is followed at once by the attempt on the next key, so shown on
+    its own the reason was overwritten about a tenth of a second later.
+    Measured in the browser: sampling the panel every 150ms never once caught
+    "Key 1 of 8 hit its per-minute limit" -- only "request sent ... on key 2
+    of 8", which says the key changed and not why. The reason is now held in
+    `pending` and shown above the attempt it caused, for as long as that
+    request runs, then dropped.
+    """
+    text = _describe_rotation_event(event, start_ts)
+    if text is None:
+        return None
+    kind = event.get("kind")
+    if kind == "rotated":
+        pending["reason"] = text
+    elif kind == "attempt" and pending.get("reason"):
+        text = f"{pending.pop('reason')}  \n{text}"
+    else:
+        pending.pop("reason", None)
+    return text
+
+
+def _stage_bar_text(skill_name: str, success: bool, elapsed_s: float) -> str:
+    """The progress bar's caption when a stage reports in.
+
+    A finished stage is described as FINISHED. It used to get its
+    present-progressive label and an elapsed figure, written once and left
+    standing until the next stage finished -- so the bar described work that
+    was over while other work ran unannounced beneath it.
+    """
+    position = STAGE_POSITIONS.get(skill_name)
+    stage_no = f"{position:g}" if position else "?"
+    if not success:
+        label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
+        return f"Stage {stage_no}/6 · {label} FAILED"
+    return f"Stage {stage_no}/6 finished at {_clock(elapsed_s)}"
+
+
 def _keys_status():
     """The rotation's live view of the API keys, or None if it cannot be read.
 
@@ -744,6 +826,10 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         status_panel = st.status("Analysing document…", expanded=True)
         bar = status_panel.progress(0, text="Starting…")
         detail_placeholder = status_panel.empty()
+        # What is happening NOW: which key a request is waiting on, a rotation,
+        # a wait with the time it ends. Fed by `rotation_listener` below.
+        live_placeholder = status_panel.empty()
+        _live_pending: dict = {}    # a key change's reason, until its retry is shown
         status_placeholder = st.empty()
 
         start_ts = time.monotonic()
@@ -768,16 +854,23 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             bar_state["pct"] = pct
 
             label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
-            stage_no = f"{position:g}" if position else "?"
             elapsed_s = time.monotonic() - start_ts
 
             if success:
+                # FINISHED, in words that say so. This used to be the stage's
+                # present-progressive label plus an elapsed figure, written once
+                # when the stage COMPLETED and left untouched until the next one
+                # did. Measured live: "Stage 3.5/6 · Recognising structure…
+                # (3s elapsed)" stood for 27s over a stage that had finished in
+                # 0.0s, while summarisation ran underneath it. The live line
+                # below the checklist says what is running.
                 _ui(bar.progress, pct,
-                    text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
+                    text=_stage_bar_text(skill_name, True, elapsed_s))
                 completed.append(f"✓ {label.rstrip('…')} — {duration_ms / 1000:.1f}s")
             else:
                 # A failed stage must not read as progress.
-                _ui(bar.progress, pct, text=f"Stage {stage_no}/6 · {label} FAILED")
+                _ui(bar.progress, pct,
+                    text=_stage_bar_text(skill_name, False, elapsed_s))
                 completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
 
             # A vertical checklist rather than a truncated one-line caption:
@@ -786,16 +879,28 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             # scrolling out of the last-4 window.
             _ui(detail_placeholder.markdown,
                 "\n".join(f"- {c}" for c in completed))
+            _ui(live_placeholder.empty)
+            _live_pending.clear()
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
 
+        from utils.llm_client import rotation_listener
+
+        def _on_rotation(event):
+            # Through `_ui`, like every other in-run Streamlit call: this runs
+            # inside a model call, and a rerun raised here would unwind it.
+            text = _live_line(event, start_ts, _live_pending)
+            if text:
+                _ui(live_placeholder.markdown, text)
+
         try:
             # Run pipeline with YouTube URL or file path
-            if is_youtube:
-                result = agent.run_youtube(youtube_url)
-            else:
-                result = agent.run(file_path)
+            with rotation_listener(_on_rotation):
+                if is_youtube:
+                    result = agent.run_youtube(youtube_url)
+                else:
+                    result = agent.run(file_path)
         finally:
             # Always restore the original method so the cached agent stays clean
             agent._log_step = _orig_log  # type: ignore[method-assign]
@@ -809,6 +914,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             st.session_state[f"parsed_doc_{name}"] = result.parsed_document
 
         elapsed = time.monotonic() - start_ts
+        _ui(live_placeholder.empty)
         _ui(bar.progress, 1.0,
             text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:

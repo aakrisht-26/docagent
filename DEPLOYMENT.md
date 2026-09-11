@@ -516,6 +516,9 @@ Free-tier keys also carry an **8,000 tokens-per-minute** limit alongside the
 daily one, and a large document now brushes against it. The client parks a
 throttled key and rotates to the next, so this surfaces as `tokens/min headroom
 low` warnings rather than failures — but with a single key it would be a stall.
+Until September 2026 it did not rotate in practice: the OpenAI SDK retried each
+429 itself, on the same key, and the rotation never saw it. See "An analysis
+sits on one stage for a minute" below.
 Configure several keys via `GROQ_API_KEYS` for anything beyond casual use.
 
 **A summary falls back to extractive with a "per-minute token limit" warning.**
@@ -541,6 +544,36 @@ with ~2200 tokens of headroom while shrinking the request by 976.
 **Neither makes acceptance certain.** The window is time-varying, so a large
 document at a long summary length can still be refused on every key at a busy
 moment. It will now say so plainly rather than quietly shortening your summary.
+
+**Measured since, on the live keys: 413s are not what makes Exhaustive slow.**
+All eight keys report an 8,000 tokens-per-minute limit, and Groq still accepted
+a 10,672-token Exhaustive request (3,648 prompt + 7,024 `max_tokens`). Five live
+runs made 35 HTTP attempts between them and none was a 413. What there were
+was 429s — see the next entry.
+
+**An analysis sits on one stage for a minute with nothing changing.**
+**Fixed.** Two defects, and neither was specific to Exhaustive: Standard hung
+the same way.
+
+The OpenAI SDK retries a 429 itself, twice, **on the same key**, sleeping the
+retry-after first — and the rotation never saw it, so it never moved to another
+key and logged nothing. Measured on `sample_large_report.pdf`: Exhaustive spent
+34s asleep on key 1 (14s + 11s + 9s) and Standard 30s, and in every run every
+request went to key 1 while seven keys sat at full budget. `LLMClient` now
+builds its SDK clients with `max_retries=0`, so a 429 reaches the rotation and
+costs a tenth of a second and a key change. On the same document Exhaustive
+went from 53.1s to 23.5s and Standard from 49.2s to 19.6s — one run each
+side, and the window varies, so trust the mechanism rather than the ratio.
+
+The progress panel described the past. Its caption was written when a stage
+FINISHED, in that stage's "-ing" form, beside an elapsed figure that never
+moved: "Stage 3.5/6 · Recognising structure… (3s elapsed)" stood for 27s over a
+stage that had taken 0.0s, while summarisation ran beneath it. The caption now
+says a stage finished and when, and a live line under the checklist says what
+is happening: which key a request is waiting on, a key change and why, a wait
+and when it ends. One slow model call still shows a single unchanging line for
+as long as the call takes (9.3s was the longest measured). That line says when
+the request went out, which is true, rather than showing a counter that is not.
 
 **Summaries are short and flat, and the method reads `extractive`.**
 The LLM is not running. Two causes, and they need different fixes. If the log

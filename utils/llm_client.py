@@ -156,6 +156,65 @@ def _shared_key_state(api_keys: List[str]) -> Dict[str, Any]:
             _SHARED_KEY_STATE[identity] = state
         return state
 
+# ── Progress events, for a caller showing someone the wait ─────────────────────
+#
+# Every retry, rotation and backoff below was logged and nothing else, so a page
+# showing a progress panel could not tell a stage sitting out a rate-limit
+# window from a hung one. A listener receives each event as it happens.
+#
+# THREAD-LOCAL, not process-wide, and that is correctness rather than tidiness.
+# Streamlit serves every browser session from its own script thread in ONE
+# process, so a module-level callback would post one user's retries into another
+# user's progress panel. The pipeline makes its calls on the thread that started
+# it -- nothing in agents/, skills/ or utils/ spawns a thread -- so the events
+# reach the session that is waiting for them.
+_LISTENER = threading.local()
+
+
+class rotation_listener:  # noqa: N801 -- a context manager, named as one reads
+    """Deliver rotation events to `callback(event)` for calls on this thread.
+
+    `event` is a dict with `kind` ("attempt", "rotated" or "waiting"), `at`
+    (a `time.monotonic()` reading) and the figures for that kind. Nests: the
+    previous listener is restored on exit.
+    """
+
+    def __init__(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        self._callback = callback
+        self._previous = None
+
+    def __enter__(self) -> "rotation_listener":
+        self._previous = getattr(_LISTENER, "callback", None)
+        _LISTENER.callback = self._callback
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        _LISTENER.callback = self._previous
+        return False
+
+
+def _listening() -> bool:
+    return getattr(_LISTENER, "callback", None) is not None
+
+
+def _notify(kind: str, **data: Any) -> None:
+    """Hand one event to this thread's listener, if there is one.
+
+    An `Exception` from the listener is logged and dropped: a fault in how the
+    wait is DISPLAYED must not fail a model call the user is already waiting
+    on. Streamlit's rerun request is a `BaseException` and is NOT caught here,
+    which is why the UI's listener routes its Streamlit calls through the rerun
+    guard -- that is where a queued interaction is deferred.
+    """
+    callback = getattr(_LISTENER, "callback", None)
+    if callback is None:
+        return
+    try:
+        callback({"kind": kind, "at": time.monotonic(), **data})
+    except Exception as exc:
+        logger.debug(f"rotation listener raised {type(exc).__name__}: {exc}")
+
+
 # Groq durations look like "28m3.936s", "1h16m19.2s", "1m26.4s", "185ms", "2.5s".
 _DURATION_RE = re.compile(
     r"(?:(?P<h>[\d.]+)h)?(?:(?P<m>[\d.]+)m(?!s))?(?:(?P<s>[\d.]+)s)?(?:(?P<ms>[\d.]+)ms)?$"
@@ -533,6 +592,17 @@ class LLMClient:
                 api_key=self.api_keys[idx],
                 base_url=self.base_url,
                 timeout=float(self.timeout),
+                # ZERO, and it is load-bearing. The SDK defaults to 2 retries
+                # and retries a 429 ON THE SAME KEY, sleeping the retry-after
+                # (up to 60s) first. `_run_with_rotation` never saw those
+                # refusals, so it never rotated, logged nothing, and could tell
+                # a progress panel nothing. Measured live, Exhaustive over
+                # sample_large_report.pdf: three 429s on key 1 slept through
+                # for 14s + 11s + 9s = 34s while keys 2-8 sat at full budget,
+                # and every request of the run went to key 1. Every status the
+                # SDK retried (408, 409, 429, 5xx, connection, timeout) is
+                # handled below, with rotation.
+                max_retries=0,
             )
         return self._clients[idx]
 
@@ -811,6 +881,20 @@ class LLMClient:
             def _rotate() -> None:
                 self._current_key_idx = (idx + 1) % len(self.api_keys)
 
+            def _notify_rotated(reason: str) -> None:
+                # Called after `_rotate()`, so the next usable key is known.
+                # Skipped without a listener: `_live_key_idxs()` returns expired
+                # parks to the rotation as a side effect, and nothing should
+                # change for a caller that is not watching.
+                if not _listening():
+                    return
+                upcoming = self._live_key_idxs()
+                _notify("rotated", reason=reason, key=idx + 1,
+                        keys=len(self.api_keys),
+                        next_key=(upcoming[0] + 1) if upcoming else None)
+
+            _notify("attempt", key=idx + 1, keys=len(self.api_keys),
+                    attempt=attempt + 1, attempts=attempts)
             try:
                 return operation(self._client_for(idx))
 
@@ -882,6 +966,11 @@ class LLMClient:
                             self._report_no_live_keys(what, day_refused)
                             return None
                     _rotate()
+                    # DAILY when the window is a day. The branch parks per-minute
+                    # and per-day refusals alike, and "per-minute" tells a user to
+                    # expect the key back within a minute -- wrong by hours.
+                    _notify_rotated("daily_limit" if info.get("window") == "day"
+                                    else "rate_limit")
                     continue
 
                 # Short 429: a brief per-minute throttle on THIS key only.
@@ -902,6 +991,8 @@ class LLMClient:
                         f"trying {len(untried)} untried key(s) before backing off "
                         f"[attempt {attempt + 1}/{attempts}]"
                     )
+                    _notify("rotated", reason="rate_limit", key=idx + 1,
+                            keys=len(self.api_keys), next_key=untried[0] + 1)
                     continue
 
                 # Every usable key has now been tried and throttled. Only now is
@@ -913,6 +1004,8 @@ class LLMClient:
                     f"({detail}, hit #{rate_hits}); backing off {sleep_for:.1f}s "
                     f"[attempt {attempt + 1}/{attempts}]"
                 )
+                _notify("waiting", reason="rate_limit", seconds=sleep_for,
+                        keys=len(throttled))
                 time.sleep(sleep_for)
                 throttled.clear()
                 pending_waits.clear()
@@ -927,6 +1020,7 @@ class LLMClient:
                         f"{len(self.api_keys) - len(self._dead_key_idxs)} key(s) remain."
                     )
                     _rotate()
+                    _notify_rotated("invalid")
                     continue  # another key may work; no point backing off
                 if exc.status_code == 413:
                     # "Request too large ... tokens per minute (TPM)". Read as a
@@ -957,9 +1051,13 @@ class LLMClient:
                         f"[attempt {attempt + 1}/{attempts}]"
                     )
                     _rotate()
+                    _notify_rotated("size")
                     continue
 
-                if exc.status_code >= 500:
+                # 408 and 409 as well as 5xx: the SDK used to retry all three
+                # itself, and now that its retries are off (see `_client_for`)
+                # they would otherwise fall through to "not retryable".
+                if exc.status_code >= 500 or exc.status_code in (408, 409):
                     transient_hits += 1
                     delay = self._backoff_seconds(attempt)
                     logger.warning(
@@ -967,6 +1065,8 @@ class LLMClient:
                         f"retrying in {delay:.1f}s [attempt {attempt + 1}/{attempts}]"
                     )
                     _rotate()
+                    _notify("waiting", reason="transient", seconds=delay,
+                            key=idx + 1, keys=len(self.api_keys))
                     time.sleep(delay)
                     continue
                 logger.warning(f"{what}: API status error ({exc.status_code}): {exc.message}")
@@ -980,6 +1080,8 @@ class LLMClient:
                     f"retrying in {delay:.1f}s [attempt {attempt + 1}/{attempts}]"
                 )
                 _rotate()
+                _notify("waiting", reason="transient", seconds=delay,
+                        key=idx + 1, keys=len(self.api_keys))
                 time.sleep(delay)
 
             except Exception as exc:

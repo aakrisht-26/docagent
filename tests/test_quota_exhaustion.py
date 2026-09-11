@@ -72,16 +72,16 @@ TPM_BODY = (
     "Please try again in 0.2s. Need more tokens? Upgrade to Dev Tier."
 )
 
-#: Three, not the eight a deployment uses. The sweep costs one attempt per key
-#: times the OpenAI SDK's own internal retries, and every one of those is a
-#: real socket and a real backoff — at eight keys this file took 4m49s. The
-#: claims are all "every key", which three keys demonstrate as well as eight.
 #: A per-minute refusal quoting longer than `park_threshold_seconds` (15s).
 #: This one PARKS its keys — the proportional scaling is day-only — so it is
 #: the case that empties the rotation from inside the sweep, which is the exit
 #: that used to assert 401.
 TPM_LONG_BODY = TPM_BODY.replace("try again in 0.2s", "try again in 45s")
 
+#: Three, not the eight a deployment uses. Every attempt is a real socket, and
+#: the claims are all "every key", which three keys demonstrate as well as
+#: eight. (At eight keys, with the OpenAI SDK still retrying underneath the
+#: rotation, this file took 4m49s.)
 KEYS = [f"gsk_forcedTESTkey00000000{i}" for i in range(3)]
 
 
@@ -104,8 +104,8 @@ class _Refuser(http.server.BaseHTTPRequestHandler):
         if type(self).RETRY_AFTER is not None:
             # Omitting it is how a test asks for a LONG park without a long
             # test: `_run_with_rotation` falls back to the wait quoted in the
-            # body, while the OpenAI SDK, having no header to honour, backs off
-            # on its own short schedule instead of sleeping the full window.
+            # body. (While the SDK still retried, a header was also slept on by
+            # the SDK itself, invisibly, on the same key.)
             self.send_header("retry-after", type(self).RETRY_AFTER)
         self.send_header("content-length", str(len(raw)))
         self.end_headers()
@@ -173,8 +173,9 @@ class TestTheRotationNamesWhatWentWrong(unittest.TestCase):
         eighth went to a key that had already said no to this exact call."""
         with _ForcedRefusal() as f:
             _ask(f.client())
-            self.assertEqual(_Refuser.hits, len(KEYS) * 3,
-                             "one attempt per key, times the SDK's own retries")
+            self.assertEqual(_Refuser.hits, len(KEYS),
+                             "one request per key: the SDK no longer retries "
+                             "underneath the rotation")
 
     def test_emptying_the_rotation_mid_call_is_not_reported_as_401(self):
         """THE ORIGINAL COMPLAINT, and the exit that produced it. A refusal

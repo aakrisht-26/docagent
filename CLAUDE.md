@@ -97,6 +97,23 @@ All inter-component communication uses typed dataclasses from `core/models.py`. 
 
 `utils/llm_client.py` wraps the OpenAI SDK pointed at Groq Cloud (`openai/gpt-oss-120b`). Supports multi-key round-robin for rate-limit resilience. Default model, temperature (0.15), and timeout (180s) are in `configs/default.yaml`.
 
+**The SDK's own retries are OFF (`max_retries=0`), and must stay off.** The
+OpenAI SDK retries 408/409/429/5xx itself, twice, on the SAME key, sleeping the
+retry-after (up to 60s) first. With that on, a 429 never reached
+`_run_with_rotation`: nothing rotated, nothing was logged, and every request of
+a run went to key 1 while seven keys sat idle -- 27-34s asleep per measured
+run, which was the "Exhaustive hangs" report. It was not 413s: none in 35 live
+attempts. Every status the SDK retried is handled by the rotation instead.
+
+**Progress reaches the UI through `rotation_listener`**, a THREAD-LOCAL
+callback. Streamlit serves every session from its own thread in one process, so
+a module-level callback would post one user's retries into another's panel. It
+works only because nothing in `agents/`, `skills/` or `utils/` spawns a thread;
+adding one would silence it without an error. The UI's listener must route
+Streamlit calls through `_rerun_guard`: `_notify` drops an `Exception`, and
+Streamlit's rerun is a `BaseException` that would otherwise unwind the model
+call. `tests/test_progress_feedback.py` pins all of it.
+
 ### Token budgets and reasoning models
 
 `openai/gpt-oss-120b` reasons before it answers, and **`max_tokens` covers the
