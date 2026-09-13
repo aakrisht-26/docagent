@@ -1,5 +1,13 @@
 """Tests for surviving a widget interaction that lands mid-analysis.
 
+CORRECTION, 2026-09-14 -- read TestStreamlitDeliversTheRerunToTheGuard first.
+The guard these tests prove never worked in the running app, on either
+Streamlit version, because Streamlit's default `runner.fastReruns = true` stops
+the script instead of raising RerunException into it. Every test here raises the
+exception by hand, so all of them passed while the app lost every interrupted
+analysis. It holds now only because .streamlit/config.toml turns fastReruns
+off; the cost of that is measured in DEPENDENCIES.md section 8.
+
 THE BUG. Streamlit services a queued interaction by raising `RerunException` at
 the next `st.*` call. `agent.run()` makes such calls through the UI's progress
 wrapper — `bar.progress(...)` and `detail_placeholder.markdown(...)` are invoked
@@ -37,9 +45,15 @@ Run:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import tomllib
 import unittest
+from pathlib import Path
 
 from ui.streamlit_compat import RerunData, RerunException
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _guard():
@@ -143,6 +157,41 @@ class TestThePipelineSurvivesTheInterruption(unittest.TestCase):
         self.assertGreater(result.word_count, 0)
         self.assertIsNotNone(state["deferred"],
                              "the interaction must still be available to honour")
+
+
+class TestStreamlitDeliversTheRerunToTheGuard(unittest.TestCase):
+    """CORRECTION. Everything above proves the guard against a RerunException
+    raised BY HAND, and on that evidence the guard was reported as fixing the
+    bug. In the real app it never worked, on either Streamlit version.
+
+    With Streamlit's default `runner.fastReruns = true`, a widget change during
+    a run does not raise RerunException into the running script at all:
+    Streamlit STOPS that script (StopException) and starts a new run. The guard
+    never sees anything to defer. Measured in the browser with a theme switch
+    mid-analysis: the run was gone 0.4s later on both 1.37.1 and 1.63.0. With
+    `fastReruns = false` (1.63.0) the same run completed, and the switch applied
+    once it had finished.
+
+    So the guard is only as good as this setting, and these tests pin it -- in
+    the file Cloud reads, and as Streamlit itself loads it, since an option
+    Streamlit renames is silently ignored rather than rejected.
+    """
+
+    def test_the_repo_config_turns_fast_reruns_off(self):
+        config = tomllib.loads((ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+        self.assertIs(config.get("runner", {}).get("fastReruns"), False,
+                      ".streamlit/config.toml must set [runner] fastReruns = false, "
+                      "or the mid-run guard in ui/app.py does nothing")
+
+    def test_streamlit_loads_it_as_off(self):
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "from streamlit import config; print(config.get_option('runner.fastReruns'))"],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=180)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        self.assertEqual(proc.stdout.strip().splitlines()[-1], "False",
+                         "Streamlit did not load runner.fastReruns = false from the repo config")
 
 
 if __name__ == "__main__":

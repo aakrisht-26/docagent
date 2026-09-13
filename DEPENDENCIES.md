@@ -711,6 +711,76 @@ however often it happens.
 
 ---
 
+## 8. Streamlit is floored, not pinned — and its internals move
+
+**`requirements.txt` says `streamlit>=1.35.0`.** Community Cloud therefore
+installs the newest release when it builds: **1.63.0** on 2026-09-13, identified
+by the `static/js/index.ByR4Z2EF.js` the deployed app serves, which is the file
+in the 1.63.0 wheel. This machine had **1.37.1**. Every test, every e2e stage
+and every in-browser check in this repo ran on 1.37.1 until that date.
+
+That gap took the site down. `ui/app.py` imported `RerunException` from
+`streamlit.runtime.scriptrunner.exceptions`, which does not exist on 1.63.0,
+and the app died at import with `ModuleNotFoundError`.
+
+### Where `RerunException` has lived
+
+Read from every release's wheel, 1.35.0 to 1.63.0 (50 releases):
+
+| Releases | Defined in | Re-exported by `streamlit.runtime.scriptrunner` |
+|---|---|---|
+| 1.35.0 – 1.36.0 | `streamlit.runtime.scriptrunner.script_runner` | yes |
+| 1.37.0 – 1.37.1 | `streamlit.runtime.scriptrunner.exceptions` | yes |
+| 1.38.0 – 1.63.0 | `streamlit.runtime.scriptrunner_utils.exceptions` | yes |
+
+The hard import was valid on two releases of the fifty. `ui/streamlit_compat.py`
+now tries the defining modules and the package re-export. If none provides the
+class it substitutes a placeholder, so the app starts with the guard off and
+logs that it is off. **Import Streamlit internals only through that module**:
+`tests/test_streamlit_compat.py` reads every import and fails on a new one.
+
+### What the tests can and cannot catch
+
+`tests/test_streamlit_compat.py` imports `ui/app.py` in a fresh interpreter, in
+both the local and the hosted branch. **Run on 1.37.1 it passes with the broken
+import restored** — verified by mutation — because that import is valid on
+1.37.1. It fails only on 1.63.0. A test speaks for the Streamlit it runs on, so
+while this stays a floor, the local version and the deployed one can differ
+with nothing noticing. Section 5's test IDs were likewise verified against
+1.37.1 only.
+
+To check against what Cloud runs: create a venv with `--system-site-packages`,
+`pip install streamlit==<deployed version>` into it, then run
+`pytest tests/test_streamlit_compat.py tests/test_run_interruption.py` and
+`streamlit run ui/app.py` with that interpreter.
+
+### `runner.fastReruns` must stay off
+
+The mid-run guard in `ui/app.py` defers a widget change until an analysis has
+finished. **It never worked in the running app until this was set**, on either
+version, and its tests passed throughout because they raise `RerunException` by
+hand. With Streamlit's default `fastReruns = true`, a change mid-run makes
+Streamlit *stop* the script and start a new one; nothing is raised for the
+guard to catch. Measured in the browser: a theme switch ended the analysis 0.4s
+later on 1.37.1 and on 1.63.0. `.streamlit/config.toml` sets it to false and
+`tests/test_run_interruption.py` pins it, including a check that Streamlit
+itself loads it — a renamed option is ignored, not rejected.
+
+**The cost, measured on 1.63.0 with a server-side timing hook:**
+
+| Situation | Measured |
+|---|---|
+| No analysis running | change applies in 0.11 – 0.22s (4 switches) |
+| Change reaches the running script | 0.78s and 2.98s after the click (two runs) |
+| Longest gap between Streamlit calls in a run | ~9.5s, one model call |
+| Change applies, warm process | 25.2s after the click, when the analysis finished |
+| Change applies, first analysis after a cold start | 82.2s: the analysis plus loading the embedding model |
+
+So during an analysis a widget change waits for the analysis, by design, and
+nothing visible happens until then. Not measured: a stage that makes no
+Streamlit call for a long time, such as OCR on a long scanned PDF, where the
+change would also wait to be delivered.
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:

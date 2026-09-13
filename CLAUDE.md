@@ -555,6 +555,24 @@ embedding was ranking most of that document from a lossy copy.
 
 `ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Custom glassmorphism styles are in `ui/styles/custom.css`.
 
+**Streamlit internals go through `ui/streamlit_compat.py` only.** They move
+between releases: `RerunException` has lived in three modules across 1.35-1.63,
+and a hard import of one of them took the deployed app down.
+`tests/test_streamlit_compat.py` fails on any Streamlit internal imported
+elsewhere.
+
+**The Streamlit you test on is probably not the one deployed.**
+`requirements.txt` floors it, so Cloud installs the newest release (1.63.0 on
+2026-09-13) while this machine had 1.37.1. A test passing here says nothing
+about Cloud unless the versions match; DEPENDENCIES.md section 8 says how to
+check against the deployed one.
+
+**`runner.fastReruns` must stay `false`** in `.streamlit/config.toml`. The
+mid-run guard in `ui/app.py` depends on it and never worked without it — its
+own tests passed anyway, because they raise `RerunException` by hand. The cost
+is that a widget change during an analysis applies when the analysis finishes
+(25s warm, 82s after a cold start, measured).
+
 ### Configuration
 
 `utils/config.py` defines typed dataclasses (`AppConfig`, `GroqConfig`, `PDFConfig`, etc.) loaded from `configs/default.yaml`. All values can be overridden by env vars.

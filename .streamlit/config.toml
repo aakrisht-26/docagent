@@ -12,3 +12,12 @@ primaryColor = "#2563EB"
 backgroundColor = "#09090f"
 secondaryBackgroundColor = "#111118"
 textColor = "#f1f5f9"
+
+[runner]
+# OFF, and ui/app.py's mid-run guard depends on it. With Streamlit's default
+# (true), a widget change during a run STOPS the running script and starts a
+# new one, so an analysis in progress is thrown away -- measured in the
+# browser on 1.37.1 and 1.63.0: lost 0.4s after a theme switch. Off, the
+# change reaches the running script as a rerun request, which the guard
+# defers until the analysis has finished. Measured cost: DEPENDENCIES.md.
+fastReruns = false

@@ -823,6 +823,24 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # to start the work) and still leaves the window between the click and
         # that redraw, while taking the controls away rather than honouring
         # them. Warning before discarding still discards.
+        #
+        # CORRECTION, 2026-09-14. The measurement above raised RerunException
+        # BY HAND, and this guard was reported as fixing the bug on that basis.
+        # In the running app it never worked, on 1.37.1 or on 1.63.0: with
+        # Streamlit's default `runner.fastReruns = true`, a widget change mid-run
+        # STOPS this script (StopException) and starts a new one, so there was
+        # never a RerunException here to defer -- a theme switch ended the
+        # analysis 0.4s later on both versions. It works only because
+        # .streamlit/config.toml now sets `fastReruns = false`, pinned by
+        # tests/test_run_interruption.py.
+        #
+        # The cost, measured on 1.63.0: the change REACHES this script at its
+        # next Streamlit call (0.78s and 2.98s after the click in two runs; the
+        # longest gap in a run was one ~9.5s model call), but it APPLIES only
+        # when the analysis has finished -- 25.2s after the click in a warm
+        # process, 82.2s on the first analysis after a cold start, which also
+        # loads the embedding model. With no analysis running a change applies
+        # in 0.1-0.2s.
         _deferred_rerun, _ui = _rerun_guard()
 
         status_panel = st.status("Analysing document…", expanded=True)
