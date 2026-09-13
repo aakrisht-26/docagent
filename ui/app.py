@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
+from streamlit.runtime.scriptrunner.exceptions import RerunException
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────────
 st.set_page_config(
@@ -549,6 +550,153 @@ STAGE_POSITIONS = {
 TOTAL_STAGES = 6.0
 
 
+def _clock(seconds: float) -> str:
+    """A point on the run's own timeline: 0:07, 1:42."""
+    whole = max(0, int(round(seconds)))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def _describe_rotation_event(event: dict, start_ts: float) -> str | None:
+    """The live line under the stage checklist, for one rotation event.
+
+    Every time shown is a real event on the run's own clock -- when a request
+    went out, when a wait will end -- never a counter that looks live and is
+    not. That was the defect: "(3s elapsed)" written once and left standing for
+    27 seconds.
+    """
+    kind = event.get("kind")
+    keys = int(event.get("keys") or 0)
+    at = _clock(event.get("at", start_ts) - start_ts)
+    of = f" of {keys}" if keys > 1 else ""
+
+    if kind == "attempt":
+        return f"Waiting for the model — request sent at {at} on key {event.get('key')}{of}."
+    if kind == "rotated":
+        why = {
+            "size": "refused a request this size",
+            "rate_limit": "hit its per-minute limit",
+            "daily_limit": "hit its daily limit",
+            "invalid": "was rejected as invalid",
+        }.get(event.get("reason"), "failed")
+        nxt = event.get("next_key")
+        then = f" — trying key {nxt}{of}" if nxt else ""
+        return f"Key {event.get('key')}{of} {why} at {at}{then}."
+    if kind == "waiting":
+        until = _clock(event.get("at", start_ts) - start_ts
+                       + float(event.get("seconds") or 0))
+        if event.get("reason") == "rate_limit":
+            return (f"All {keys} usable keys are at their per-minute limit — "
+                    f"waiting until {until} for the first to reopen.")
+        return (f"The model service had a problem on key {event.get('key')}{of} "
+                f"— retrying at {until}.")
+    return None
+
+
+def _live_line(event: dict, start_ts: float, pending: dict) -> str | None:
+    """The live line for one event, keeping a key change's reason on screen.
+
+    A rotation is followed at once by the attempt on the next key, so shown on
+    its own the reason was overwritten about a tenth of a second later.
+    Measured in the browser: sampling the panel every 150ms never once caught
+    "Key 1 of 8 hit its per-minute limit" -- only "request sent ... on key 2
+    of 8", which says the key changed and not why. The reason is now held in
+    `pending` and shown above the attempt it caused, for as long as that
+    request runs, then dropped.
+    """
+    text = _describe_rotation_event(event, start_ts)
+    if text is None:
+        return None
+    kind = event.get("kind")
+    if kind == "rotated":
+        pending["reason"] = text
+    elif kind == "attempt" and pending.get("reason"):
+        text = f"{pending.pop('reason')}  \n{text}"
+    else:
+        pending.pop("reason", None)
+    return text
+
+
+def _stage_bar_text(skill_name: str, success: bool, elapsed_s: float) -> str:
+    """The progress bar's caption when a stage reports in.
+
+    A finished stage is described as FINISHED. It used to get its
+    present-progressive label and an elapsed figure, written once and left
+    standing until the next stage finished -- so the bar described work that
+    was over while other work ran unannounced beneath it.
+    """
+    position = STAGE_POSITIONS.get(skill_name)
+    stage_no = f"{position:g}" if position else "?"
+    if not success:
+        label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
+        return f"Stage {stage_no}/6 · {label} FAILED"
+    return f"Stage {stage_no}/6 finished at {_clock(elapsed_s)}"
+
+
+def _keys_status():
+    """The rotation's live view of the API keys, or None if it cannot be read.
+
+    Never raises: a failure to inspect the keys must not stop a run that would
+    otherwise have worked.
+    """
+    try:
+        from utils.llm_client import LLMClient
+        return LLMClient.from_config(_cfg.to_dict()).keys_status()
+    except Exception:                                   # pragma: no cover
+        return None
+
+
+def _report_unreachable(keys: dict) -> None:
+    """Say plainly that the model cannot be called, and why.
+
+    Split because the two causes need different actions from the reader: one is
+    a wait, the other is a deployment fix, and telling a user to check their
+    keys when the keys are fine wastes their time — which is exactly what the
+    give-up path used to do, reporting a spent quota as "known-invalid (401)".
+    """
+    from utils.llm_client import LLMClient
+
+    if keys["parked"] or keys.get("day_exhausted"):
+        st.error(
+            f"**The model cannot be reached right now.** All "
+            f"{keys['configured']} API key(s) have hit their rate limit. The "
+            f"quota resets {LLMClient.describe_reset(keys['seconds_until_reset'])}."
+            "\n\nNothing was analysed and no quota was spent — the run "
+            f"was stopped rather than left to produce a degraded summary. Try "
+            f"again after that.",
+            icon=":material/hourglass_top:",
+        )
+    else:
+        st.error(
+            f"**The model cannot be reached.** All {keys['configured']} API "
+            f"key(s) were rejected by the provider as invalid (401). This is a "
+            f"configuration problem, not a quota one: check `GROQ_API_KEYS`.",
+            icon=":material/key_off:",
+        )
+
+
+def _rerun_guard():
+    """Return (holder, ui) for deferring a mid-run Streamlit rerun request.
+
+    `ui(call, *a, **kw)` makes a Streamlit call and captures a RerunException
+    into `holder["exc"]` instead of letting it unwind the caller. The caller is
+    expected to re-raise it once the work is safe.
+
+    Module level rather than a closure so it can be tested against the real
+    exception. See `tests/test_run_interruption.py`.
+    """
+    holder = {"exc": None}
+
+    def ui(call, *args, **kwargs):
+        try:
+            return call(*args, **kwargs)
+        except RerunException as exc:
+            if holder["exc"] is None:
+                holder["exc"] = exc
+            return None
+
+    return holder, ui
+
+
 def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
     """Run the document pipeline for a single file or YouTube URL."""
     from ui.components.results_view import render_results
@@ -595,6 +743,46 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             summary_tone=overrides.get("summary_tone", "Professional"),
         )
 
+        # ── Can the model be reached at all? ─────────────────────────────────
+        #
+        # The rotation already knew this and said nothing. It parks a key when
+        # the tier refuses it and derives the reset from the retry-after — but
+        # that knowledge stopped at the log, so a run with every key spent
+        # looked exactly like a slow one. The user waited through parse, clean
+        # and classify, then got an extractive summary with a note that names
+        # the symptom and not the cause.
+        #
+        # THREE STATES; only one is worth interrupting for.
+        #   some parked, some live  → normal. Nothing is said: rotation is
+        #                             doing its job and the run will succeed.
+        #   all parked              → the model cannot be called at all. Say
+        #                             so, say when it reopens, and STOP —
+        #                             running would spend a minute of the
+        #                             user's time on a knowingly degraded
+        #                             result. Not waiting: the window is
+        #                             minutes to hours, not seconds.
+        #   day_exhausted           → the same thing, and NOT covered by the
+        #                             row above. A daily refusal usually leaves
+        #                             its key live — the rotation parks it only
+        #                             once headroom drops below a small-request
+        #                             floor — so `live` reads 8 of 8 while the
+        #                             day is spent. Checking `live` alone was
+        #                             tested against a forced refusal and stayed
+        #                             silent through all of it.
+        #   none configured         → already surfaced, by _cfg.validate() in
+        #                             the sidebar config-health block. Left
+        #                             alone rather than duplicated.
+        #
+        # A fresh client is correct here, not a shortcut: `_shared_key_state`
+        # keys the parked/dead tables by the key LIST, so a client built from
+        # the same config sees the very state the pipeline's skills mutate.
+        # Construction is lazy — no socket is opened by asking.
+        _keys = _keys_status()
+        if _keys and _keys["configured"] and (
+                not _keys["live"] or _keys.get("day_exhausted")):
+            _report_unreachable(_keys)
+            return
+
         # Presentation only. The bar and the per-stage lines now sit inside an
         # st.status panel, so a run reads as a checklist that has a state
         # (running / complete / error) instead of a bare bar with a caption
@@ -609,9 +797,39 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # and the checklist was never visible while it mattered. Creating the
         # children off the container directly leaves the panel running until
         # the explicit update() calls below.
+        # ── Protecting the run from a mid-flight widget interaction ───────
+        #
+        # Streamlit services a queued interaction by raising RerunException at
+        # the next `st.*` call. `agent.run()` makes such calls through the
+        # progress wrapper below, so ANY widget touched while a document is
+        # analysing — the theme toggle, summary length, audience, the uploader,
+        # a history button — aborted the pipeline part-way and discarded work
+        # the user had already paid for in time and quota.
+        #
+        # Measured on sample_report.pdf, raising the real RerunException from
+        # the wrapper after stage 2: the run ended at 0.3s with nothing cached.
+        # Deferring it instead completed all 5 stages — 218 words, a
+        # 3,905-character summary — in 7.0s.
+        #
+        # So the interaction is DEFERRED, not dropped: captured here and
+        # honoured at the end of the function, once the result is safely in
+        # session state. The toggle still takes effect, one run later, and the
+        # analysis survives.
+        #
+        # Chosen over the alternatives deliberately. Disabling the controls for
+        # the duration needs a two-phase render (draw them disabled, then rerun
+        # to start the work) and still leaves the window between the click and
+        # that redraw, while taking the controls away rather than honouring
+        # them. Warning before discarding still discards.
+        _deferred_rerun, _ui = _rerun_guard()
+
         status_panel = st.status("Analysing document…", expanded=True)
         bar = status_panel.progress(0, text="Starting…")
         detail_placeholder = status_panel.empty()
+        # What is happening NOW: which key a request is waiting on, a rotation,
+        # a wait with the time it ends. Fed by `rotation_listener` below.
+        live_placeholder = status_panel.empty()
+        _live_pending: dict = {}    # a key change's reason, until its retry is shown
         status_placeholder = st.empty()
 
         start_ts = time.monotonic()
@@ -636,40 +854,72 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
             bar_state["pct"] = pct
 
             label = STEP_LABELS.get(skill_name, skill_name.replace("_", " ").title() + "…")
-            stage_no = f"{position:g}" if position else "?"
             elapsed_s = time.monotonic() - start_ts
 
             if success:
-                bar.progress(pct, text=f"Stage {stage_no}/6 · {label}  ({elapsed_s:.0f}s elapsed)")
+                # FINISHED, in words that say so. This used to be the stage's
+                # present-progressive label plus an elapsed figure, written once
+                # when the stage COMPLETED and left untouched until the next one
+                # did. Measured live: "Stage 3.5/6 · Recognising structure…
+                # (3s elapsed)" stood for 27s over a stage that had finished in
+                # 0.0s, while summarisation ran underneath it. The live line
+                # below the checklist says what is running.
+                _ui(bar.progress, pct,
+                    text=_stage_bar_text(skill_name, True, elapsed_s))
                 completed.append(f"✓ {label.rstrip('…')} — {duration_ms / 1000:.1f}s")
             else:
                 # A failed stage must not read as progress.
-                bar.progress(pct, text=f"Stage {stage_no}/6 · {label} FAILED")
+                _ui(bar.progress, pct,
+                    text=_stage_bar_text(skill_name, False, elapsed_s))
                 completed.append(f"✗ {label.rstrip('…')} — failed: {error}")
 
             # A vertical checklist rather than a truncated one-line caption:
             # inside the status panel there is room to keep every stage
             # visible, so a skipped or failed stage stays on screen instead of
             # scrolling out of the last-4 window.
-            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+            _ui(detail_placeholder.markdown,
+                "\n".join(f"- {c}" for c in completed))
+            _ui(live_placeholder.empty)
+            _live_pending.clear()
 
         _progress_log_step.__wrapped_orig__ = _orig_log  # type: ignore[attr-defined]
         agent._log_step = _progress_log_step  # type: ignore[method-assign]
 
+        from utils.llm_client import rotation_listener
+
+        def _on_rotation(event):
+            # Through `_ui`, like every other in-run Streamlit call: this runs
+            # inside a model call, and a rerun raised here would unwind it.
+            text = _live_line(event, start_ts, _live_pending)
+            if text:
+                _ui(live_placeholder.markdown, text)
+
         try:
             # Run pipeline with YouTube URL or file path
-            if is_youtube:
-                result = agent.run_youtube(youtube_url)
-            else:
-                result = agent.run(file_path)
+            with rotation_listener(_on_rotation):
+                if is_youtube:
+                    result = agent.run_youtube(youtube_url)
+                else:
+                    result = agent.run(file_path)
         finally:
             # Always restore the original method so the cached agent stays clean
             agent._log_step = _orig_log  # type: ignore[method-assign]
 
+        # CACHED FIRST, before any further `st.*` call. Three of them sat
+        # between the pipeline returning and this assignment — the final
+        # progress update, the checklist, and the status container — and a
+        # rerun raised by any of them lost a run that had already finished.
+        if result.success:
+            st.session_state[state_key] = result
+            st.session_state[f"parsed_doc_{name}"] = result.parsed_document
+
         elapsed = time.monotonic() - start_ts
-        bar.progress(1.0, text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
+        _ui(live_placeholder.empty)
+        _ui(bar.progress, 1.0,
+            text=f"Complete · {len(completed)} stage(s) in {elapsed:.1f}s")
         if completed:
-            detail_placeholder.markdown("\n".join(f"- {c}" for c in completed))
+            _ui(detail_placeholder.markdown,
+                "\n".join(f"- {c}" for c in completed))
 
         # Logged for every run, hosted or not. An analyse is by far the most
         # expensive operation the app performs, so it is the one worth counting.
@@ -681,8 +931,7 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
 
         with status_placeholder.container():
             if result.success:
-                st.session_state[state_key] = result
-                st.session_state[f"parsed_doc_{name}"] = result.parsed_document
+                # (already cached above, before any st.* call could raise)
                 # Auto-save to persistent history (non-blocking; errors are warnings).
                 #
                 # This step also embeds the document's chunks for search, which
@@ -744,6 +993,19 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
                 )
 
         render_results(result, export_cfg=_cfg.export)
+
+        # The run is finished and cached. NOW honour the interaction that
+        # arrived while it was working, so the user's toggle is applied
+        # rather than discarded — one run later than they clicked it.
+        if _deferred_rerun["exc"] is not None:
+            raise _deferred_rerun["exc"]
+
+    except RerunException:
+        # A rerun is control flow, not a failure. Without this clause the
+        # generic handler below caught it and rendered "Processing failed"
+        # over a run that had actually succeeded — and swallowed the
+        # rerun, so the interaction was lost as well as mislabelled.
+        raise
 
     except Exception as exc:
         # Log the full traceback before doing anything else, so the failure is

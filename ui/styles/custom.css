@@ -96,6 +96,7 @@ html, body, [class*="css"] {
 }
 
 /* ── Theme transition — smooth background colour switching ── */
+.stApp,
 [data-testid="stAppViewContainer"],
 [data-testid="stSidebar"],
 [data-testid="stHeader"] {
@@ -103,7 +104,53 @@ html, body, [class*="css"] {
 }
 
 /* ── App background ─────────────────────────────────────── */
-[data-testid="stAppViewContainer"] {
+/* `.stApp` IS LISTED FIRST AND IT IS THE ONE THAT ACTUALLY PAINTS.
+   Measured on the landing page in light mode: the only opaque ancestors of the
+   body text were `.stApp` and `body`, both still Streamlit's dark #0e1117.
+   `[data-testid="stAppViewContainer"]` was styled but was not the surface
+   behind the content, so light mode rendered dark #0f172a text on a dark
+   ground — 1.06:1, the unreadable landing page that was reported.
+   Both are kept: which element paints has moved between Streamlit versions
+   (see DEPENDENCIES.md section 5), and colouring both is cheap insurance. */
+/* The page ground is painted on `body`, which is a tag selector Streamlit
+   cannot rename. VERIFIED: with the light tokens active, body computes
+   rgb(255,255,255).
+
+   NOT SUFFICIENT ON ITS OWN, and this is the decisive negative result so the
+   next attempt does not start where this one did.
+
+   In light mode an inner Streamlit container still paints rgb(9,9,15) over
+   body, leaving dark #0f172a text on a dark ground: 1.06:1 across the landing
+   explainer. It DOES NOT RESPOND TO CSS. Established, not assumed:
+
+     - `--bg-base` resolves to #ffffff ON that element (checked with
+       getComputedStyle(el).getPropertyValue), so the token is not the problem;
+     - a rule `.stApp, [data-testid="stAppViewContainer"] { background:
+       var(--bg-base) !important }` is present in document.styleSheets AND
+       `element.matches()` returns true for it;
+     - the light `:root` block is injected after the dark one (style tag index
+       4 vs 3), so token order is not the problem;
+     - the element carries no inline style attribute;
+     - and injecting `.stApp{background:#ffffff !important}` AT RUNTIME left
+       getComputedStyle unchanged at rgb(9,9,15).
+
+   That last one is the important one: a matching !important rule that does not
+   move the computed value means THE PAINT IS NOT COMING FROM CSS THAT MATCHES
+   THIS SELECTOR. Do not spend another session on specificity or ordering.
+
+   Hypotheses worth testing next, in order of cheapness:
+     1. The queried `.stApp` is not the node being painted — the class carries
+        an `stAppEmbeddingId-*` suffix, so there may be a wrapper or a second
+        stacked app node, and `document.querySelector` returns the wrong one.
+        Compare `document.elementFromPoint()` at a blank area of the page
+        against the node the selector returns.
+     2. The ground is drawn by a pseudo-element (`::before`) on an ancestor,
+        which would leave the host element's own computed background untouched.
+     3. The app is inside an iframe in this preview surface, so the top-level
+        document being styled is not the document being rendered.
+
+   TASK 1 IS NOT FINISHED. Do not assume this rule fixed it. */
+html, body {
   background: var(--bg-base) !important;
 }
 
@@ -816,7 +863,7 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
 
 /* App + sidebar background. Without the first rule the page below the fold
    kept the dark base colour in light mode. */
-[data-testid="stAppViewContainer"] { background: var(--bg-base); }
+.stApp, [data-testid="stAppViewContainer"] { background: var(--bg-base); }
 [data-testid="stHeader"]           { background: transparent; }
 [data-testid="stSidebar"]          { background: var(--sidebar-bg); border-right: 1px solid var(--border); }
 [data-testid="stSidebar"] > div    { background: transparent; }
@@ -993,9 +1040,35 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
      meta     labels, captions, stat labels
    ══════════════════════════════════════════════════════════ */
 
+/* BODY TEXT COLOUR IS INHERITED FROM A STABLE ANCHOR, not enumerated under
+   Streamlit's internal class names.
+
+   This rule used to be the ONLY thing colouring markdown prose, and two of its
+   three selectors are Streamlit internals (`.main`, `.block-container`).
+   DEPENDENCIES.md section 5 records that those move between releases. When
+   they do, every `p` and `li` falls back to Streamlit's own `textColor`, which
+   config.toml pins to #f1f5f9 for the dark base — near-white. On the light
+   theme the page is white, so the result is near-white text on white: the
+   "grey-on-white landing page" that was reported.
+
+   `li` was the most exposed of the three: `p` had a `stMarkdownContainer`
+   fallback keyed to a test ID, and `li` had none at all. The landing
+   explainer's three columns are markdown LISTS, which is why they were the
+   worst of it.
+
+   The container rule below fixes the class of bug rather than this instance:
+   colour is set once on the app view container — a test ID, the most stable
+   handle Streamlit offers — and every descendant inherits it unless a rule
+   deliberately says otherwise. A future DOM change can no longer strand text
+   with no colour of its own. */
+[data-testid="stAppViewContainer"] {
+  color: var(--text-primary);
+}
+
 .main .block-container p,
 .main .block-container li,
-[data-testid="stMarkdownContainer"] p {
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {
   font-size: var(--fs-body);
   line-height: var(--lh-body);
   color: var(--text-primary);

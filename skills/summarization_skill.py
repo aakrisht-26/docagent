@@ -261,6 +261,28 @@ class SummarizationSkill(BaseSkill):
                     "Summary length reduced to extractive: the provider's "
                     "per-minute token limit could not fit this request. "
                     "Try a shorter summary length.")
+            elif getattr(self._llm, "_last_failure", None) == \
+                    getattr(self._llm, "FAILURE_ALL_PARKED",
+                            "all_keys_rate_limited"):
+                # The quota is spent, not the model broken. Distinguishing this
+                # matters because the action differs: the branch above says "ask
+                # for less", and doing that here would send the user round a
+                # loop that cannot succeed at any length until the window
+                # reopens. The client already knows when that is.
+                status = self._llm.keys_status()
+                when = type(self._llm).describe_reset(status["seconds_until_reset"])
+                self.logger.warning(
+                    f"LLM ({self._llm.provider_label}) unreachable: all "
+                    f"{status['configured']} key(s) are rate-limited. Earliest "
+                    f"resets {when}. Falling back to extractive."
+                )
+                reason = (f"all {self._llm.provider_label} API keys have hit "
+                          f"their rate limit")
+                skill_warnings.append(
+                    f"Summary reduced to extractive: the daily quota is spent "
+                    f"on every API key, so the model could not be called. It "
+                    f"resets {when}. A shorter length will not help — re-run "
+                    f"after that for a full summary.")
             else:
                 self.logger.warning(
                     f"LLM ({self._llm.provider_label}) failed — falling back to extractive."

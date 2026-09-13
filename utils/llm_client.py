@@ -156,6 +156,65 @@ def _shared_key_state(api_keys: List[str]) -> Dict[str, Any]:
             _SHARED_KEY_STATE[identity] = state
         return state
 
+# ── Progress events, for a caller showing someone the wait ─────────────────────
+#
+# Every retry, rotation and backoff below was logged and nothing else, so a page
+# showing a progress panel could not tell a stage sitting out a rate-limit
+# window from a hung one. A listener receives each event as it happens.
+#
+# THREAD-LOCAL, not process-wide, and that is correctness rather than tidiness.
+# Streamlit serves every browser session from its own script thread in ONE
+# process, so a module-level callback would post one user's retries into another
+# user's progress panel. The pipeline makes its calls on the thread that started
+# it -- nothing in agents/, skills/ or utils/ spawns a thread -- so the events
+# reach the session that is waiting for them.
+_LISTENER = threading.local()
+
+
+class rotation_listener:  # noqa: N801 -- a context manager, named as one reads
+    """Deliver rotation events to `callback(event)` for calls on this thread.
+
+    `event` is a dict with `kind` ("attempt", "rotated" or "waiting"), `at`
+    (a `time.monotonic()` reading) and the figures for that kind. Nests: the
+    previous listener is restored on exit.
+    """
+
+    def __init__(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        self._callback = callback
+        self._previous = None
+
+    def __enter__(self) -> "rotation_listener":
+        self._previous = getattr(_LISTENER, "callback", None)
+        _LISTENER.callback = self._callback
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        _LISTENER.callback = self._previous
+        return False
+
+
+def _listening() -> bool:
+    return getattr(_LISTENER, "callback", None) is not None
+
+
+def _notify(kind: str, **data: Any) -> None:
+    """Hand one event to this thread's listener, if there is one.
+
+    An `Exception` from the listener is logged and dropped: a fault in how the
+    wait is DISPLAYED must not fail a model call the user is already waiting
+    on. Streamlit's rerun request is a `BaseException` and is NOT caught here,
+    which is why the UI's listener routes its Streamlit calls through the rerun
+    guard -- that is where a queued interaction is deferred.
+    """
+    callback = getattr(_LISTENER, "callback", None)
+    if callback is None:
+        return
+    try:
+        callback({"kind": kind, "at": time.monotonic(), **data})
+    except Exception as exc:
+        logger.debug(f"rotation listener raised {type(exc).__name__}: {exc}")
+
+
 # Groq durations look like "28m3.936s", "1h16m19.2s", "1m26.4s", "185ms", "2.5s".
 _DURATION_RE = re.compile(
     r"(?:(?P<h>[\d.]+)h)?(?:(?P<m>[\d.]+)m(?!s))?(?:(?P<s>[\d.]+)s)?(?:(?P<ms>[\d.]+)ms)?$"
@@ -390,6 +449,138 @@ class LLMClient:
     def provider_label(self) -> str:
         return f"groq/{self.model}" if self.available else "none"
 
+    def keys_status(self) -> Dict[str, Any]:
+        """What the rotation currently knows about the keys.
+
+        The information was already here — `_dead_key_idxs`, `_parked_until`
+        and the retry-after parsed off a 429 — it just stopped at the log. This
+        is the read-only view of it, so a caller can tell the three states
+        apart:
+
+            configured=0                  no keys at all; a deployment problem
+            live>0                        normal, whether or not some are parked
+            live=0 and parked>0           quota spent; the window will reopen
+            live=0 and parked=0           every key rejected (401)
+            day_exhausted                 every key has refused on its DAY
+                                          window and none has reopened. TRUE
+                                          INDEPENDENTLY OF `live` — see below.
+
+        `seconds_until_reset` is the SOONEST the app can work again, never the
+        last — which would overstate the wait. Which deadline that is depends
+        on what refused; see the comment on `day_resets` below.
+        """
+        now = time.monotonic()
+        total = len(self.api_keys)
+        dead = len([i for i in self._dead_key_idxs if i < total])
+        parked = {i: t for i, t in self._parked_until.items() if t > now}
+        live = len(self._live_key_idxs())
+        # WHEN CAN A REAL RUN WORK AGAIN? That is the question this answers,
+        # and the two candidate deadlines answer different ones:
+        #
+        #   `_parked_until`        when the key rejoins the rotation. For a day
+        #                          window this is SCALED DOWN, to the point a
+        #                          `park_min_request`-token call would fit —
+        #                          measured at 2 minutes where the day window
+        #                          had 76 to run.
+        #   `_observed_daily`      when the day window itself resets, parsed
+        #                          off the retry-after in the 429 body.
+        #
+        # A summarisation call is thousands of tokens, not 500, so the parked
+        # deadline would tell a user to come back in two minutes to the same
+        # refusal. The day deadline is preferred wherever one is on record and
+        # still in the future; the parked deadline covers a per-minute refusal,
+        # where no day figure exists. `live` and `parked` are untouched — those
+        # describe the rotation, and a key really can still serve a small call.
+        day_resets = [d.get("resets_at") for d in self._observed_daily.values()
+                      if d.get("resets_at") is not None and d["resets_at"] > now]
+        if day_resets:
+            soonest = min(day_resets)
+        else:
+            soonest = min(parked.values()) if parked else None
+
+        # EVERY key has refused on its DAY window, and no window has reopened.
+        # This is a separate fact from `live`, and it has to be, because in the
+        # common case the two disagree: a day refusal leaves the key live while
+        # more than `park_min_request` tokens remain (see `_proportional_park_seconds`),
+        # so `live` reads 8 of 8 while the day's budget is plainly gone.
+        # Measured band, at limit 300000 and a 4353-token request: headroom
+        # from 500 to 4352 — 3,853 tokens of a 300,000-token day, and exactly
+        # where a user who has been working all day sits. Reporting `live` alone
+        # would have made the app say nothing there.
+        day_exhausted = bool(
+            total and len([i for i, d in self._observed_daily.items()
+                           if i < total and d.get("resets_at") is not None
+                           and d["resets_at"] > now]) >= total
+        )
+        return {
+            "configured": total,
+            "live": live,
+            "parked": len(parked),
+            "dead": dead,
+            "day_exhausted": day_exhausted,
+            "seconds_until_reset": (max(0.0, soonest - now)
+                                    if soonest is not None else None),
+        }
+
+    def _report_no_live_keys(
+        self, what: str, day_refused: Optional[Dict[int, Optional[float]]] = None
+    ) -> None:
+        """Log why the rotation has nothing left, and record it for the caller.
+
+        Two situations that used to share one sentence. A spent quota was
+        reported as "known-invalid (401); check GROQ_API_KEYS" — which sends
+        the user to replace keys that are perfectly good, and says nothing
+        about the window reopening. They need opposite responses: one is a
+        wait, the other is a deployment fix.
+        """
+        if day_refused:
+            # Reached from inside the sweep, where the keys may still be live
+            # for a smaller call. What is exhausted is the DAY budget for a
+            # request this size, and the deadlines quoted in those refusals are
+            # the only statement of when it reopens.
+            deadlines = [d for d in day_refused.values() if d is not None]
+            soonest = (max(0.0, min(deadlines) - time.monotonic())
+                       if deadlines else None)
+            self._last_failure = self.FAILURE_ALL_PARKED
+            logger.error(
+                f"{what}: all {len(day_refused)} usable Groq key(s) refused "
+                f"this request on their DAILY token limit. The earliest window "
+                f"reopens {self.describe_reset(soonest)}. Not waiting — "
+                f"returning without calling the model."
+            )
+            return
+
+        status = self.keys_status()
+        if status["parked"]:
+            self._last_failure = self.FAILURE_ALL_PARKED
+            logger.error(
+                f"{what}: all {status['configured']} Groq key(s) have hit their "
+                f"rate limit and none is usable. The earliest resets "
+                f"{self.describe_reset(status['seconds_until_reset'])}. "
+                f"Not waiting — returning without calling the model."
+            )
+        else:
+            self._last_failure = self.FAILURE_ALL_DEAD
+            logger.error(
+                f"{what}: all {status['configured']} Groq key(s) are "
+                f"known-invalid (401). Check GROQ_API_KEYS."
+            )
+
+    @staticmethod
+    def describe_reset(seconds: Optional[float]) -> str:
+        """A rough, honest wait. Rounded up, because a user told "30 seconds"
+        who then waits 45 has been misled, and the retry-after is itself
+        approximate."""
+        if seconds is None:
+            return "shortly"
+        if seconds < 60:
+            return "in under a minute"
+        minutes = int(seconds // 60) + 1
+        if minutes < 60:
+            return f"in about {minutes} minute{'s' if minutes != 1 else ''}"
+        hours = seconds / 3600.0
+        return f"in about {hours:.0f} hour{'s' if round(hours) != 1 else ''}"
+
     # ── Shared execution: timeout, retry/backoff, key rotation ────────────────
 
     def _client_for(self, idx: int):
@@ -401,6 +592,17 @@ class LLMClient:
                 api_key=self.api_keys[idx],
                 base_url=self.base_url,
                 timeout=float(self.timeout),
+                # ZERO, and it is load-bearing. The SDK defaults to 2 retries
+                # and retries a 429 ON THE SAME KEY, sleeping the retry-after
+                # (up to 60s) first. `_run_with_rotation` never saw those
+                # refusals, so it never rotated, logged nothing, and could tell
+                # a progress panel nothing. Measured live, Exhaustive over
+                # sample_large_report.pdf: three 429s on key 1 slept through
+                # for 14s + 11s + 9s = 34s while keys 2-8 sat at full budget,
+                # and every request of the run went to key 1. Every status the
+                # SDK retried (408, 409, 429, 5xx, connection, timeout) is
+                # handled below, with rotation.
+                max_retries=0,
             )
         return self._clients[idx]
 
@@ -621,10 +823,7 @@ class LLMClient:
 
         live = self._live_key_idxs()
         if not live:
-            logger.error(
-                f"{what}: all {len(self.api_keys)} Groq key(s) are known-invalid (401). "
-                "Check GROQ_API_KEYS."
-            )
+            self._report_no_live_keys(what)
             return None
 
         # Budget: one sweep across every usable key, plus a few genuine retries
@@ -645,11 +844,32 @@ class LLMClient:
         # Sleep only once every usable key has actually been tried.
         throttled: set = set()
         pending_waits: List[float] = []
+        # Keys that answered THIS request with a DAY-window refusal, and when
+        # each said its window reopens.
+        #
+        # A day refusal does not always park the key: `_proportional_park_seconds`
+        # returns 0.0 while more than `park_min_request` tokens of headroom
+        # remain, on the reasoning that the key can still serve a SMALL call.
+        # That reasoning is sound for the key, and wrong for this call — which
+        # goes on retrying the same too-large request against a key that has
+        # just refused it. Measured over a real HTTP 429, with limit 300000 /
+        # used 299184 / requested 4353: 12 attempts, 36 requests, 21s, and a
+        # give-up that blamed "attempts exhausted". The band where this happens
+        # is headroom between `park_min_request` and the request size — 3,853
+        # tokens of a 300,000-token day, which is exactly where a user who has
+        # been working all day sits.
+        day_refused: Dict[int, Optional[float]] = {}
 
         for attempt in range(attempts):
             live = self._live_key_idxs()
             if not live:
-                logger.error(f"{what}: every key returned 401; giving up.")
+                # This is the exit that actually fires when a daily quota runs
+                # out: keys leave the rotation mid-call because they were
+                # PARKED on a 429, not because they were retired on a 401. It
+                # asserted 401 regardless, and left `_last_failure` as None so
+                # no caller could tell either. Same diagnosis as the entry
+                # check — the state is the state, whenever it is reached.
+                self._report_no_live_keys(what)
                 return None
 
             # `_live_key_idxs()` is ordered starting at the rotation pointer, so
@@ -661,6 +881,20 @@ class LLMClient:
             def _rotate() -> None:
                 self._current_key_idx = (idx + 1) % len(self.api_keys)
 
+            def _notify_rotated(reason: str) -> None:
+                # Called after `_rotate()`, so the next usable key is known.
+                # Skipped without a listener: `_live_key_idxs()` returns expired
+                # parks to the rotation as a side effect, and nothing should
+                # change for a caller that is not watching.
+                if not _listening():
+                    return
+                upcoming = self._live_key_idxs()
+                _notify("rotated", reason=reason, key=idx + 1,
+                        keys=len(self.api_keys),
+                        next_key=(upcoming[0] + 1) if upcoming else None)
+
+            _notify("attempt", key=idx + 1, keys=len(self.api_keys),
+                    attempt=attempt + 1, attempts=attempts)
             try:
                 return operation(self._client_for(idx))
 
@@ -717,7 +951,26 @@ class LLMClient:
                             f"{self._park_min_request}-token call as the window decays"
                         )
                     self._park_key(idx, park_for, reason)
+                    if info.get("window") == "day":
+                        day_refused[idx] = (
+                            (time.monotonic() + wait) if wait is not None else None
+                        )
+                        remaining = [i for i in self._live_key_idxs()
+                                     if i not in day_refused]
+                        if not remaining:
+                            # Every usable key has said the DAY window is spent.
+                            # Retrying cannot succeed and waiting would mean
+                            # sleeping for the rest of the window, so stop and
+                            # let the caller say so. Reached whether or not the
+                            # keys were actually parked, which is the point.
+                            self._report_no_live_keys(what, day_refused)
+                            return None
                     _rotate()
+                    # DAILY when the window is a day. The branch parks per-minute
+                    # and per-day refusals alike, and "per-minute" tells a user to
+                    # expect the key back within a minute -- wrong by hours.
+                    _notify_rotated("daily_limit" if info.get("window") == "day"
+                                    else "rate_limit")
                     continue
 
                 # Short 429: a brief per-minute throttle on THIS key only.
@@ -738,6 +991,8 @@ class LLMClient:
                         f"trying {len(untried)} untried key(s) before backing off "
                         f"[attempt {attempt + 1}/{attempts}]"
                     )
+                    _notify("rotated", reason="rate_limit", key=idx + 1,
+                            keys=len(self.api_keys), next_key=untried[0] + 1)
                     continue
 
                 # Every usable key has now been tried and throttled. Only now is
@@ -749,6 +1004,8 @@ class LLMClient:
                     f"({detail}, hit #{rate_hits}); backing off {sleep_for:.1f}s "
                     f"[attempt {attempt + 1}/{attempts}]"
                 )
+                _notify("waiting", reason="rate_limit", seconds=sleep_for,
+                        keys=len(throttled))
                 time.sleep(sleep_for)
                 throttled.clear()
                 pending_waits.clear()
@@ -763,6 +1020,7 @@ class LLMClient:
                         f"{len(self.api_keys) - len(self._dead_key_idxs)} key(s) remain."
                     )
                     _rotate()
+                    _notify_rotated("invalid")
                     continue  # another key may work; no point backing off
                 if exc.status_code == 413:
                     # "Request too large ... tokens per minute (TPM)". Read as a
@@ -793,9 +1051,13 @@ class LLMClient:
                         f"[attempt {attempt + 1}/{attempts}]"
                     )
                     _rotate()
+                    _notify_rotated("size")
                     continue
 
-                if exc.status_code >= 500:
+                # 408 and 409 as well as 5xx: the SDK used to retry all three
+                # itself, and now that its retries are off (see `_client_for`)
+                # they would otherwise fall through to "not retryable".
+                if exc.status_code >= 500 or exc.status_code in (408, 409):
                     transient_hits += 1
                     delay = self._backoff_seconds(attempt)
                     logger.warning(
@@ -803,6 +1065,8 @@ class LLMClient:
                         f"retrying in {delay:.1f}s [attempt {attempt + 1}/{attempts}]"
                     )
                     _rotate()
+                    _notify("waiting", reason="transient", seconds=delay,
+                            key=idx + 1, keys=len(self.api_keys))
                     time.sleep(delay)
                     continue
                 logger.warning(f"{what}: API status error ({exc.status_code}): {exc.message}")
@@ -816,6 +1080,8 @@ class LLMClient:
                     f"retrying in {delay:.1f}s [attempt {attempt + 1}/{attempts}]"
                 )
                 _rotate()
+                _notify("waiting", reason="transient", seconds=delay,
+                        key=idx + 1, keys=len(self.api_keys))
                 time.sleep(delay)
 
             except Exception as exc:
@@ -859,6 +1125,13 @@ class LLMClient:
     #: Failure reasons `_last_failure` can carry.
     FAILURE_RATE_LIMIT = "rate_limit_refused"
     FAILURE_EXHAUSTED = "attempts_exhausted"
+
+    #: No key is usable. Distinct from the two above, which describe ONE call
+    #: being refused while other keys remain: these mean the app cannot reach
+    #: the model at all until the window reopens (ALL_PARKED) or until the keys
+    #: are fixed (ALL_DEAD).
+    FAILURE_ALL_PARKED = "all_keys_rate_limited"
+    FAILURE_ALL_DEAD = "all_keys_invalid"
 
     def chat(
         self,
