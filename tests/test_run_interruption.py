@@ -168,9 +168,9 @@ class TestStreamlitDeliversTheRerunToTheGuard(unittest.TestCase):
     a run does not raise RerunException into the running script at all:
     Streamlit STOPS that script (StopException) and starts a new run. The guard
     never sees anything to defer. Measured in the browser with a theme switch
-    mid-analysis: the run was gone 0.4s later on both 1.37.1 and 1.63.0. With
-    `fastReruns = false` (1.63.0) the same run completed, and the switch applied
-    once it had finished.
+    mid-analysis: the run was gone 0.4s later on 1.37.1 and 2.2s later on
+    1.63.0. With `fastReruns = false` (1.63.0) the same run completed, and the
+    switch applied once it had finished.
 
     So the guard is only as good as this setting, and these tests pin it -- in
     the file Cloud reads, and as Streamlit itself loads it, since an option

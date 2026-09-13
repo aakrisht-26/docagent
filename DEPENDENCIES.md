@@ -762,7 +762,7 @@ version, and its tests passed throughout because they raise `RerunException` by
 hand. With Streamlit's default `fastReruns = true`, a change mid-run makes
 Streamlit *stop* the script and start a new one; nothing is raised for the
 guard to catch. Measured in the browser: a theme switch ended the analysis 0.4s
-later on 1.37.1 and on 1.63.0. `.streamlit/config.toml` sets it to false and
+later on 1.37.1 and 2.2s later on 1.63.0. `.streamlit/config.toml` sets it to false and
 `tests/test_run_interruption.py` pins it, including a check that Streamlit
 itself loads it — a renamed option is ignored, not rejected.
 

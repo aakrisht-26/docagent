@@ -830,7 +830,8 @@ def _run_pipeline(name: str, file_data: dict, overrides: dict) -> None:
         # Streamlit's default `runner.fastReruns = true`, a widget change mid-run
         # STOPS this script (StopException) and starts a new one, so there was
         # never a RerunException here to defer -- a theme switch ended the
-        # analysis 0.4s later on both versions. It works only because
+        # analysis 0.4s later on 1.37.1 and 2.2s later on 1.63.0. It works only
+        # because
         # .streamlit/config.toml now sets `fastReruns = false`, pinned by
         # tests/test_run_interruption.py.
         #
