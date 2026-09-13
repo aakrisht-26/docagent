@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import unittest
 
-from streamlit.runtime.scriptrunner.exceptions import RerunData, RerunException
+from ui.streamlit_compat import RerunData, RerunException
 
 
 def _guard():

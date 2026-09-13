@@ -42,7 +42,7 @@ import threading
 import time
 import unittest
 
-from streamlit.runtime.scriptrunner.exceptions import RerunData, RerunException
+from ui.streamlit_compat import RerunData, RerunException
 
 import utils.llm_client as llm_mod
 from utils.llm_client import LLMClient, rotation_listener

@@ -19,7 +19,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
-from streamlit.runtime.scriptrunner.exceptions import RerunException
+# Not imported from Streamlit directly: its module moved between releases and
+# the hard import took the deployed app down. See ui/streamlit_compat.py.
+from ui.streamlit_compat import RerunException
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────────
 st.set_page_config(
