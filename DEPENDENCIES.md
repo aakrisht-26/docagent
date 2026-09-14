@@ -209,6 +209,12 @@ configuration, not as full coverage of the angle space.
 > is still correct: it guarantees a consistent environment on both, rather than
 > depending on which Streamlit a resolver happens to pick.
 >
+> **Since 2026-09-14 streamlit is pinned to 1.63.0**, which declares
+> `pandas<4,>=1.4.0` and `protobuf<8,>=5.26.1`. The `<3` bound is kept, but it
+> is now this project's choice rather than Streamlit's, and the
+> streamlit/protobuf conflict above no longer appears in `pip check`
+> (section 8).
+>
 > The original problem statement is kept below as the record.
 
 ### What was installed
@@ -711,13 +717,16 @@ however often it happens.
 
 ---
 
-## 8. Streamlit is floored, not pinned — and its internals move
+## 8. Streamlit is pinned to the deployed release — and its internals move
 
-**`requirements.txt` says `streamlit>=1.35.0`.** Community Cloud therefore
-installs the newest release when it builds: **1.63.0** on 2026-09-13, identified
-by the `static/js/index.ByR4Z2EF.js` the deployed app serves, which is the file
-in the 1.63.0 wheel. This machine had **1.37.1**. Every test, every e2e stage
-and every in-browser check in this repo ran on 1.37.1 until that date.
+**`requirements.txt` pins `streamlit==1.63.0`**, since 2026-09-14. It used to
+say `streamlit>=1.35.0`, so Community Cloud installed the newest release when
+it built: **1.63.0** on 2026-09-13, identified by the
+`static/js/index.ByR4Z2EF.js` the deployed app serves, which is the file in the
+1.63.0 wheel. This machine had **1.37.1**. Every test, every e2e stage and every
+in-browser check in this repo ran on 1.37.1 until that date.
+`tests/test_streamlit_compat.py` now fails if that line stops being an exact
+pin, or if the installed Streamlit is not the pinned one.
 
 That gap took the site down. `ui/app.py` imported `RerunException` from
 `streamlit.runtime.scriptrunner.exceptions`, which does not exist on 1.63.0,
@@ -744,15 +753,33 @@ logs that it is off. **Import Streamlit internals only through that module**:
 `tests/test_streamlit_compat.py` imports `ui/app.py` in a fresh interpreter, in
 both the local and the hosted branch. **Run on 1.37.1 it passes with the broken
 import restored** — verified by mutation — because that import is valid on
-1.37.1. It fails only on 1.63.0. A test speaks for the Streamlit it runs on, so
-while this stays a floor, the local version and the deployed one can differ
-with nothing noticing. Section 5's test IDs were likewise verified against
-1.37.1 only.
+1.37.1. It fails only on 1.63.0. A test speaks for the Streamlit it runs on,
+which is why the pin comes with a test that the installed version IS the
+pinned one: under the floor, the local version and the deployed one differed
+with nothing noticing.
 
-To check against what Cloud runs: create a venv with `--system-site-packages`,
-`pip install streamlit==<deployed version>` into it, then run
-`pytest tests/test_streamlit_compat.py tests/test_run_interruption.py` and
-`streamlit run ui/app.py` with that interpreter.
+**To upgrade:** change the pin, `pip install` the same version locally, and run
+the full suite and `python tests/e2e/e2e.py all`. To try a release before
+pinning it, use a venv made with `--system-site-packages` and
+`pip install streamlit==<version>` into it.
+
+### What moving this machine from 1.37.1 to 1.63.0 changed
+
+Measured on 2026-09-14, after `pip install streamlit==1.63.0` into the base
+environment:
+
+- **Installed alongside it:** httptools 0.8.0, python-multipart 0.0.32,
+  starlette 1.6.0, uvicorn 0.53.0, websockets 16.1.1. Nothing else was
+  upgraded, downgraded or removed.
+- **`pip check`:** three conflicts became two. `streamlit 1.37.1 requires
+  protobuf<6` is gone, because 1.63.0 declares `protobuf<8,>=5.26.1`. The
+  opentelemetry-proto/protobuf and shap/numpy conflicts are unchanged and
+  unrelated.
+- **conda follows it.** 1.37.1 came from a conda package; after pip replaced
+  it, `conda list` reports `streamlit 1.63.0 pypi_0 pypi`.
+- **Tests:** 596 passed on 1.37.1 and 598 on 1.63.0, the two extra being the
+  version checks above. Compared per test, nothing that passed on 1.37.1
+  fails on 1.63.0. `python tests/e2e/e2e.py all`: 8/8 PASS on 1.63.0.
 
 ### `runner.fastReruns` must stay off
 

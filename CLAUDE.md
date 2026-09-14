@@ -561,11 +561,12 @@ and a hard import of one of them took the deployed app down.
 `tests/test_streamlit_compat.py` fails on any Streamlit internal imported
 elsewhere.
 
-**The Streamlit you test on is probably not the one deployed.**
-`requirements.txt` floors it, so Cloud installs the newest release (1.63.0 on
-2026-09-13) while this machine had 1.37.1. A test passing here says nothing
-about Cloud unless the versions match; DEPENDENCIES.md section 8 says how to
-check against the deployed one.
+**Streamlit is pinned to the deployed release, and a test holds it there.**
+`requirements.txt` pins `streamlit==1.63.0`; `tests/test_streamlit_compat.py`
+fails if the pin loosens or the installed version differs. It used to be a
+floor, so Cloud ran 1.63.0 while this machine had 1.37.1 and every test passed
+on a version the deployment never ran. Change the pin and the local
+environment together; DEPENDENCIES.md section 8 has the upgrade steps.
 
 **`runner.fastReruns` must stay `false`** in `.streamlit/config.toml`. The
 mid-run guard in `ui/app.py` depends on it and never worked without it — its
