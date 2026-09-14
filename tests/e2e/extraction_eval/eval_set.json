@@ -257,11 +257,11 @@
           "note": ""
         },
         "patient_id": {
-          "must_contain": [],
+          "must_be_withheld": true,
           "must_not_contain": [
             "55-40182"
           ],
-          "note": "INVERTED on purpose. The schema field reads 'Patient identifier or MRN (anonymise if present)', so emitting the raw MRN is the FAILURE and withholding it is correct. The first version of this case demanded the MRN, which asserted a violation of the schema's own instruction and scored the model wrong for obeying it. Now it tests that the anonymisation instruction is actually honoured."
+          "note": "POLICY, the same test as health-sheet-01. The schema reads 'WITHHELD: always null', so only an empty field is CORRECT, and run_eval.py scores the MRN WRONG in any field of the case. This used to assert must_not_contain alone, under 'anonymise if present', which scored a placeholder CORRECT ('ANON', 'REDACTED', even the bare word 'MRN') and an empty field MISSING, while health-sheet-01 scored 'ANON1; ANON2; ANON3' WRONG: the two cases disagreed about what withholding means. Re-judged over the 10 draws recorded before the schema change, the old rule gives 4 CORRECT and 6 WRONG and this one 0 CORRECT and 10 WRONG, so it is the stricter of the two on every value the model emitted. The first version of the case demanded the raw MRN, which asserted a violation of the schema."
         }
       }
     },
@@ -424,9 +424,11 @@
         "patient_id": {
           "must_be_withheld": true,
           "must_not_contain": [
-            "55-40182"
+            "55-40182",
+            "55-40183",
+            "55-40184"
           ],
-          "note": "POLICY, not fabrication: the MRN IS in the document and the schema says 'anonymise if present'. A column of MRNs is a harder test of that instruction than one labelled value, and emitting it leaks an identifier rather than inventing one."
+          "note": "POLICY, not fabrication: the MRNs ARE in the document and the schema withholds them ('WITHHELD: always null'). All three are listed because run_eval.py scores a withheld value WRONG in any field of the case, and on this sheet the MRNs left patient_id for the other fields: before the schema change 9 of 10 draws carried one somewhere, 5 of them in nearly every field. A column of MRNs is a harder test than one labelled value, and emitting it leaks an identifier rather than inventing one."
         }
       }
     }

@@ -253,11 +253,19 @@ from 8 documents the check flagged 2 and both were genuine fabrications — the
 column sum, and an invented year — with **zero false positives**, which is why
 it drops rather than merely flags. Disable with `DOCAGENT_EXTRACTION_VERIFY=false`.
 
-**What remains.** The check is numbers only. A fabricated *name*, date range or
-claim carrying no digits would pass it, and two measured failures it does not
-address are a medication whose status column reads `Stopped` being listed as
-current, and patient identifiers being emitted from a schema that says to
-anonymise them. Treat extracted fields as a lead to verify, not as a citation.
+**Patient identifiers are withheld after extraction, not just requested.** The
+Healthcare schema tells the model its `patient_id` field is withheld, and that
+measured no leak in 100 draws on the two eval documents, but a sheet with the
+column headed `Patient ID` instead of `MRN` put all three MRNs into another field
+in 1 of 16 draws. So any identifier the document labels, in a line or as a
+column, is removed from every extracted field however it is punctuated, and the
+warning names the fields without repeating the identifier.
+
+**What remains.** The figure check is numbers only: a fabricated *name*, date
+range or claim carrying no digits would pass it. An identifier the document does
+not label is not caught. Medications are told to leave out stopped drugs, and
+nothing checks that they did. Treat extracted fields as a lead to verify, not as
+a citation.
 Full method in [tests/e2e/extraction_eval/RESULTS.md](tests/e2e/extraction_eval/RESULTS.md).
 
 Sub-chunking improves **ranking, not recall** — page-level chunking already put
