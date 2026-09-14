@@ -485,7 +485,10 @@ problem. Removal is covered by Task 16.
 `[data-testid="…"]` attributes. **These are internal, undocumented, and get
 renamed between Streamlit versions.**
 
-**Verified against `streamlit==1.37.1`.**
+**Verified against `streamlit==1.63.0`, the pinned version**, on 2026-09-14: in the
+browser in both themes, and by `tests/test_stylesheet_test_ids.py`, which fails
+if the stylesheet names a test ID the installed Streamlit never renders. What
+follows up to "What the move from 1.37.1 to 1.63.0 broke" is the 1.37.1 record.
 
 ### Why this is worth writing down
 
@@ -519,16 +522,13 @@ number inputs, so that rule was removed as dead weight rather than as a bug.
 The rules now carry **both spellings**, so they work on 1.37.x and keep working
 after the rename rather than silently dying at the next upgrade.
 
-> **The three `stBaseButton-*` selectors are inert on this version.** They match
-> nothing in 1.37.1 and are present for forward compatibility only — they exist
-> so the button styling survives the upgrade that renames `baseButton-*`. Do not
-> read them as working rules, and do not "fix" a button by editing them: on this
-> version only the `baseButton-*` half of each rule has any effect. If you are
-> debugging button styling here, the `baseButton-*` selector is the live one.
->
-> Once this project moves to a Streamlit version that emits `stBaseButton-*`, the
-> pair inverts and the `baseButton-*` half becomes the dead one. Neither half is
-> safe to delete until the supported version range covers only one spelling.
+> **Resolved by the pin.** 1.63.0 emits only `stBaseButton-*`, so the
+> `baseButton-*` half of each pair was removed. The pairs had also hidden a trap:
+> each was a selector *list*, so the `st` half never had the scope written on the
+> other half. Once it went live on 1.63.0, the sidebar history-button styling
+> reached every secondary button on the page, and
+> `[data-testid="stBaseButton-headerNoPadding"]` hid the sidebar's collapse
+> button.
 
 ### If styling looks wrong after a Streamlit upgrade
 
@@ -546,12 +546,57 @@ grep -oE 'data-testid="[^"]+"' ui/styles/custom.css | sort -u
 ```
 
 Anything in the second list and not the first is either dead or belongs to a
-widget that is not on the page you sampled — check the shipped bundle to tell
-those apart:
+widget that is not on the page you sampled. `tests/test_stylesheet_test_ids.py`
+tells those apart by reading the shipped bundle. The advice that used to be here,
+grepping the bundle for `'"stAlert"'`, finds nothing on 1.63.0, which writes
+these IDs in backticks; an empty grep proves nothing.
 
-```bash
-grep -rl '"stAlert"' "$(python -c 'import streamlit,os;print(os.path.dirname(streamlit.__file__))')/static/static/js"
-```
+**What that test cannot see**, and what broke anyway on the move to 1.63.0: class
+names (`.main`), `data-baseweb` attributes, and structural selectors
+(`> div > div`). Those need the browser, in both themes, on the landing page,
+during an analysis, and on every results tab. Force a restyle before reading a
+computed style (`document.body.style.display = 'none'; document.body.offsetHeight;
+document.body.style.display = ''`). With the browser pane not drawing, stale
+values were read as real twice: a light page "painted dark" (section 6's
+neighbour in `custom.css`, now corrected) and radios in the wrong checked state.
+And read the colour of the element that holds the text: a tab element measured
+1.10:1 on 1.63.0 while its label, a `p` coloured `--text-primary`, was 17.85:1.
+
+### What the move from 1.37.1 to 1.63.0 broke, measured
+
+Light theme unless noted. The same stylesheet, served by 1.37.1 and by 1.63.0,
+before the rules were re-anchored.
+
+| Surface | 1.37.1 | 1.63.0 before the fix | Cause |
+|---|---|---|---|
+| Content container | 1440px max, 16px top | no max width, 96px top | `.main` not rendered |
+| Page headings | H1 28px, H3 16.8px | H1 44px, H3 28px | `.main` not rendered |
+| Unselected radio | hollow `#cbd3e0` ring | solid `rgb(17,17,24)` dot | no `data-baseweb="radio"` |
+| Selectbox | white control, value 17.85:1 | `rgb(17,17,24)` control, near-white value | no `data-baseweb="select"` |
+| Dropdown menu | not measured (would not open in the test browser) | `rgb(9,9,15)` | `stSelectboxVirtualDropdown` |
+| Code block | `rgb(246,247,249)`, bordered | `rgb(13,13,20)` slab | `stCodeBlock` is now `stCode` |
+| Progress track / fill | `rgb(238,241,246)` / accent | `rgb(17,17,24)` / pale grey | `stProgressBarTrack`, one div fewer |
+| Status header, mid-analysis | white, label 17.85:1 | `rgb(13,13,20)`, label 1.08:1 | the summary row is painted |
+| Chat input | typed text 17.85:1 | 1.05:1 on an inner `rgb(17,17,24)` layer | new inner layer |
+| Uploaded-file chip | no dark surface | `rgb(9,9,15)` chip, near-white name | new `stFileChip`, inside the dropzone |
+| Tab strip | 4px gap, 1px underline, 16px padding | 16px gap, no underline, no padding | no `data-baseweb="tab"` |
+| Secondary buttons, main area | accent tint, centred, weight 600 | sidebar styling: white, left, 400 | unscoped `stBaseButton-secondary` half |
+| Sidebar collapse button | shown | hidden | unscoped `stBaseButton-headerNoPadding` half |
+
+After re-anchoring, 1.63.0 measures the 1.37.1 value on every measured row, in
+both themes. A scan of every rendered element in light mode (landing page,
+mid-analysis, every results tab) finds one dark surface, which 1.37.1 has as
+well: the Edit tab's text-area frame. In dark mode no rendered text is dark, on
+any tab. Two hover rules now behave as written rather than as they did on
+1.37.1, where the unscoped half of each selector list applied them permanently:
+the primary button's raised shadow, and the sidebar history buttons' hover fill
+and accent border, now show on hover only.
+
+**Never matched on either version**, so not part of the move, and left alone:
+the `.btn-pdf` / `.btn-md` / `.btn-json` and `.options-bar` descendant rules (each
+wrapper `<div>` comes from its own `st.markdown` call and closes before the
+widgets it was meant to contain), `[data-testid="stFileUploader"] > div:first-child`,
+and `[data-testid="stWidgetLabel"] label` (that test ID is the label itself).
 
 ### Reducing the exposure
 
@@ -584,14 +629,21 @@ mode only.
 | Chat input | `stChatInput` | `rgb(17,17,24)` container — a black bar under the chat |
 | Progress bar track | `stProgress` | black unfilled track; the fill also used the pinned `primaryColor` |
 | Status panel state icons | `stExpanderIconCheck` / `stExpanderIconError` | `rgb(241,245,249)` — the dark theme's text colour, invisible on white |
-| Code blocks | `stCodeBlock` | near-black slab; the "Extracted text" tab became a full-height wall of it |
+| Code blocks | `stCode` (was `stCodeBlock`) | near-black slab; the "Extracted text" tab became a full-height wall of it |
+| Selectbox control (1.63.0) | `stSelectbox` `[role="group"]` | `rgb(17,17,24)` bar with near-white value |
+| Selectbox menu (1.63.0) | `stSelectboxVirtualDropdown` | `rgb(9,9,15)` menu |
+| Status header (1.63.0) | `stExpander` `summary` | `rgb(13,13,20)` while an analysis runs; its label 1.08:1 |
+| Chat input inner layer (1.63.0) | `stChatInput > div` | `rgb(17,17,24)` behind the typed text, 1.05:1 |
+| Uploaded-file chip (1.63.0) | `stFileChip` | `rgb(9,9,15)` chip with a near-white name |
 
-Four separate times, the same root cause. If a fifth turns up, the fix is the
-same shape — find the element, set `background` / `color` / `fill` to the
+Nine times now, the same root cause, five of them new in 1.63.0. If another turns
+up, the fix is the same shape — find the element, set `background` / `color` / `fill` to the
 relevant token with `!important`, and add it to this table:
 
 ```javascript
 // in the browser console, in LIGHT mode, on the offending page
+// force a restyle first: computed values can be stale while the page is not drawing
+document.body.style.display = 'none'; document.body.offsetHeight; document.body.style.display = '';
 [...document.querySelectorAll('*')]
   .filter(e => {
     const b = getComputedStyle(e).backgroundColor;
@@ -780,6 +832,8 @@ environment:
 - **Tests:** 596 passed on 1.37.1 and 598 on 1.63.0, the two extra being the
   version checks above. Compared per test, nothing that passed on 1.37.1
   fails on 1.63.0. `python tests/e2e/e2e.py all`: 8/8 PASS on 1.63.0.
+- **What did break was the stylesheet**, which no test read against a live page:
+  thirteen surfaces, measured and fixed in section 5.
 
 ### `runner.fastReruns` must stay off
 

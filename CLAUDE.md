@@ -568,6 +568,13 @@ floor, so Cloud ran 1.63.0 while this machine had 1.37.1 and every test passed
 on a version the deployment never ran. Change the pin and the local
 environment together; DEPENDENCIES.md section 8 has the upgrade steps.
 
+**The stylesheet targets Streamlit's internal DOM, which moves between releases.**
+`tests/test_stylesheet_test_ids.py` fails on a test ID the installed Streamlit
+never renders. Class names, `data-baseweb` attributes and structural selectors are
+not covered: after an upgrade, check them in the browser in both themes, and force
+a restyle before trusting a computed colour. The move to 1.63.0 broke thirteen
+surfaces this way (DEPENDENCIES.md section 5).
+
 **`runner.fastReruns` must stay `false`** in `.streamlit/config.toml`. The
 mid-run guard in `ui/app.py` depends on it and never worked without it — its
 own tests passed anyway, because they raise `RerunException` by hand. The cost
