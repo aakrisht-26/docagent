@@ -116,40 +116,23 @@ html, body, [class*="css"] {
    cannot rename. VERIFIED: with the light tokens active, body computes
    rgb(255,255,255).
 
-   NOT SUFFICIENT ON ITS OWN, and this is the decisive negative result so the
-   next attempt does not start where this one did.
+   CORRECTED 2026-09-14. This block used to record, as a decisive negative
+   result, that in light mode `.stApp` still painted rgb(9,9,15) and did not
+   respond to CSS: even `.stApp{background:#ffffff !important}` injected at
+   runtime left getComputedStyle at rgb(9,9,15). That was a MEASUREMENT
+   ARTEFACT. Reproduced on 1.37.1 with the browser pane not drawing: the read
+   stayed rgb(9,9,15) before and after that injection, and after one forced
+   restyle (body display:none, reflow, restore) `.stApp` and the app view
+   container both computed rgb(255,255,255). On 1.63.0, read the same way,
+   every ancestor from the main area up to <html> computes white in light
+   mode. The rule above works and the ground was never dark. Force a restyle
+   before trusting a computed colour.
 
-   In light mode an inner Streamlit container still paints rgb(9,9,15) over
-   body, leaving dark #0f172a text on a dark ground: 1.06:1 across the landing
-   explainer. It DOES NOT RESPOND TO CSS. Established, not assumed:
-
-     - `--bg-base` resolves to #ffffff ON that element (checked with
-       getComputedStyle(el).getPropertyValue), so the token is not the problem;
-     - a rule `.stApp, [data-testid="stAppViewContainer"] { background:
-       var(--bg-base) !important }` is present in document.styleSheets AND
-       `element.matches()` returns true for it;
-     - the light `:root` block is injected after the dark one (style tag index
-       4 vs 3), so token order is not the problem;
-     - the element carries no inline style attribute;
-     - and injecting `.stApp{background:#ffffff !important}` AT RUNTIME left
-       getComputedStyle unchanged at rgb(9,9,15).
-
-   That last one is the important one: a matching !important rule that does not
-   move the computed value means THE PAINT IS NOT COMING FROM CSS THAT MATCHES
-   THIS SELECTOR. Do not spend another session on specificity or ordering.
-
-   Hypotheses worth testing next, in order of cheapness:
-     1. The queried `.stApp` is not the node being painted — the class carries
-        an `stAppEmbeddingId-*` suffix, so there may be a wrapper or a second
-        stacked app node, and `document.querySelector` returns the wrong one.
-        Compare `document.elementFromPoint()` at a blank area of the page
-        against the node the selector returns.
-     2. The ground is drawn by a pseudo-element (`::before`) on an ancestor,
-        which would leave the host element's own computed background untouched.
-     3. The app is inside an iframe in this preview surface, so the top-level
-        document being styled is not the document being rendered.
-
-   TASK 1 IS NOT FINISHED. Do not assume this rule fixed it. */
+   The grey-on-white landing page that was reported was TEXT colour. The
+   deployment runs 1.63.0, which does not render `.main`, so the
+   `.main .block-container` colour rules matched nothing there: with the
+   stylesheet as it was before e29676b, the landing explainer measured
+   1.10:1 on 1.63.0 and 17.85:1 on 1.37.1. */
 html, body {
   background: var(--bg-base) !important;
 }
@@ -167,7 +150,7 @@ html, body {
    LAYOUT to protect the TEXT also starved the tables, metric grid and stage
    panel, none of which have a reading measure. So the container gets the
    width and the prose keeps its own limit (see .summary-para below). */
-.main .block-container {
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] {
   max-width: 1440px;
   padding-top: 1rem;
   padding-bottom: 3rem;
@@ -587,16 +570,14 @@ html, body {
 }
 
 /* ── Buttons (all variants) ──────────────────────────────── */
-/* Every button rule below is written twice. On streamlit 1.37.1 only the
-   `baseButton-*` spelling matches -- the frontend builds these ids as
-   "baseButton-".concat(kind). The `stBaseButton-*` half is INERT here and is
-   kept purely so the styling survives the later release that renames them.
-   Debugging a button on this version? Edit the `baseButton-*` selector; the
-   `st`-prefixed one does nothing. See DEPENDENCIES.md section 5. */
+/* Streamlit 1.63.0, the pinned version, builds these ids as
+   `stBaseButton-${kind}`. Until the pin every rule also carried the 1.37.1
+   spelling, `baseButton-*`, which matches nothing on 1.63.0 and is gone.
+   See DEPENDENCIES.md section 5. */
 /* Base reset for all Streamlit buttons */
 [data-testid="stDownloadButton"] button,
-[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"],
-[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"] {
+[data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-primary"] {
   border-radius: 8px !important;
   font-weight: 600 !important;
   font-size: 0.82rem !important;
@@ -607,24 +588,24 @@ html, body {
 }
 
 /* Default action button (st.button) */
-[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"] {
+[data-testid="stBaseButton-secondary"] {
   background: var(--accent-soft) !important;
   color: var(--accent-hover) !important;
   border: 1px solid var(--border-accent) !important;
 }
-[data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"]:hover {
+[data-testid="stBaseButton-secondary"]:hover {
   background: var(--accent-soft) !important;
   border-color: var(--border-accent) !important;
 }
 
 /* Primary button */
-[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"] {
+[data-testid="stBaseButton-primary"] {
   background: var(--accent) !important;
   color: white !important;
   border: none !important;
   box-shadow: 0 3px 10px var(--border-accent) !important;
 }
-[data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"]:hover {
+[data-testid="stBaseButton-primary"]:hover {
   transform: translateY(-1px) !important;
   box-shadow: 0 5px 16px var(--border-accent) !important;
 }
@@ -712,7 +693,7 @@ html, body {
 }
 
 /* ── Tab styling ─────────────────────────────────────────── */
-button[data-baseweb="tab"] {
+[data-testid="stTabs"] [data-testid="stTab"] {
   font-weight: 500 !important;
   font-size: 0.875rem !important;
 }
@@ -834,7 +815,7 @@ hr {
   .hero-title { font-size: 2rem; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .doc-type-banner { flex-direction: column; gap: 0.4rem; }
-  .main .block-container { padding-left: 0.75rem; padding-right: 0.75rem; }
+  [data-testid="stMain"] [data-testid="stMainBlockContainer"] { padding-left: 0.75rem; padding-right: 0.75rem; }
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -856,10 +837,9 @@ hr {
    loudest signal that this is a framework demo rather than a product, and
    neither does anything useful for a viewer of this app. */
 [data-testid="stToolbar"],
-[data-testid="stDecoration"],
 [data-testid="stStatusWidget"],
 #MainMenu,
-header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-headerNoPadding"] { display: none !important; }
+header [data-testid="stBaseButton-headerNoPadding"] { display: none !important; }
 
 /* App + sidebar background. Without the first rule the page below the fold
    kept the dark base colour in light mode. */
@@ -871,21 +851,23 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
 /* Radio groups. In light mode the UNSELECTED dot rendered as a solid black
    circle, so every option looked chosen. Force the ring/fill relationship
    to come from tokens rather than from Streamlit's base theme. */
-/* Checked state lives on the <input>, not on a div with aria-checked — the
-   ring and the dot are sibling divs before it. Without this, Streamlit's dark
+/* Checked state lives on the <input>, not on a div with aria-checked. On
+   1.63.0 the input sits in a span before the ring, and the dot is the ring's
+   child. Without this, Streamlit's dark
    base theme filled the UNSELECTED ring solid, so in light mode every option
    looked selected. */
-[data-baseweb="radio"] > div:first-child {
+[data-testid="stRadioOption"] > div > div > div:first-child {
   background: transparent !important;
   border: 2px solid var(--border-strong) !important;
+  box-sizing: border-box !important;
 }
-[data-baseweb="radio"]:has(input:checked) > div:first-child {
+[data-testid="stRadioOption"]:has(input:checked) > div > div > div:first-child {
   border-color: var(--accent) !important;
 }
-[data-baseweb="radio"] > div:first-child > div {
+[data-testid="stRadioOption"] > div > div > div:first-child > div {
   background: transparent !important;
 }
-[data-baseweb="radio"]:has(input:checked) > div:first-child > div {
+[data-testid="stRadioOption"]:has(input:checked) > div > div > div:first-child > div {
   background: var(--accent) !important;
 }
 [data-testid="stRadio"] label { color: var(--text-primary) !important; }
@@ -917,6 +899,19 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
   color: var(--text-on-accent) !important;
   border: none !important;
 }
+/* Uploaded-file chips, new in 1.63.0 and drawn INSIDE the dropzone: a
+   rgb(9,9,15) chip with a near-white name on the white page, and the rule
+   above turned each chip's remove button into a filled accent circle. */
+[data-testid="stFileChip"] {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border) !important;
+}
+[data-testid="stFileChipName"] { color: var(--text-primary) !important; }
+[data-testid="stFileChipName"] + div { color: var(--text-secondary) !important; }
+[data-testid="stFileChip"] button {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+}
 
 /* Tooltip / help icon — invisible on white before. */
 [data-testid="stTooltipIcon"] svg { fill: var(--text-muted) !important; }
@@ -924,11 +919,12 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
 /* Inputs */
 [data-testid="stTextInput"] input,
 [data-testid="stTextArea"] textarea,
-[data-baseweb="select"] > div {
+[data-testid="stSelectbox"] [role="group"] {
   background: var(--bg-input) !important;
   color: var(--text-primary) !important;
   border-color: var(--border) !important;
 }
+[data-testid="stSelectbox"] [role="group"] input { color: var(--text-primary) !important; }
 
 /* Chat input. Streamlit paints this container from the *pinned* config.toml
    theme (secondaryBackgroundColor), which is dark — so unlike the text inputs
@@ -939,6 +935,9 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
 }
+/* 1.63.0 puts a layer painted rgb(17,17,24) between the container and the
+   textarea: typed text measured 1.05:1 on it in light mode. */
+[data-testid="stChatInput"] > div { background: transparent !important; }
 [data-testid="stChatInput"]:focus-within { border-color: var(--accent) !important; }
 [data-testid="stChatInputTextArea"] { color: var(--text-primary) !important; }
 [data-testid="stChatInputTextArea"]::placeholder { color: var(--text-muted) !important; }
@@ -951,11 +950,13 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
    rendered as a solid black bar. The fill takes the pinned primaryColor for the
    same reason, which is close to but not the accent token. Both are pinned to
    tokens here so the status panel matches the rest of the theme.
-   Structure in 1.37.1 is [role=progressbar] > div > track > fill. */
-[data-testid="stProgress"] div[role="progressbar"] > div > div {
+   Structure in 1.63.0 is [role=progressbar] > stProgressBarTrack > fill.
+   The 1.37.1 selectors had one more `> div` and landed on the 1.63.0 fill,
+   painting it the track colour inside a dark track. */
+[data-testid="stProgress"] [data-testid="stProgressBarTrack"] {
   background: var(--bg-hover) !important;
 }
-[data-testid="stProgress"] div[role="progressbar"] > div > div > div {
+[data-testid="stProgress"] [data-testid="stProgressBarTrack"] > div {
   background: var(--accent) !important;
 }
 
@@ -967,28 +968,34 @@ header [data-testid="baseButton-headerNoPadding"], [data-testid="stBaseButton-he
 [data-testid="stExpanderIconCheck"] { color: var(--success) !important; }
 [data-testid="stExpanderIconError"] { color: var(--error) !important; }
 
+/* Status panel header. On 1.63.0 the summary row paints the dark config
+   colour, rgb(13,13,20), while an analysis runs, under dark token text:
+   "Analysing document…" measured 1.08:1 in light mode. */
+[data-testid="stExpander"] summary { background: var(--bg-card) !important; }
+
 /* Code blocks. The fourth surface painted from the pinned dark config rather
    than the tokens: a near-black slab on a white page, which the "Extracted
    text" tab turns into a full-height wall of it. Safe to recolour because both
    st.code() call sites pass language="text", so there is no syntax
    highlighting whose palette this could fight. */
-[data-testid="stCodeBlock"] pre {
+[data-testid="stCode"] pre {
   background: var(--bg-surface) !important;
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
 }
-[data-testid="stCodeBlock"] code { color: var(--text-primary) !important; }
-[data-testid="stCodeBlock"] button svg { fill: var(--text-muted) !important; }
+[data-testid="stCode"] code { color: var(--text-primary) !important; }
+[data-testid="stCode"] button svg { fill: var(--text-muted) !important; }
 
-/* Select dropdown popover — inherited the dark surface on white. */
-[data-baseweb="popover"] [role="listbox"],
-ul[data-baseweb="menu"] {
-  background: var(--bg-card) !important;
+/* Select dropdown — inherited the dark surface on white. 1.63.0 renders it
+   as stSelectboxVirtualDropdown, painted rgb(9,9,15), with no data-baseweb.
+   The menu IS the surface over the page here, so it takes an opaque token. */
+[data-testid="stSelectboxVirtualDropdown"] {
+  background: var(--bg-surface) !important;
   border: 1px solid var(--border) !important;
 }
-li[role="option"] { background: transparent !important; color: var(--text-primary) !important; }
-li[role="option"]:hover,
-li[role="option"][aria-selected="true"] { background: var(--accent-soft) !important; }
+[data-testid="stSelectboxVirtualDropdown"] [role="option"] { background: transparent !important; color: var(--text-primary) !important; }
+[data-testid="stSelectboxVirtualDropdown"] [role="option"]:hover,
+[data-testid="stSelectboxVirtualDropdown"] [role="option"][aria-selected="true"] { background: var(--accent-soft) !important; }
 
 /* Alerts. Streamlit's defaults are the "raw framework output" look flagged
    in the audit; these give them the same surface language as everything else. */
@@ -1002,18 +1009,18 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
 [data-testid="stAlert"] a, .stAlert a, [role="alert"] a { color: var(--accent) !important; }
 
 /* Tabs — were the quietest thing on screen despite being primary navigation. */
-[data-baseweb="tab-list"] { gap: var(--sp-1); border-bottom: 1px solid var(--border); }
-[data-baseweb="tab"] {
+[data-testid="stTabs"] [role="tablist"] { gap: var(--sp-1); border-bottom: 1px solid var(--border); }
+[data-testid="stTab"] {
   font-size: var(--fs-body) !important;
   font-weight: var(--fw-medium) !important;
   color: var(--text-secondary) !important;
   padding: var(--sp-2) var(--sp-4) !important;
 }
-[data-baseweb="tab"][aria-selected="true"] { color: var(--accent) !important; }
+[data-testid="stTab"][aria-selected="true"] { color: var(--accent) !important; }
 
 /* Sidebar buttons (the history list). These kept a dark fill with dark text
    in light mode, making every filename invisible. */
-[data-testid="stSidebar"] [data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"] {
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
   background: var(--bg-card) !important;
   color: var(--text-primary) !important;
   border: 1px solid var(--border) !important;
@@ -1021,7 +1028,7 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
   font-size: var(--fs-meta) !important;
   font-weight: var(--fw-normal) !important;
 }
-[data-testid="stSidebar"] [data-testid="baseButton-secondary"], [data-testid="stBaseButton-secondary"]:hover {
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
   background: var(--bg-hover) !important;
   border-color: var(--accent) !important;
 }
@@ -1044,9 +1051,10 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
    Streamlit's internal class names.
 
    This rule used to be the ONLY thing colouring markdown prose, and two of its
-   three selectors are Streamlit internals (`.main`, `.block-container`).
-   DEPENDENCIES.md section 5 records that those move between releases. When
-   they do, every `p` and `li` falls back to Streamlit's own `textColor`, which
+   three selectors were Streamlit internals (`.main`, `.block-container`).
+   DEPENDENCIES.md section 5 records that those move between releases, and
+   1.63.0 stopped rendering `.main`: the layout and heading rules below matched
+   nothing there until they moved to test IDs. When a class moves, every `p` and `li` falls back to Streamlit's own `textColor`, which
    config.toml pins to #f1f5f9 for the dark base — near-white. On the light
    theme the page is white, so the result is near-white text on white: the
    "grey-on-white landing page" that was reported.
@@ -1065,8 +1073,8 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
   color: var(--text-primary);
 }
 
-.main .block-container p,
-.main .block-container li,
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] p,
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] li,
 [data-testid="stMarkdownContainer"] p,
 [data-testid="stMarkdownContainer"] li {
   font-size: var(--fs-body);
@@ -1074,7 +1082,7 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
   color: var(--text-primary);
 }
 
-.main .block-container h1 {
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] h1 {
   font-size: var(--fs-display);
   font-weight: var(--fw-bold);
   line-height: var(--lh-tight);
@@ -1082,14 +1090,14 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
   color: var(--text-primary);
 }
 
-.main .block-container h2 {
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] h2 {
   font-size: calc(var(--fs-heading) * 1.2);
   font-weight: var(--fw-bold);
   line-height: var(--lh-tight);
   color: var(--text-primary);
 }
 
-.main .block-container h3 {
+[data-testid="stMain"] [data-testid="stMainBlockContainer"] h3 {
   font-size: var(--fs-heading);
   font-weight: var(--fw-medium);
   line-height: var(--lh-tight);
@@ -1116,7 +1124,7 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
   font-weight: var(--fw-bold);
 }
 
-/* Sidebar typography. Sidebar headings sit outside `.main .block-container`,
+/* Sidebar typography. Sidebar headings sit outside the main block container,
    so the type-scale rules above do not reach them and they were inheriting
    Streamlit's base-theme text colour — which is light, and therefore
    invisible on a light background. Bind them to tokens like everything else. */
@@ -1136,13 +1144,12 @@ li[role="option"][aria-selected="true"] { background: var(--accent-soft) !import
 }
 
 /* Sidebar collapse chevron — same inheritance problem. */
-[data-testid="stSidebarCollapseButton"] svg { fill: var(--text-secondary) !important; }
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"] { color: var(--text-secondary) !important; }
 
 /* Hover tooltips. Streamlit renders these into a portal outside the app
    container, so they never picked up the theme and stayed dark-on-dark in
    light mode — visible on the sidebar history items, which use the tooltip
    for their metadata. */
-[data-baseweb="tooltip"],
 [data-testid="stTooltipContent"] {
   background: var(--bg-surface) !important;
   color: var(--text-primary) !important;

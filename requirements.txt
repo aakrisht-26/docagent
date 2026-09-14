@@ -46,11 +46,13 @@ paddleocr>=2.6.0.3 ; sys_platform != "linux"
 
 # Excel / CSV Parsing
 openpyxl>=3.1.2
-# Upper bound is set by Streamlit, not by this project's own code: the floored
-# streamlit line below declares `pandas<3,>=1.3.0`, and pandas 3.0.x installed
-# against it made `pip check` report an incompatible environment. The previous
-# unbounded `pandas>=2.0.0` also spanned a major release, so a fresh install
-# could resolve anywhere from 2.0 to 3.x and behave differently.
+# The upper bound came from Streamlit 1.37.1, which declared `pandas<3,>=1.3.0`:
+# pandas 3.0.x against it made `pip check` report an incompatible environment.
+# The pinned 1.63.0 below declares `pandas<4,>=1.4.0`, so `<3` is now this
+# project's own choice, holding the 2.x line installed here. DEPENDENCIES.md
+# section 2 found Excel output identical on 3.0.3, so lifting it is a decision
+# for later, not a fix. The previous unbounded `pandas>=2.0.0` also spanned a
+# major release, so a fresh install could resolve anywhere from 2.0 to 3.x.
 pandas>=2.0.0,<3
 
 # Text Processing
@@ -108,12 +110,15 @@ reportlab>=4.0.0
 PyYAML>=6.0.1
 
 # UI
-# A FLOOR, not a pin: Community Cloud installs the newest release when it
-# builds (1.63.0 on 2026-09-13) while a local environment keeps whatever it had
-# (1.37.1 here), so tests can pass on a Streamlit the deployment never runs.
-# That is how an internal import took the site down. DEPENDENCIES.md section 8
-# has the measurements and how to test against the deployed version.
-streamlit>=1.35.0
+# PINNED to the release Community Cloud was already running. It used to be a
+# floor (>=1.35.0): Cloud installed the newest release while this machine kept
+# 1.37.1, so every test passed on a Streamlit the deployment never ran. That
+# gap took the site down (an internal import) and hid the grey-on-white landing
+# page (a CSS class 1.63.0 no longer renders). To upgrade: change this line,
+# upgrade the local environment to match, and run the suite --
+# tests/test_streamlit_compat.py fails while the two disagree. DEPENDENCIES.md
+# section 8 has the history.
+streamlit==1.63.0
 
 # Infrastructure
 python-dotenv>=1.0.0

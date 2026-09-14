@@ -561,13 +561,24 @@ and a hard import of one of them took the deployed app down.
 `tests/test_streamlit_compat.py` fails on any Streamlit internal imported
 elsewhere.
 
-**The Streamlit you test on is probably not the one deployed.**
-`requirements.txt` floors it, so Cloud installs the newest release (1.63.0 on
-2026-09-13) while this machine had 1.37.1. A test passing here says nothing
-about Cloud unless the versions match; DEPENDENCIES.md section 8 says how to
-check against the deployed one.
+**Streamlit is pinned to the deployed release, and a test holds it there.**
+`requirements.txt` pins `streamlit==1.63.0`; `tests/test_streamlit_compat.py`
+fails if the pin loosens or the installed version differs. It used to be a
+floor, so Cloud ran 1.63.0 while this machine had 1.37.1 and every test passed
+on a version the deployment never ran. Change the pin and the local
+environment together; DEPENDENCIES.md section 8 has the upgrade steps.
 
-**`runner.fastReruns` must stay `false`** in `.streamlit/config.toml`. The
+**The stylesheet targets Streamlit's internal DOM, which moves between releases.**
+`tests/test_stylesheet_test_ids.py` fails on a test ID the installed Streamlit
+never renders. Class names, `data-baseweb` attributes and structural selectors are
+not covered: after an upgrade, check them in the browser in both themes, and force
+a restyle before trusting a computed colour. The move to 1.63.0 broke thirteen
+surfaces this way (DEPENDENCIES.md section 5).
+
+**`runner.fastReruns` must stay `false`**, in `.streamlit/config.toml` and in
+`ui/app.py`, which turns it off at import: production still ran with it on
+after the file was committed and the app rebooted, which is what an
+environment variable or command-line flag does. The
 mid-run guard in `ui/app.py` depends on it and never worked without it — its
 own tests passed anyway, because they raise `RerunException` by hand. The cost
 is that a widget change during an analysis applies when the analysis finishes

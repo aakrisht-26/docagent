@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import importlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -214,6 +215,41 @@ class TestNoStreamlitInternalsOutsideTheShim(unittest.TestCase):
             offenders, [],
             "Streamlit internals imported outside ui/streamlit_compat.py. They move "
             "between releases; route them through the shim:\n  " + "\n  ".join(offenders))
+
+
+class TestTheTestedStreamlitIsTheDeployedStreamlit(unittest.TestCase):
+    """requirements.txt pins Streamlit exactly, and these tests run on that version.
+
+    While requirements.txt only set a floor, Community Cloud installed 1.63.0 and
+    this machine kept 1.37.1, and every test here passed on a version the
+    deployment never ran. Two defects hid in that gap: an internal import that
+    took the site down, and landing-page text that went grey-on-white because
+    1.63.0 no longer renders the `.main` class the stylesheet had targeted.
+    """
+
+    @staticmethod
+    def _streamlit_requirements():
+        specs = []
+        for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if re.match(r"streamlit(\W|$)", line) and not line.startswith("streamlit-"):
+                specs.append(line)
+        return specs
+
+    def test_requirements_pin_streamlit_exactly(self):
+        specs = self._streamlit_requirements()
+        self.assertEqual(len(specs), 1, specs)
+        self.assertRegex(specs[0], r"^streamlit==\d+\.\d+\.\d+$",
+                         "streamlit must be pinned with ==, or the deployment can "
+                         "install a version these tests never ran on")
+
+    def test_the_installed_streamlit_is_the_pinned_one(self):
+        import streamlit
+        pinned = self._streamlit_requirements()[0].split("==", 1)[1]
+        self.assertEqual(
+            streamlit.__version__, pinned,
+            f"these tests run on Streamlit {streamlit.__version__} but requirements.txt "
+            f"deploys {pinned}; upgrade the environment or the pin so they agree")
 
 
 if __name__ == "__main__":

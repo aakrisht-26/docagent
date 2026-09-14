@@ -45,6 +45,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -192,6 +193,35 @@ class TestStreamlitDeliversTheRerunToTheGuard(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         self.assertEqual(proc.stdout.strip().splitlines()[-1], "False",
                          "Streamlit did not load runner.fastReruns = false from the repo config")
+
+    def test_the_app_turns_it_off_when_something_above_the_file_turns_it_on(self):
+        """The file was not enough in production: after it was committed and the
+        app rebooted, a mid-run switch still discarded the analysis. `streamlit run`
+        hands command-line flags AND `STREAMLIT_*` environment variables to
+        `bootstrap.load_config_options`, which lays them over config.toml; with
+        STREAMLIT_RUNNER_FAST_RERUNS=true that reproduced the loss locally. This
+        applies the option through the same call, then imports the app. Setting the
+        variable on a plain interpreter does nothing -- measured -- because the CLI
+        reads it, not the config module."""
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", COLUMNS="300")
+        env.pop("DOCAGENT_HOSTED", None)
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "from streamlit import config\n"
+             "config.get_config_options(force_reparse=True,\n"
+             "                          options_from_flags={'runner.fastReruns': True})\n"
+             "before = config.get_option('runner.fastReruns')\n"
+             "import ui.app\n"
+             "print(before, config.get_option('runner.fastReruns'))"],
+            cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=300)
+        self.assertEqual(proc.returncode, 0, (proc.stdout + proc.stderr)[-2000:])
+        self.assertEqual(proc.stdout.strip().splitlines()[-1], "True False",
+                         "with runner.fastReruns set the way `streamlit run` sets it, the "
+                         "option must read True before ui.app is imported and False after")
+        output = " ".join((proc.stdout + proc.stderr).split())
+        self.assertIn("runner.fastReruns was on (set by command-line argument or environment variable)",
+                      output, "overriding it has to say so, and say what had set it")
 
 
 if __name__ == "__main__":
