@@ -592,6 +592,28 @@ any tab. Two hover rules now behave as written rather than as they did on
 the primary button's raised shadow, and the sidebar history buttons' hover fill
 and accent border, now show on hover only.
 
+**The dropdown's option rows were measured last, and are right in both themes.**
+They mount only while the page is actually drawing, so no hidden pane or tab
+ever rendered them and the table above could only give the menu's background. A
+screenshot through Chrome's DevTools protocol forces a frame; a read taken
+straight after it finds all four `role="option"` rows, each matched by the
+`stSelectboxVirtualDropdown` option rule. Contrast is against the ground actually
+painted under the text, with translucent tints composited:
+
+| Theme | Row | Text | Ground | Contrast |
+|---|---|---|---|---|
+| Light | unselected | `rgb(15,23,42)` | `rgb(246,247,249)` | 16.65:1 |
+| Light | selected (`rgba(29,78,216,0.1)`) | `rgb(15,23,42)` | `rgb(213,218,237)` | 12.83:1 |
+| Dark | unselected | `rgb(241,245,249)` | `rgb(17,17,24)` | 17.16:1 |
+| Dark | selected (`rgba(59,130,246,0.14)`) | `rgb(241,245,249)` | `rgb(42,50,75)` | 11.53:1 |
+
+Deleting the three `stSelectboxVirtualDropdown` rules in the page returns the
+menu to `rgb(9,9,15)` with near-white text in both themes. So in Light those
+rules are what keep a dark menu off a light page; in Dark they swap one dark
+ground for another and legibility does not depend on them. Measured locally on
+1.63.0. Production's Light menu background was measured earlier at the same
+`rgb(246,247,249)`, but its option rows were not.
+
 **Never matched on either version**, so not part of the move, and left alone:
 the `.btn-pdf` / `.btn-md` / `.btn-json` and `.options-bar` descendant rules (each
 wrapper `<div>` comes from its own `st.markdown` call and closes before the
