@@ -54,6 +54,23 @@ if _secrets_loaded:
     logger.info("Loaded %d value(s) from Streamlit secrets.", _secrets_loaded)
 logger.info("Runtime: %s", "hosted (Community Cloud)" if HOSTED else "local")
 
+# The mid-run guard (see the CORRECTION note before `_rerun_guard()`) only ever
+# receives an interaction while `runner.fastReruns` is off. .streamlit/config.toml
+# turns it off, yet production, after that commit and a reboot, still discarded
+# an analysis 1.0s after a mid-run theme switch: fastReruns-on behaviour. An
+# environment variable or a command-line flag outranks the file, and locally on
+# 1.63.0 STREAMLIT_RUNNER_FAST_RERUNS=true reproduced it (run discarded 0.1s after
+# the switch). So it is turned off here too, whatever turned it on, and the log
+# names the source. AppSession reads the option on every rerun request, so this
+# holds from the first interaction.
+from streamlit import config as _st_config
+if _st_config.get_option("runner.fastReruns"):
+    logger.warning(
+        "runner.fastReruns was on (set by %s); turning it off so a widget change "
+        "during an analysis is deferred instead of ending the analysis",
+        _st_config.get_where_defined("runner.fastReruns"))
+    _st_config.set_option("runner.fastReruns", False)
+
 # Upload ceiling. Hosted runs on a ~1 GB container shared by every visitor, and
 # the memory cost of a document is dominated by OCR rendering pages to bitmaps,
 # so the ceiling is much lower there than on a developer machine.

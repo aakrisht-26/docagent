@@ -847,6 +847,22 @@ later on 1.37.1 and 2.2s later on 1.63.0. `.streamlit/config.toml` sets it to fa
 `tests/test_run_interruption.py` pins it, including a check that Streamlit
 itself loads it — a renamed option is ignored, not rejected.
 
+**The file was not enough in production, so `ui/app.py` also turns it off.**
+After the commit that set it, and again after a reboot on 2026-09-14,
+llm-docagent.streamlit.app discarded an analysis 1.0s after a mid-run theme
+switch, which is the fastReruns-on behaviour. Its colours match a 1.63.0 server
+reading the repo's `.streamlit/config.toml`, so Cloud reads that file and
+something above it sets this one option. An environment variable or a
+command-line flag would: locally on 1.63.0, `STREAMLIT_RUNNER_FAST_RERUNS=true`
+with the same config discarded the run 0.1s after the switch, while the config
+alone kept it (the analysis completed 18.3s after the switch, which then
+applied at 19.5s). Which one Cloud sets cannot be seen from here. `ui/app.py`
+turns the option off at import whatever set it, and logs the source, so Cloud's
+log will name it. `tests/test_run_interruption.py` applies the option the way
+`streamlit run` applies a flag or environment variable, and checks the app
+overrides it. The variable alone does nothing in a plain Python process: the
+CLI reads it, not the config module.
+
 **The cost, measured on 1.63.0 with a server-side timing hook:**
 
 | Situation | Measured |

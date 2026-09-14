@@ -575,7 +575,10 @@ not covered: after an upgrade, check them in the browser in both themes, and for
 a restyle before trusting a computed colour. The move to 1.63.0 broke thirteen
 surfaces this way (DEPENDENCIES.md section 5).
 
-**`runner.fastReruns` must stay `false`** in `.streamlit/config.toml`. The
+**`runner.fastReruns` must stay `false`**, in `.streamlit/config.toml` and in
+`ui/app.py`, which turns it off at import: production still ran with it on
+after the file was committed and the app rebooted, which is what an
+environment variable or command-line flag does. The
 mid-run guard in `ui/app.py` depends on it and never worked without it — its
 own tests passed anyway, because they raise `RerunException` by hand. The cost
 is that a widget change during an analysis applies when the analysis finishes
