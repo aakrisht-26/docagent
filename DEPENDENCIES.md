@@ -267,8 +267,9 @@ pandas>=2.0,<3.0
 ```
 
 Nothing in the codebase currently depends on pandas 3-only behaviour — the Excel
-reader uses `read_excel`, `DataFrame`, and `to_string`, all stable across 2.x and
-3.x — so either bound is viable. Whichever you choose, re-run
+reader uses `DataFrame`, `to_string` and, for CSV, `read_csv`, all stable across
+2.x and 3.x (workbooks are opened with openpyxl, not pandas) — so either bound is
+viable. Whichever you choose, re-run
 `python tests/e2e/e2e.py excel` afterwards.
 
 ---

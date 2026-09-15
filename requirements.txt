@@ -85,7 +85,7 @@ sentence-transformers==5.4.0
 # --extra-index-url alone would leave the choice ambiguous. That index hosts
 # only torch-family packages, so it cannot shadow anything else here.
 # The version is pinned to MATCH LOCAL (2.7.1), not to the newest available.
-# The 18/18 retrieval eval in tests/e2e/rag_eval/ was measured on 2.7.1, and
+# The retrieval eval in tests/e2e/rag_eval/ (33 cases) is measured on 2.7.1, and
 # four of its margins sit between 0.028 and 0.047 — narrow enough that a
 # numerical shift across releases could flip a case with no visible symptom.
 # 2.7.1+cpu publishes Linux wheels for cp39 through cp313, which covers every
@@ -100,7 +100,7 @@ sentence-transformers==5.4.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.7.1+cpu ; sys_platform == "linux"
 
-# LLM Integration (xAI Grok / OpenAI compatible)
+# LLM Integration (Groq Cloud, through the OpenAI SDK)
 openai>=1.12.0
 
 # PDF Export (for download button)

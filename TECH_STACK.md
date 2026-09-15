@@ -10,8 +10,8 @@ DocAgent is a production-quality document understanding system built on a modula
 - **Provider:** [Groq Cloud](https://groq.com/) via OpenAI-compatible API
 - **Model:** `openai/gpt-oss-120b` (default; configurable via `DOCAGENT_GROQ_MODEL`)
 - **Integration:** `openai` Python SDK pointed at `https://api.groq.com/openai/v1`
-- **Multi-key rotation:** `GROQ_API_KEYS` (comma-separated list); automatic HTTP 429 backoff + retry across keys
-- **Temperature:** 0.15 (summaries), 0.0 (question extraction), 0.1 (editing), 0.2 (form filling)
+- **Multi-key rotation:** `GROQ_API_KEYS` (comma-separated list); a 429 or 413 moves to another key, a 401 retires the key, and a key refused against a daily limit is parked until its window passes
+- **Temperature:** 0.15 by default; 0.1 for one summarisation call and for editing; 0.0 for classification, question extraction and structured extraction; 0.2 for form filling
 - **Timeout:** 180s per request
 
 ### Whisper — Groq Cloud (Audio)
@@ -26,15 +26,15 @@ DocAgent is a production-quality document understanding system built on a modula
 ## Audio & Video Processing
 
 ### YouTube Download — yt-dlp
-- **Package:** `yt-dlp >= 2024.01.01`
+- **Package:** `yt-dlp >= 2026.8.19` (floored and deliberately not pinned; `requirements.txt` says why)
 - **Strategy:** Python module (`import yt_dlp`) with automatic CLI binary fallback (`shutil.which("yt-dlp")` + subprocess) — resilient against cached Streamlit processes that loaded before the package was installed
 - **Output format:** MP3 @ 128K (compressed to stay under Groq's 25 MB limit)
 - **Timeout:** 300s via subprocess wrapper
 
-### Audio Conversion — pydub + ffmpeg
-- **Package:** `pydub >= 0.25.1`, `ffmpeg-python >= 0.2.0`
-- **System requirement:** `ffmpeg` binary (brew / apt / choco)
-- **Purpose:** Format detection, conversion, and chunking for unsupported or oversized audio files
+### Audio Conversion — ffmpeg
+- **Binary:** `ffmpeg` on PATH (brew / apt / winget), or the binary bundled in the `imageio-ffmpeg >= 0.4.9` wheel, which `AudioReaderSkill._find_ffmpeg()` falls back to
+- **Purpose:** audio conversion, including yt-dlp's extraction of a downloaded stream to MP3
+- `pydub` and `ffmpeg-python` are no longer dependencies: neither was imported anywhere
 
 ---
 
@@ -43,7 +43,7 @@ DocAgent is a production-quality document understanding system built on a modula
 ### PDF — pdfplumber (Primary)
 - **Package:** `pdfplumber >= 0.10.3`
 - **Mode:** `layout=True` for character-position-aware text extraction
-- **Tables:** Bbox-based masking — detected tables are physically removed from text stream, extracted separately, and re-inserted as `[TABLE] … [/TABLE]` blocks to prevent duplicate/garbled text
+- **Tables:** Bbox-based masking — detected tables are physically removed from text stream, extracted separately, and appended to the page text under a `[TABLE — Page N, #M]` header to prevent duplicate/garbled text
 - **Failure trigger:** Empty or garbage text after extraction
 
 ### PDF — PyMuPDF / fitz (Fallback)
@@ -63,14 +63,15 @@ DocAgent is a production-quality document understanding system built on a modula
 - **Language:** `eng` (configurable)
 
 ### Table Structure — PaddleOCR PP-Structure V3
-- **Packages:** `paddlepaddle >= 2.6.2`, `paddleocr >= 2.6.0.3`
+- **Packages:** `paddlepaddle >= 2.6.2`, `paddleocr >= 2.6.0.3`, both marked `sys_platform != "linux"`, so the deployment does not install them
 - **Trigger:** Activated only for domains where table fidelity matters: Technical, Financial, Research, Scientific
 - **Process:** Renders each page at 200 DPI → numpy BGR array → PP-Structure engine → extracts `type == 'table'` HTML → appends to chunk text
-- **GPU support:** Auto-detects CUDA via `paddle.device.cuda.device_count()`
+- **GPU gate:** runs only when `_detect_gpu()` finds a CUDA GPU; on CPU it skips unless `pdf.allow_cpu_structure: true`, because a page takes 15–25 minutes there (GPU_SETUP.md)
 - **Lazy loading:** Engine created only on first call to avoid VRAM overhead at startup
 
 ### Excel / CSV — openpyxl + pandas
-- **Packages:** `openpyxl >= 3.1.2`, `pandas >= 2.0.0`
+- **Packages:** `openpyxl >= 3.1.2`, `pandas >= 2.0.0, < 3`
+- **`.xls`:** accepted by the uploader but not readable: openpyxl refuses the legacy format, so the parse fails
 - **Excel:** `openpyxl` in `data_only` mode (evaluates formulas to values unless `include_formulas=True`)
 - **CSV:** `pandas.read_csv` with encoding fallback chain: UTF-8 → Latin-1 → CP1252
 - **Smart sampling:** If sheet > 600 rows, takes head(300) + tail(300) with separator for token efficiency
@@ -97,19 +98,18 @@ Runs inside `TextCleanerSkill` on every parsed document:
 
 ## LLM Client Architecture
 
-### Multi-key Round-Robin (`utils/llm_client.py`)
-```
-Request → LLMClient.chat()
-        → Try current key (index 0)
-        → HTTP 429? → rotate key index → sleep 1s → retry
-        → All keys exhausted? → return None
-```
-- Keys sourced from: `GROQ_API_KEYS` env → `GROQ_API_KEY` env → `configs/default.yaml`
-- Client is lazily created and cached; reset on key rotation
+### Key Rotation (`utils/llm_client.py`)
+Every API call, chat and transcription alike, goes through `_run_with_rotation()`:
+- **401** → the key is retired for the rest of the process
+- **429** → rotate to the next live key; a refusal against a daily limit parks the key until its window passes
+- **413** → rotate at once: that key has too little of its rolling per-minute allowance left for the request
+- **connection / timeout / 5xx** → retry with exponential backoff
+- The OpenAI SDK's own retries are off (`max_retries=0`), so every 429 reaches the rotation
+- Key state is shared by every client in the process; replies are cached in an in-process LRU (`utils/llm_cache.py`)
+- Keys come from `resolve_groq_api_keys()`, which combines `GROQ_API_KEYS`, `groq.api_keys`, `GROQ_API_KEY` and `groq.api_key`, deduplicated, and rejects placeholders
 
-### Whisper Key Resolution (`skills/audio_reader_skill.py`)
-- Same priority chain as LLMClient for API key lookup
-- Creates a separate `openai.OpenAI` instance pointing to `api.groq.com/openai/v1/audio/transcriptions`
+### Whisper
+- `AudioReaderSkill._transcribe_audio()` builds an `LLMClient` and calls `transcribe()`, so transcription uses the same keys and the same rotation
 
 ---
 
@@ -117,9 +117,9 @@ Request → LLMClient.chat()
 
 ### Classification — Hybrid Heuristic + LLM
 Two-phase approach in `DocumentClassifierSkill`:
-1. **Heuristic phase:** 20+ compiled regex patterns (form titles, Q-numbering, Likert scales, checkbox glyphs, fill-in-blank markers, ABCD options, consent blocks, Yes/No pairs). Weighted sum normalised to 0–1.
-2. **LLM phase (borderline only):** If 0.10 ≤ heuristic score ≤ 0.70, LLM classifies first 3,000 chars and returns JSON `{type, confidence, domain}`. Blended 70% LLM + 30% heuristic.
-3. **Domain detection:** LLM always runs if available to extract domain label (Technical, Financial, Healthcare, Legal, General, etc.)
+1. **Heuristic phase:** 19 compiled regex patterns (form titles, Q-numbering, Likert scales, checkbox glyphs, fill-in-blank markers, ABCD options, consent blocks, Yes/No pairs) plus a question-mark density bonus. The weighted sum is divided by the total weight (1.81) and capped at 1.
+2. **LLM phase (every document, when a key is configured):** one call on the first 3,000 chars returns JSON `{type, confidence, domain}`. Blended 70% LLM + 30% heuristic, unless the heuristic alone is at least 0.85.
+3. **Domain:** comes from that same call; without a key it stays `General`
 
 ### Summarisation — Map-Reduce LLM
 Three-path strategy in `SummarizationSkill`:
@@ -133,27 +133,30 @@ Chunk strategy: **Section-aware** (uses heading detection to keep logical sectio
 
 ### Question Extraction — Regex + LLM
 Three-layer pipeline in `QuestionExtractionSkill`:
-1. **12 regex patterns** targeting Q-numbered questions, sentence-ending `?`, Likert headers, rating scales, Yes/No blocks, field labels
+1. **10 regex patterns** targeting Q-numbered questions, sentence-ending `?`, Likert headers, rating scales, Yes/No blocks, field labels
 2. **LLM windows:** 5,000-char sliding windows with 200-char overlap; LLM returns strict JSON `{"questions": [...]}` at temperature 0.0
 3. **Jaccard deduplication:** Token-set Jaccard ≥ 0.72 → merge to longer variant; normalised before comparison
 
 ### RAG-Lite Chat
-No external vector database. `DocumentChatSkill` scores chunks by query keyword overlap count, picks top 3 scored + first + last chunk (deduplicated, capped at 6,000 chars). History truncated with token budget (20K token limit, keeps first 2 turns as anchor).
+No external vector database. `DocumentChatSkill` ranks overlapping ~100-word passages by embedding similarity (`all-MiniLM-L6-v2`, local CPU, numpy cosine), falling back to keyword overlap when the model cannot load. It takes the top 3 sources plus the first and last chunks as anchors, capped at 6,000 chars; across the history corpus it keys on (document, page) and drops the anchors. History truncated with a token budget (20K tokens, keeps the first 2 turns as anchor).
+
+### Structured Extraction — LLM, then two checks
+`StructuredExtractionSkill` fills a domain schema (Financial, Legal, Healthcare, Research; the planner skips documents that resolve to General) with one call at temperature 0.0 and a 2,448-token budget. Two checks run on the reply: patient identifiers are withheld from every field of the Healthcare schema, and a value carrying a figure absent from the document is dropped (`DOCAGENT_EXTRACTION_VERIFY=false` disables that one). Scored by `tests/e2e/extraction_eval/run_eval.py`.
 
 ---
 
 ## User Interface
 
 ### Streamlit
-- **Package:** `streamlit >= 1.35.0`
+- **Package:** `streamlit == 1.63.0`, pinned to the deployed release; `tests/test_streamlit_compat.py` fails if the pin or the installed version drifts
 - **Entry point:** `ui/app.py`
-- **Theme:** Custom CSS3 glassmorphism — purple (#6d28d9) / cyan (#0891b2) accent palette; light and dark mode with CSS variable overrides
+- **Theme:** design tokens as CSS custom properties, the same roles in both themes: dark values in `ui/styles/custom.css` (accent #3b82f6), light values in `_LIGHT_TOKENS` in `ui/app.py` (accent #1d4ed8), switched by a sidebar radio
 - **Caching:** `@st.cache_resource` for `DocumentAgent` (per summary_length + summary_tone combination); `st.session_state` for file bytes and pipeline results (survive theme-toggle reruns)
 - **Progress:** Live progress bar via monkey-patch of `agent._log_step` — always restored in `finally` block to prevent stale closures on repeated analysis
 
 ### PDF Export — ReportLab
 - **Package:** `reportlab >= 4.0.0`
-- **Style:** Purple headings, cyan subheadings, metadata table, skill timing breakdown
+- **Style:** near-black headings, teal (#0891b2) subheadings, navy (#1E3A5F) table headers, metadata table, skill timing breakdown
 - **Fallback:** Returns Markdown bytes if ReportLab unavailable
 
 ---
@@ -168,7 +171,7 @@ configs/default.yaml
     → Cached singleton (_CONFIG_CACHE)
 ```
 
-Supported `DOCAGENT_*` variables: `MAX_FILE_MB`, `GROQ_MODEL`, `GROQ_URL`, `GROQ_TIMEOUT`, `LOG_LEVEL`, `LOG_FILE`.
+`DOCAGENT_*` variables read by the config loader: `MAX_FILE_MB`, `LOG_LEVEL`, `LOG_FILE`, `DEBUG`, `GROQ_ENABLED`, `GROQ_URL`, `GROQ_MODEL`, `GROQ_TIMEOUT`. Read elsewhere: `HOSTED` (`is_hosted()` in `utils/config.py`), `EXTRACTION_VERIFY` (structured extraction) and `EXTRACT_GENERAL` (the planner).
 
 ---
 
@@ -176,7 +179,7 @@ Supported `DOCAGENT_*` variables: `MAX_FILE_MB`, `GROQ_MODEL`, `GROQ_URL`, `GROQ
 
 ### Rich + File Logging (`utils/logger.py`)
 - **Console:** `rich.logging.RichHandler` with coloured output, traceback highlighting, `[HH:MM:SS]` timestamps
-- **File:** Rotating at `logs/docagent.log`; DEBUG level always (even if console is INFO)
+- **File:** `logs/docagent.log`, a plain `FileHandler` (not rotated); DEBUG level always (even if console is INFO)
 - **Namespace:** All loggers under `docagent.*` hierarchy (e.g., `docagent.skill.pdf_reader`, `docagent.document_agent`)
 
 ---
@@ -184,8 +187,9 @@ Supported `DOCAGENT_*` variables: `MAX_FILE_MB`, `GROQ_MODEL`, `GROQ_URL`, `GROQ
 ## Testing
 
 - **Framework:** `pytest >= 7.4.0`, `pytest-mock >= 3.11.0`
-- **Scope:** Unit tests for all skills; integration tests for `DocumentAgent` + `SkillRegistry`
-- **Strategy:** No real files or network calls in tests; synthetic `ParsedDocument` fixtures; mock LLM responses
+- **Unit suite:** `pytest tests/`, about 600 tests in roughly five minutes; synthetic fixtures and stubbed LLM replies
+- **End to end:** `python tests/e2e/e2e.py all`, eight stages on the real sample files against the live API
+- **Evals:** `tests/e2e/rag_eval/run_eval.py` (retrieval, no API calls) and `tests/e2e/extraction_eval/run_eval.py` (structured extraction, live API)
 
 ---
 
@@ -199,18 +203,19 @@ Supported `DOCAGENT_*` variables: `MAX_FILE_MB`, `GROQ_MODEL`, `GROQ_URL`, `GROQ
 | OCR | pytesseract | >= 0.3.10 |
 | OCR | opencv-python-headless | == 4.8.1.78 |
 | OCR | numpy | == 1.26.4 |
-| Tables | paddlepaddle | >= 2.6.2 |
-| Tables | paddleocr | >= 2.6.0.3 |
+| Tables | paddlepaddle | >= 2.6.2, not on Linux |
+| Tables | paddleocr | >= 2.6.0.3, not on Linux |
 | Excel | openpyxl | >= 3.1.2 |
-| Excel | pandas | >= 2.0.0 |
+| Excel | pandas | >= 2.0.0, < 3 |
 | Text | ftfy | >= 6.1.3 |
 | LLM | openai | >= 1.12.0 |
-| Audio | yt-dlp | >= 2024.01.01 |
-| Audio | pydub | >= 0.25.1 |
-| Audio | ffmpeg-python | >= 0.2.0 |
+| Audio | yt-dlp | >= 2026.8.19 |
+| Audio | imageio-ffmpeg | >= 0.4.9 |
+| Retrieval | sentence-transformers | == 5.4.0 |
+| Retrieval | torch | == 2.7.1+cpu, Linux only |
 | Export | reportlab | >= 4.0.0 |
 | Config | PyYAML | >= 6.0.1 |
-| UI | streamlit | >= 1.35.0 |
+| UI | streamlit | == 1.63.0 |
 | Infra | python-dotenv | >= 1.0.0 |
 | HTTP | requests | >= 2.31.0 |
 | Logging | rich | >= 13.7.0 |

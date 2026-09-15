@@ -1205,8 +1205,8 @@ def main() -> None:
         st.markdown("""
         <div class="empty-state fade-in" style="padding: 2.5rem 1rem 1.5rem">
           <h3>What happens when you upload something</h3>
-          <p>Everything runs through the same six-stage pipeline: parse, clean,
-          classify, find structure, summarise, extract questions.</p>
+          <p>Everything runs through the same pipeline: parse, clean, classify,
+          find structure, summarise, extract questions and key fields.</p>
         </div>
         """, unsafe_allow_html=True)
 

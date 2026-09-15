@@ -1,7 +1,7 @@
 """
 QuestionExtractionSkill -- extracts all questions from questionnaire/form documents.
 
-Uses unified LLMClient (Grok API first, Ollama fallback).
+Uses the shared LLMClient (Groq Cloud).
 LLM runs alongside regex on every questionnaire document (llm_threshold=0 default).
 """
 

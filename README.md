@@ -22,21 +22,22 @@ More, including before-and-after comparisons of every surface in both themes:
 
 ## Key Features
 
-- **Multi-Format Input** — Processes PDF, Excel (.xlsx / .xls), CSV, audio files (MP3, WAV, M4A, FLAC, OGG, WebM), and YouTube video URLs in a single unified pipeline.
+- **Multi-Format Input** — Processes PDF, Excel (.xlsx), CSV, audio files (MP3, WAV, M4A, FLAC, OGG, WebM), and YouTube video URLs in a single unified pipeline. Legacy `.xls` is accepted but cannot currently be parsed.
 - **Audio & YouTube Transcription** — Downloads audio from any YouTube link via yt-dlp, transcribes it using Groq's Whisper-large-v3 API, then runs the full analysis pipeline on the transcript.
 - **Domain-Aware Summarisation** — Automatically detects the document domain (Technical, Financial, Legal, Educational) and adopts a specialist analyst persona for high-fidelity summaries with inline page citations.
 - **Audience-Tuned Output** — Produces summaries at four tones (Expert, Professional, General, Student) and four lengths (Concise → Exhaustive), all configurable from the UI.
-- **Hybrid Document Classification** — Combines 20+ weighted regex signals with an LLM disambiguation phase to classify documents as questionnaire/form or normal document, with confidence score and domain label.
+- **Hybrid Document Classification** — Combines 19 weighted regex signals with an LLM call to classify documents as questionnaire/form or normal document, with confidence score and domain label.
+- **Structured Extraction** — Fills a domain schema (Financial, Legal, Healthcare, Research) shown as a "Key fields" table, then drops any figure the document does not contain and withholds patient identifiers. Measured limits are [below](#structured-extraction-can-invent-a-figure-and-that-is-a-real-limitation).
 - **Multi-Key API Resilience** — Round-robin rotation across multiple Groq API keys with automatic rate-limit (HTTP 429) recovery and retry logic.
 - **Advanced Adaptive OCR** — OpenCV-driven pipeline using Gaussian equalisation and adaptive thresholding to extract text from scanned or photographed PDFs with poor lighting.
-- **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial) document table extraction as structured HTML, preventing garbled text from complex layouts.
+- **High-Fidelity Table Extraction** — PaddleOCR PP-Structure V3 for domain-targeted (Technical, Financial, Research, Scientific) document table extraction as structured HTML, preventing garbled text from complex layouts. It needs a CUDA GPU and is skipped without one, which includes the hosted deployment.
 - **Multi-Turn Document Chat** — Semantic Q&A over overlapping ~100-word passages, retrieved by embedding similarity (`all-MiniLM-L6-v2`, local, no API) with numpy cosine scoring — no vector database. Citations still resolve to the original page or sheet. Falls back to keyword overlap when the model is unavailable. Measured **33/33 retrieved, 32/33 with the required sources leading the ranking** on the eval set ([details](docs/retrieval-sub-chunking.md)).
 - **Natural Language Document Editing** — Describe edits in plain English; the LLM rewrites the document or applies structured JSON operations to Excel sheets.
 - **Cross-Document Chat** — Ask one question of everything in history, with citations that name the document as well as the page. Retrieval keys on `(document, page)`, so two files with a page 3 stay distinct. Capped at 25 documents, and the cap is about answer quality rather than resources. Cross-corpus retrieval is measurably harder than single-document — mean rank 2.15 vs 1.18 — and the honest limits, including a case that answers from the wrong document with a correct citation, are in [docs/multi-document-chat.md](docs/multi-document-chat.md).
 - **Retrieval limits are measured, not assumed** — the one case that still ranks its answer 4th was traced to *competition* (a page about the subject outranking the page stating the fact), not to mixed-topic dilution. A purpose-built fixture refuted the dilution reading: heterogeneity correlates with rank at −0.084 and both its losses were on the least-mixed page. Re-chunking cannot address it; details and a re-runnable probe in [docs/dilution-probe.md](docs/dilution-probe.md).
 - **Says when it cannot answer** — Asked something the loaded documents do not cover, chat declines rather than improvising: 39/39 across three runs on a set of questions with no answer in the corpus. The prompt also forbids computing a figure from unrelated numbers or substituting a similar fact from a different document, which cut fabrication on the hardest case from 5/5 to roughly 1 in 12. What is still not guaranteed is documented in [docs/multi-document-chat.md](docs/multi-document-chat.md).
 - **Form Filling** — Paste answers to extracted questions; DocAgent compiles the completed form as a downloadable PDF.
-- **Glassmorphic Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
+- **Web UI** — Streamlit-based UI with real-time pipeline progress, tabbed results, light/dark mode, and one-click PDF/Markdown/JSON/CSV export.
 
 ---
 
@@ -75,9 +76,9 @@ everything else has a working default in `configs/default.yaml`.
 > stops at the first newline, silently loads only the first key, and logs
 > `Python-dotenv could not parse statement starting at line N`.
 
-**Without a key:** the app still runs. Classification falls back to heuristics
-and summarisation to extractive mode; chat, question extraction, and audio
-transcription are unavailable.
+**Without a key:** the app still runs. Classification falls back to heuristics,
+summarisation to extractive mode, and question extraction to its regex patterns;
+chat, structured extraction and audio transcription are unavailable.
 
 ### 3. Install the system binaries
 
@@ -324,7 +325,7 @@ two are not, and **the one that will actually stop this pipeline is invisible**.
 |---|---|---|---|
 | **RPM** | requests per minute | — | no |
 | **RPD** | requests per **day** | 1,000 | yes — `x-ratelimit-*-requests` |
-| **TPM** | tokens per **minute** | 12,000 | yes — `x-ratelimit-*-tokens` |
+| **TPM** | tokens per **minute** | 8,000 on `openai/gpt-oss-120b` | yes — `x-ratelimit-*-tokens` |
 | **TPD** | tokens per **day** | **100,000** | **no** |
 
 **The header names are asymmetric. Do not assume they pair up:**
@@ -344,8 +345,9 @@ extraction, so **100,000 tokens/day is on the order of 30–50 documents**. Whis
 transcription is billed per second of audio and does not draw on TPD.
 
 The trap: TPD appears in no header, so a key can report healthy headroom
-(`requests/day 988/1000`, `tokens/min 11453/12000`) and still be refused on the
-very next call. The limit is only ever stated in the body of a 429:
+(`requests/day 988/1000`, `tokens/min 11453/12000`, recorded on the previous
+default model) and still be refused on the very next call. The limit is only
+ever stated in the body of a 429 (this example is from the previous model too):
 
 ```
 Rate limit reached for model `llama-3.3-70b-versatile` in organization
@@ -403,7 +405,7 @@ the full annotated list.
 | Type | Extensions / Format |
 |---|---|
 | PDF | `.pdf` |
-| Excel | `.xlsx`, `.xls` |
+| Excel | `.xlsx` (`.xls` is accepted but fails to parse: openpyxl cannot read the legacy format) |
 | CSV | `.csv` |
 | Audio | `.mp3`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.webm` |
 | YouTube | Any `youtube.com/watch?v=` or `youtu.be/` URL |
@@ -451,7 +453,7 @@ problem as the same sentence.
 
 ## Pipeline Overview
 
-Every input — regardless of type — flows through the same six-step pipeline:
+Every input — regardless of type — flows through the same pipeline. Steps 3.5, 4, 5 and 5.5 are gated by `PipelinePlanner`:
 
 ```
 Input (file / YouTube URL)
@@ -468,16 +470,19 @@ Input (file / YouTube URL)
 3. Classify ──── DocumentClassifierSkill  (heuristic + LLM hybrid)
     │
     ▼
-4. Structure ──── StructureRecognitionSkill  (PP-Structure; Technical/Financial only)
+3.5 Structure ── StructureRecognitionSkill  (PP-Structure; Technical/Financial/Research/Scientific, CUDA GPU only)
     │
     ▼
-5. Summarise ──── SummarizationSkill  (map-reduce LLM; extractive fallback)
+4. Summarise ──── SummarizationSkill  (map-reduce LLM; extractive fallback)
     │
     ▼
-6. Questions ──── QuestionExtractionSkill  (regex + LLM; Jaccard dedup)
+5. Questions ──── QuestionExtractionSkill  (regex + LLM; Jaccard dedup; questionnaires only)
     │
     ▼
-PipelineResult  (summary, questions, tables, citations, timings, metadata)
+5.5 Key fields ── StructuredExtractionSkill  (domain schema; figures verified, identifiers withheld)
+    │
+    ▼
+6. Assemble ───── PipelineResult  (summary, questions, key fields, tables, citations, timings, metadata)
 ```
 
 ---
@@ -487,7 +492,7 @@ PipelineResult  (summary, questions, tables, citations, timings, metadata)
 DocAgent is built on a strict **Agent-Skill separation**:
 
 - **Skills** (`skills/`) — Stateless, atomic units. Each inherits `BaseSkill` and implements `execute(SkillInput) → SkillOutput`. Skills never call other skills.
-- **Agents** (`agents/`) — Orchestrators that sequence skills. `DocumentAgent` manages the 6-step pipeline and routes by file type.
+- **Agents** (`agents/`) — Orchestrators that sequence skills. `DocumentAgent` runs the pipeline above and routes by file type; `PipelinePlanner` decides which gated steps run.
 - **SkillRegistry** (`core/skill_registry.py`) — Singleton that auto-discovers all `BaseSkill` subclasses at import time. Adding a new skill requires zero changes to any other file.
 - **Typed Data Models** (`core/models.py`) — `SkillInput`, `SkillOutput`, `ParsedDocument`, `ClassificationResult` define strict contracts between every component.
 
@@ -497,7 +502,8 @@ DocAgent is built on a strict **Agent-Skill separation**:
 doc-agent/
 ├── agents/
 │   ├── base_agent.py          # Abstract BaseAgent interface
-│   └── document_agent.py      # Main orchestrator + run_youtube()
+│   ├── document_agent.py      # Main orchestrator + run_youtube()
+│   └── planner.py             # Decides which gated steps run
 ├── core/
 │   ├── models.py              # DocumentChunk, ParsedDocument, SkillInput/Output
 │   ├── pipeline_result.py     # Final typed output (to_markdown, to_dict)
@@ -512,23 +518,33 @@ doc-agent/
 │   ├── structure_recognition_skill.py # PP-Structure table extraction
 │   ├── summarization_skill.py # Map-reduce LLM summarisation
 │   ├── question_extraction_skill.py  # Regex + LLM question extraction
+│   ├── structured_extraction_skill.py # Domain key fields + post-extraction checks
 │   ├── document_chat_skill.py # Multi-turn Q&A (embedding retrieval)
 │   ├── document_editor_skill.py # NL document editing
 │   └── form_filling_skill.py  # Form compilation
 ├── utils/
-│   ├── config.py              # Typed config (YAML + env vars)
-│   ├── llm_client.py          # Groq Cloud client (OpenAI-compatible)
+│   ├── config.py              # Typed config (YAML + env vars), is_hosted()
+│   ├── llm_client.py          # Groq Cloud client: key rotation, usage totals
+│   ├── llm_cache.py           # In-process LRU for LLM replies
+│   ├── embeddings.py          # Local sentence-transformers model
+│   ├── chunking.py            # Retrieval passages
+│   ├── document_store.py      # SQLite history: results, text, vectors
+│   ├── youtube_errors.py      # Sorts download failures by cause
 │   ├── file_handler.py        # File validation + temp management
 │   └── logger.py              # Centralised Rich logging
 ├── ui/
 │   ├── app.py                 # Streamlit entry point
+│   ├── streamlit_compat.py    # The one place Streamlit internals are imported
+│   ├── styles/
+│   │   └── custom.css         # Design tokens and element rules
 │   └── components/
-│       └── results_view.py    # Tabbed results + PDF/MD/JSON export
+│       ├── results_view.py    # Tabbed results + PDF/MD/JSON/CSV export
+│       └── pdf_fonts.py       # Fonts for the PDF export
 ├── configs/
 │   └── default.yaml           # Default configuration
 └── tests/
-    ├── test_skills.py         # Skill unit tests
-    └── test_agent.py          # Agent + registry integration tests
+    ├── test_*.py              # Unit tests, one file per concern
+    └── e2e/                   # e2e.py harness, samples/, rag_eval/, extraction_eval/
 ```
 
 ---

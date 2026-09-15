@@ -79,7 +79,7 @@ pipeline change and still needs an explicit instruction.
 The system separates **orchestration** from **capabilities**:
 
 - **Skills** (`skills/`) — stateless, atomic units. Each implements `BaseSkill.execute(SkillInput) → SkillOutput`. Skills never call other skills.
-- **Agents** (`agents/`) — orchestrators that sequence skills. `DocumentAgent` runs a 6-step pipeline: Parse → Clean → Classify → Structure Recognition → Summarize → Extract Questions.
+- **Agents** (`agents/`) — orchestrators that sequence skills. `DocumentAgent` runs the frozen pipeline above: Parse → Clean → Classify → Structure Recognition → Summarize → Extract Questions → Structured Extraction → Assemble, with `PipelinePlanner` deciding which gated steps run.
 - **SkillRegistry** (`core/skill_registry.py`) — singleton that auto-discovers all `BaseSkill` subclasses at import time. Adding a new skill requires no changes to agents or config.
 
 ### Data Flow
@@ -88,7 +88,7 @@ The system separates **orchestration** from **capabilities**:
 File path → DocumentAgent.run()
   → ParsedDocument (chunks, tables, full_text, metadata)
   → ClassificationResult (doc_type, domain, confidence, method)
-  → PipelineResult (summary, questions, classification, skill timings)
+  → PipelineResult (summary, questions, extracted entities, classification, skill timings)
 ```
 
 All inter-component communication uses typed dataclasses from `core/models.py`. `SkillInput` holds `data: Dict[str, Any]`; `SkillOutput` carries `success`, `data`, `error`, `warnings`, `duration_ms`.
@@ -583,7 +583,7 @@ embedding was ranking most of that document from a lossy copy.
 
 ### UI
 
-`ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Custom glassmorphism styles are in `ui/styles/custom.css`.
+`ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Styles are in `ui/styles/custom.css`, written against design tokens whose light values live in `_LIGHT_TOKENS` in `ui/app.py`.
 
 **Streamlit internals go through `ui/streamlit_compat.py` only.** They move
 between releases: `RerunException` has lived in three modules across 1.35-1.63,
