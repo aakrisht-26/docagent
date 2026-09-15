@@ -152,6 +152,30 @@ guarantee instead. The warning itself must say that other figures are not
 checked. A reader who sees no warning must not conclude the figures were
 verified.
 
+## What was built
+
+- **The check.** `skills/summarization_skill.py` gained `unstated_years()`. It
+  finds years, and placeholders such as "202X", that a summary gives and its
+  source never states. The skill adds a warning naming them.
+- **Pipeline.** The agent already carries summarisation warnings into
+  `PipelineResult.warnings`, so the pipeline is unchanged.
+- **Agreement with this eval.** `tests/test_summary_years.py` pins that the check
+  agrees with this eval's classifier on all 85 recorded summaries: the same 22
+  flagged, all undated.
+
+Proved live after wiring, through `DocumentAgent.run` at the e2e settings with
+the cache off, on 16 September 2026:
+
+| runs | summaries giving a year the document never states | warned |
+|---|---|---|
+| sample_audio.wav ×3 | 2 ("Q3 2024", "Q3 202X") | 2 |
+| sample_large_sales.xlsx ×3 | 3 ("FY 2024", once with 2025) | 3 |
+| sample_sales.xlsx ×3 | 0 | 0 |
+| three dated eval documents ×2, summariser only | 0 (all six wrote years the documents state) | 0 |
+
+The e2e harness's audio stage now prints the warning. Nothing else in a summary
+is checked.
+
 ## Method
 
 ### The classifier

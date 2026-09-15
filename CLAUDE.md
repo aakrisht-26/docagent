@@ -487,6 +487,48 @@ and could never have fired), and that loading the eval does not leave
 
 `SummarizationSkill` uses map-reduce: section-aware chunking → per-chunk bullet extraction → LLM synthesis. Falls back to heading-boosted extractive scoring if LLM is unavailable.
 
+**SUMMARIES STATE FALSE FIGURES, AND ONLY ONE KIND IS CAUGHT.** This was measured
+on 85 recorded summaries: 17 fixtures × 5, `openai/gpt-oss-120b`, Standard,
+Professional. Every figure was classified against the text the summariser was
+given, and the unsettled ones were adjudicated with their arithmetic enforced.
+Details are in `tests/e2e/summary_eval/RESULTS.md`.
+
+- **42 of 85 (49%) state at least one false figure** about the document: a year
+  it never gives, wrong arithmetic, or a number with no basis.
+- **Invented years: 21 of 45 summaries of undated documents, 0 of 40 of dated
+  ones.** The model supplies a period. The audio briefing was titled "Q3 2024"
+  in 5 of 5 runs, and the same workbook got "FY 2024" or "FY 2023" in different
+  runs. Two sign-offs carried the UTC date of the run.
+- **Computed totals: 19 summaries with a right one, 8 with a wrong one.** The
+  $2,379,900 that started this is right. The "Q3 2024" beside it is not.
+- **Wrong figures 27/85 (16 gross), invented figures 8/85.** Right arithmetic
+  outnumbers wrong about four to one, and six fixtures produce a false figure in
+  5 of 5 runs.
+
+**Years are flagged; nothing else is.** `unstated_years()` finds years, and
+placeholders like "202X", that appear nowhere in the source. The skill adds a
+warning naming them, and the agent carries it into `PipelineResult.warnings`.
+It warns rather than removes because a sentence cannot lose its year and still
+read. On the recording it flags exactly the 22 summaries the eval found: 39
+invented years, and one "e.g., 80% by 2028", a year that really is not in the
+document. It flags none of the 40 summaries of dated documents.
+`tests/test_summary_years.py` pins that agreement.
+
+**Why nothing else.** `tests/e2e/summary_eval/options.py` measured each option on
+the same summaries:
+
+- The prompt already forbids inventing, and failures repeat per document.
+- Regeneration would reproduce a false figure 83% of the time.
+- Flagging every figure absent from the source marks 821 figures, of which 171
+  are false.
+- Extraction's `unverified_numbers()` is worse here: 21% false, and it flags OCR
+  numerals and "$11.02 M".
+
+Do not spend a session on a prompt for this without re-running the eval.
+**Chat citations are 27/27 with 0 wrong. Figures in a summary carry no
+equivalent guarantee, and an unstated year is the only one checked.** The
+absence of a warning does not mean a summary's figures were verified.
+
 ### Document Chat Retrieval
 
 `DocumentChatSkill.score_chunks()` ranks chunks by **embedding similarity**

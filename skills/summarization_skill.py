@@ -129,6 +129,65 @@ def _with_reasoning_room(content_tokens: int) -> int:
                max(content_tokens, _PROVIDER_REQUEST_CEILING))
 
 
+# ── Years a summary gives that the document never does ────────────────────────
+#
+# MEASURED BEFORE BUILT (tests/e2e/summary_eval/RESULTS.md). Across 85 recorded
+# summaries, 21 of the 45 summaries of undated documents gave a year the
+# document never states -- "Q3 2024" on the audio briefing in 5 of 5 runs,
+# "FY 2024" or "FY 2023" on one workbook in different runs, a sign-off dated the
+# day of the run -- and 0 of the 40 summaries of dated documents did. The prompt
+# already says "Never invent information".
+#
+# WHY A WARNING AND NOT A REMOVAL. Extraction drops a value carrying an invented
+# figure; a sentence cannot lose its year and still read.
+#
+# WHY YEARS ONLY. It is the one false figure a check can name without also
+# naming right arithmetic. On the recording this flags 22 summaries: 39 invented
+# years, and one "e.g., 80% by 2028", a year that really is not in the document.
+# Flagging every figure absent from the source would name 821 figures, of which
+# 171 are false. So wrong arithmetic (27 of 85 summaries) and invented figures
+# (8 of 85) pass this, and the warning says other figures are not checked.
+
+# A year as a summary writes one: "Q3 2024", "FY2024", "2024-25". Not a figure
+# that merely falls in range: "$2,024", "2024%", "20.24", "12024".
+_SUMMARY_YEAR = re.compile(r"(?<![\d.,$£€])(?:19|20)\d{2}(?!\d|[.,]\d|\s?%)")
+_PLACEHOLDER_YEAR = re.compile(r"(?<![\d.,$£€])(?:19|20)\d[Xx](?!\w)")
+# Years as a document may state them: in full, "FY26", the end of "2025/26", a
+# two-digit date. These only ever widen what counts as stated.
+_SOURCE_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+_SOURCE_SHORT_YEAR = re.compile(r"\b(?:FY|CY)\s?'?(\d{2})\b", re.IGNORECASE)
+_SOURCE_YEAR_RANGE = re.compile(r"(?<!\d)((?:19|20)\d{2})\s?[-‑–/]\s?(\d{2})(?!\d)")
+_SOURCE_SHORT_DATE = re.compile(r"(?<!\d)\d{1,2}[/.-]\d{1,2}[/.-](\d{2})(?!\d)")
+
+
+def unstated_years(summary: str, source: str) -> List[str]:
+    """Years in `summary`, and placeholders like "202X", that `source` never
+    states, in order of first appearance."""
+    stated = set(_SOURCE_YEAR.findall(source))
+    stated |= {f"20{yy}" for yy in _SOURCE_SHORT_YEAR.findall(source)}
+    stated |= {century[:2] + yy for century, yy in _SOURCE_YEAR_RANGE.findall(source)}
+    stated |= {f"20{yy}" for yy in _SOURCE_SHORT_DATE.findall(source)}
+    found: List[str] = []
+    for m in _SUMMARY_YEAR.finditer(summary):
+        if m.group(0) not in stated and m.group(0) not in found:
+            found.append(m.group(0))
+    for m in _PLACEHOLDER_YEAR.finditer(summary):
+        if m.group(0) not in source and m.group(0) not in found:
+            found.append(m.group(0))
+    return found
+
+
+def year_warning(years: List[str]) -> str:
+    """The reader-facing sentence. It names the years, and says the rest of the
+    figures are unchecked so that no warning is not read as verification."""
+    one = len(years) == 1
+    listed = years[0] if one else ", ".join(years[:-1]) + " and " + years[-1]
+    return (f"The summary gives {'the year' if one else 'the years'} {listed}, which "
+            f"{'does' if one else 'do'} not appear anywhere in the document. The model "
+            f"supplied {'it' if one else 'them'}: treat any date or period in this summary "
+            f"as unverified. Other figures in the summary are not checked against the document.")
+
+
 # ── Audience tone personas ─────────────────────────────────────────────────────
 _TONE_PERSONAS: Dict[str, Dict[str, str]] = {
     "Expert / Technical": {
@@ -233,6 +292,10 @@ class SummarizationSkill(BaseSkill):
                 )
                 # Feature 5: parse inline citations from the summary
                 citations = self._parse_citations(summary)
+                years = unstated_years(summary, full_text)
+                if years:
+                    self.logger.warning(f"Summary gives year(s) absent from the document: {years}")
+                    skill_warnings.append(year_warning(years))
                 return SkillOutput(
                     success=True,
                     data={"summary": summary, "method": method,
