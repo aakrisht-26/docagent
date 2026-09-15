@@ -39,7 +39,6 @@ from __future__ import annotations
 import http.server
 import json
 import threading
-import time
 import unittest
 
 from ui.streamlit_compat import RerunData, RerunException
@@ -166,13 +165,24 @@ class TestTheSdkNoLongerRetriesUnderneathTheRotation(unittest.TestCase):
     def test_a_rate_limited_key_hands_over_instead_of_being_slept_on(self):
         """THE HANG. The refusal has to reach the rotation, which moves to an
         untried key at once. With the SDK retrying, this was two sleeps on
-        key 1 and then key 1 again."""
-        with _Server(key0=TPM_429) as srv:
-            started = time.monotonic()
-            self.assertEqual(_ask(srv.client()), "ok")
-            elapsed = time.monotonic() - started
+        key 1 and then key 1 again.
+
+        SLEEPS ARE RECORDED, NOT TIMED. This used to assert the call took under
+        2.0s of wall clock, which also counted the first `import openai` (1.25s
+        measured) and building an SSL client per key. On 2026-09-14 it failed
+        at 4.05s with the rotation working -- keys [0, 1], no sleep -- because
+        the machine was loaded. Both regressions it guards are caught without a
+        clock: SDK retries hit key 1 again, and any sleep is recorded here."""
+        slept: list = []
+        real_sleep = llm_mod.time.sleep
+        llm_mod.time.sleep = slept.append
+        try:
+            with _Server(key0=TPM_429) as srv:
+                self.assertEqual(_ask(srv.client()), "ok")
+        finally:
+            llm_mod.time.sleep = real_sleep
         self.assertEqual(_Groq.hits, [0, 1])
-        self.assertLess(elapsed, 2.0, "nothing may sleep on a key that just refused")
+        self.assertEqual(slept, [], "nothing may sleep on a key that just refused")
 
     def test_a_408_is_still_retried_now_that_the_sdk_does_not(self):
         """The SDK used to retry 408 and 409 itself. Turning its retries off

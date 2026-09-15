@@ -16,9 +16,18 @@ document, so the ceiling of 28/28 is reachable.
 
 | input kind | correct | wrong | missing | |
 |---|---|---|---|---|
-| **prose** (5 documents, 28 fields) | **27–28 / 28** | 0–1 | 0 | **96–100%** |
-| **spreadsheet** (3 documents, 12 fields) | **7–9 / 12** | 3–4 | 0–1 | **58–75%** |
+| **prose** (5 documents, 28 fields) | **28 / 28** | 0 | 0 | **100%** |
+| **spreadsheet** (3 documents, 12 fields) | **11 / 12** | 0 | 1 | **92%** |
 | **regex fallback** (all) | 0 / 40 | 0 | 40 | 0% |
+
+Three runs, identical, after the Healthcare fixes on 2026-09-14. Before them the
+same eval read 34, 34 and 36 of 40: prose 27/28 each time, spreadsheet 7, 7 and
+9 of 12, with 3 WRONG every run. **Not all of that gain is the fix.** Three
+fields a run are: `health-01` `patient_id`, and `health-sheet-01` `medications`
+and `patient_id`. The other two are `legal-sheet-01`'s dates, MISSING in two of
+the three earlier runs and untouched by the change, which is run-to-run
+variance. The remaining miss, `fin-sheet-01` `fiscal_period`, was MISSING in all
+six runs.
 
 **The original headline of 27–28/28 was measured entirely on prose, and prose
 was easy to author.** The app does not only receive prose: `ExcelReaderSkill`
@@ -41,8 +50,8 @@ Three failures, all real, none of them a matcher artefact:
 | case | verdict | what happened |
 |---|---|---|
 | `fin-sheet-01` `revenue` | **WRONG** | emitted **2,379,900** — *exactly the sum of the Revenue column*, a figure in no document. The sheet has a Revenue column and no totals row, so no total is stated. The model did arithmetic and presented it as an extracted fact. |
-| `health-sheet-01` `medications` | **WRONG** | included **Ibuprofen**, whose Status column reads `Stopped`. On the PROSE health fixture the same model correctly excluded the discontinued drug; a `Status: Stopped` cell is not enough. |
-| `health-sheet-01` `patient_id` | **WRONG** | leaked all three MRNs. The schema says *"anonymise if present"*. On prose that instruction held in ~11 of 13 attempts; against a column of MRNs it fails outright. |
+| `health-sheet-01` `medications` | **WRONG, fixed** | included **Ibuprofen**, whose Status column reads `Stopped`, in 10 of 10 draws, always annotated `(Stopped)` rather than presented as current. The field asked for *prescribed* medications, and a stopped drug was prescribed. See [the Healthcare fixes](#the-two-healthcare-failures-diagnosed-and-fixed). |
+| `health-sheet-01` `patient_id` | **WRONG, fixed** | was filled in 10 of 10 draws: the raw MRNs in 9, placeholders in the tenth, and in 5 draws an MRN reached nearly every other field too. The schema said *"anonymise if present"*. It did not hold on prose either: 6 of 10 prose draws emitted the raw MRN. See [the Healthcare fixes](#the-two-healthcare-failures-diagnosed-and-fixed). |
 
 The first and third are the two categories the eval now distinguishes:
 
@@ -130,10 +139,131 @@ removing a value silently would be its own failure.
 
 `DOCAGENT_EXTRACTION_VERIFY=false` disables it.
 
-**What it does not address.** It is numbers only, so the two remaining
-spreadsheet failures are untouched and correctly so: `medications` including a
-drug whose Status column reads `Stopped`, and `patient_id` leaking MRNs. Those
-are selection and policy failures, not arithmetic.
+**What it does not address.** It is numbers only. The other two spreadsheet
+failures, `medications` including a drug whose Status column reads `Stopped` and
+`patient_id` leaking MRNs, were selection and policy failures rather than
+arithmetic, and are handled in the next section.
+
+## The two Healthcare failures, diagnosed and fixed
+
+Both were found by the spreadsheet fixture, and the record of both was partly
+wrong. Every rate below comes from independent draws: temperature 0.0, the
+in-process LLM cache disabled, sheet and prose interleaved, the raw reply kept.
+Intervals are Wilson 95%.
+
+### What was actually happening
+
+| | ward census sheet | prose discharge note |
+|---|---|---|
+| `medications` includes ibuprofen | **10/10**, always annotated `(Stopped)` | 0/10 |
+| `patient_id` not empty | **10/10**: 9 raw MRN lists, 1 `ANON1; ANON2; ANON3` | **10/10**: 6 `MRN 55-40182`, 2 `MRN`, 1 `ANON`, 1 `REDACTED` |
+| an MRN in any field | **9/10**, 5 of them in nearly every field (`55-40182: Amoxicillin 500 mg TDS`) | 6/10 |
+
+Two corrections to how the failures had been recorded:
+
+- **The stopped drug was not listed as current.** It was listed with its
+  status. The field asked for "Prescribed medications with dosages", and a
+  stopped drug was prescribed, while the prose note lists medications "on
+  discharge". The model was answering the field as written: a specification
+  defect, of the same kind as the five expectations further down.
+- **The identifier leak was not spreadsheet-specific.** The raw MRN came back
+  from the prose note in 6 of 10 draws. The prose case looked healthier only
+  because it scored a placeholder as correct.
+
+### Prompt work
+
+| field | was | now |
+|---|---|---|
+| `medications` | Prescribed medications with dosages | Current medications with dosages; omit any whose status is stopped, discontinued or held |
+| `patient_id` | Patient identifier or MRN (anonymise if present) | Patient identifier or MRN. WITHHELD: always null, and never copy an identifier into this or any other field |
+
+| after the wording change, 50 draws each | sheet | prose |
+|---|---|---|
+| ibuprofen included | 0/50 [0%, 7%] | 0/50 [0%, 7%] |
+| `patient_id` not empty | 0/50 [0%, 7%] | 0/50 [0%, 7%] |
+| an MRN in any field of the reply | 0/50 [0%, 7%] | 0/50 [0%, 7%] |
+
+On these two documents the wording holds. **On documents it was not written
+against, it does not quite.** A cosmetic change flipped the model in the
+fabrication finding, so four rewordings were run that keep the facts and change
+how the identifier is presented, 16 draws each:
+
+| rewording | identifier in any field of the reply | ibuprofen included |
+|---|---|---|
+| sheet, column headed `Patient ID` | **1/16** [1%, 28%] | 0/16 |
+| sheet, `Hospital No` column moved to the end | 0/16 | 0/16 |
+| prose, spaced NHS number | 0/16 | 0/16 |
+| prose, MRN inline with no label line | 0/16 | 0/16 |
+
+The one leak returned `patient_id` null and wrote `(patient 55-40182)` into
+`dates` for all three patients. The instruction held the field and not the
+value. For a health identifier that is not good enough, so the value is also
+enforced after extraction.
+
+### The withholding check
+
+`_withhold()` runs on every Healthcare extraction, before the fabrication check:
+
+1. Fields the schema withholds (`patient_id`) are removed.
+2. Identifiers are read **from the document**: a label with a value beside it
+   (`Patient identifier: MRN 55-40182`, `(MRN 55-40182)`, `NHS number: 485 777
+   3456`), or a label heading a column in the reader's table dump. A value the
+   model put in a withheld field is added when it also appears in the document.
+3. Every occurrence in every other field, however re-punctuated (`55-40182`,
+   `5540182`, `55 40182`), becomes `[withheld]`. A list item left holding
+   nothing else is dropped.
+4. A warning names the fields touched and never the identifier.
+
+It runs first because the fabrication check prints the figures it drops, and
+`5540182` is a figure the document never writes.
+
+**Measured before it was wired in, and after:**
+
+- Replayed over the 112 replies recorded before it existed (20 from before the
+  wording change, 60 after, 32 on rewordings): no identifier left in any field,
+  none in any warning, and no field changed that carried none. Live over 72 more
+  replies after it was wired in: no identifier in any returned field.
+- False positives: no identifier found in the six other extraction fixtures, the
+  43 retrieval-eval texts, or the nine e2e sample files as the real readers
+  parse them. The check runs only for the Healthcare schema, so the other four
+  cannot be affected.
+- 15 mutations of the check, the wording and the eval rules each turn a named
+  test red, in `tests/test_extraction_withholding.py` and
+  `tests/test_extraction_eval.py`.
+
+### What it guarantees, and what it does not
+
+- **Guaranteed:** a Healthcare extraction never returns `patient_id`, and never
+  returns an identifier the document labels in one of the recognised ways, in
+  any field and in any punctuation.
+- **Not guaranteed:** an identifier with no label near it; a label outside the
+  list (`URN`, `Case ID`) unless the model itself put the value in
+  `patient_id`; identifiers inside tables that structure recognition embeds as
+  HTML. Those rest on the wording, which leaked once in 164 replies.
+- **`medications` has no check.** The failure was the field's wording, the new
+  wording measured 0/50 on the sheet and 0/32 on its rewordings, and a string
+  check could only catch a drug the model itself annotated as stopped, which is
+  the case a reader can already see. A stopped drug listed without its status
+  would pass.
+
+### What changed in the eval, and why it is not a loosening
+
+Both changes score the Healthcare cases more strictly.
+
+1. **A withheld value is WRONG in every field of its case**, not only in
+   `patient_id`. Before, `55-40182: Amoxicillin 500 mg` scored `medications`
+   CORRECT. Re-judging the 10 recorded pre-change sheet draws, every draw scores
+   4/6 under the old rules; under the new, five of them score 0 or 1 of 6.
+   `health-sheet-01` now lists all three MRNs.
+2. **`health-01` `patient_id` is `must_be_withheld`**, like the sheet case. It
+   was `must_not_contain` alone, which scored a placeholder (`ANON`, `REDACTED`,
+   the bare word `MRN`) CORRECT and an empty field MISSING, while the sheet case
+   scored `ANON1; ANON2; ANON3` WRONG. Re-judging the 10 recorded pre-change
+   prose draws: old rule 4 CORRECT and 6 WRONG, new rule 0 CORRECT and 10 WRONG.
+   The one outcome the new rule accepts and the old did not is an empty field,
+   which is what the schema now asks for. Under the old rule the fixed extractor
+   would read prose 27/28, with `patient_id` MISSING.
+
 
 ## Schema coverage: what a document can support at all
 
@@ -258,15 +388,17 @@ guaranteed zero that reported success.
 
 ## One genuine defect the eval found
 
-`patient_id` is specified as *"Patient identifier or MRN (anonymise if
-present)"*. The instruction is honoured **inconsistently**: across runs the
-field came back as `ANONYMIZED` and, twice, as the raw `MRN 55-40182`. Isolated
-repetition scored 0 leaks in 8 identical calls at temperature 0.0, so the rate
-is low — observed twice in roughly thirteen attempts — but it is not zero, and
-the failure direction is a healthcare identifier being emitted when the schema
-said to withhold it.
+`patient_id` was specified as *"Patient identifier or MRN (anonymise if
+present)"*. This section said the instruction was honoured inconsistently and
+at a low rate: two leaks in roughly thirteen attempts, and 0 in 8 identical
+isolated calls at temperature 0.0.
 
-The eval case is inverted to test this: emitting the MRN is the failure.
+> **Corrected.** With the in-process LLM cache off, 10 independent draws on the
+> prose fixture emitted the raw MRN 6 times and never returned the field empty.
+> Identical calls in one process are served from `LLMCache`, so "0 in 8
+> identical calls" may have counted one reply eight times; that was not
+> re-checked. The failure and its fix are in
+> [the Healthcare fixes](#the-two-healthcare-failures-diagnosed-and-fixed).
 
 ## Five expectations I wrote were wrong, and all five flattered the eval
 

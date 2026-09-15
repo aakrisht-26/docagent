@@ -121,8 +121,13 @@ def _flatten(value: Any) -> str:
     return str(value)
 
 
-def judge_field(emitted: Any, spec: Dict[str, Any]) -> Tuple[str, str]:
-    """Return (verdict, reason) for one expected field."""
+def judge_field(emitted: Any, spec: Dict[str, Any],
+                withheld: Tuple[str, ...] = ()) -> Tuple[str, str]:
+    """Return (verdict, reason) for one expected field.
+
+    `withheld` holds the case's withheld values, which are WRONG in this field
+    too; `judge_case` supplies them.
+    """
     text = _flatten(emitted) if emitted is not None else ""
 
     # TWO DIFFERENT REASONS A FIELD SHOULD BE EMPTY, and they are not the same
@@ -136,9 +141,9 @@ def judge_field(emitted: Any, spec: Dict[str, Any]) -> Tuple[str, str]:
     #                    extracted fact.
     #
     #   must_be_withheld POLICY. The value IS in the document and must not be
-    #                    emitted anyway. `patient_id` is specified as "anonymise
-    #                    if present", so a column of MRNs is a test of whether
-    #                    that instruction survives tabular input.
+    #                    emitted anyway. `patient_id` is specified as "WITHHELD:
+    #                    always null", so a column of MRNs is a test of whether
+    #                    that holds against tabular input.
     #
     # Both make silence CORRECT and a value WRONG. They differ in what the
     # fixture must contain, which is why the harness asserts opposite things
@@ -160,6 +165,14 @@ def judge_field(emitted: Any, spec: Dict[str, Any]) -> Tuple[str, str]:
     if not text.strip():
         return MISSING, "field emitted but empty"
 
+    # A WITHHELD VALUE IS WRONG IN EVERY FIELD, not only its own. On the ward
+    # census the MRNs left `patient_id` for the other fields -- "55-40182:
+    # Amoxicillin 500 mg" -- and medications scored CORRECT because the drug was
+    # right, while the identifier the schema withholds sat beside it.
+    for fragment in withheld:
+        if _contains(text, fragment):
+            return WRONG, f"carries withheld {fragment!r}"
+
     for fragment in spec.get("must_not_contain", []):
         if _contains(text, fragment):
             return WRONG, f"contains distractor {fragment!r}"
@@ -176,6 +189,21 @@ def judge_field(emitted: Any, spec: Dict[str, Any]) -> Tuple[str, str]:
         if not any(_contains(text, f) for f in alternatives):
             return WRONG, f"none of {alternatives!r} present"
     return CORRECT, ""
+
+
+def judge_case(entities: Dict[str, Any],
+               case: Dict[str, Any]) -> List[Tuple[str, str, str, Any]]:
+    """(field, verdict, reason, emitted value) for every scored field of a case.
+
+    Every field is judged against the case's withheld values as well as its own
+    spec, so an identifier the schema withholds is WRONG wherever it appears.
+    """
+    withheld = tuple(fragment for spec in case["fields"].values()
+                     if spec.get("must_be_withheld")
+                     for fragment in spec.get("must_not_contain", []))
+    return [(field, *judge_field(entities.get(field), spec, withheld),
+             entities.get(field))
+            for field, spec in case["fields"].items()]
 
 
 def extract(fixture: str, domain: str, skill, use_regex: bool) -> Tuple[Dict, str]:
@@ -223,12 +251,10 @@ def main(argv: List[str]) -> int:
         entities, method = extract(case["fixture"], case["domain"], skill, args.regex)
         methods[method] = methods.get(method, 0) + 1
         counts = {CORRECT: 0, WRONG: 0, MISSING: 0}
-        details = []
-        for field, spec in case["fields"].items():
-            verdict, reason = judge_field(entities.get(field), spec)
+        details = judge_case(entities, case)
+        for _field, verdict, _reason, _value in details:
             counts[verdict] += 1
             totals[verdict] += 1
-            details.append((field, verdict, reason, entities.get(field)))
         per_case.append((case, method, counts, details))
         n = sum(counts.values())
         kind = case.get("input_kind", "prose")

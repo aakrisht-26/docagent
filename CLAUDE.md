@@ -79,7 +79,7 @@ pipeline change and still needs an explicit instruction.
 The system separates **orchestration** from **capabilities**:
 
 - **Skills** (`skills/`) — stateless, atomic units. Each implements `BaseSkill.execute(SkillInput) → SkillOutput`. Skills never call other skills.
-- **Agents** (`agents/`) — orchestrators that sequence skills. `DocumentAgent` runs a 6-step pipeline: Parse → Clean → Classify → Structure Recognition → Summarize → Extract Questions.
+- **Agents** (`agents/`) — orchestrators that sequence skills. `DocumentAgent` runs the frozen pipeline above: Parse → Clean → Classify → Structure Recognition → Summarize → Extract Questions → Structured Extraction → Assemble, with `PipelinePlanner` deciding which gated steps run.
 - **SkillRegistry** (`core/skill_registry.py`) — singleton that auto-discovers all `BaseSkill` subclasses at import time. Adding a new skill requires no changes to agents or config.
 
 ### Data Flow
@@ -88,7 +88,7 @@ The system separates **orchestration** from **capabilities**:
 File path → DocumentAgent.run()
   → ParsedDocument (chunks, tables, full_text, metadata)
   → ClassificationResult (doc_type, domain, confidence, method)
-  → PipelineResult (summary, questions, classification, skill timings)
+  → PipelineResult (summary, questions, extracted entities, classification, skill timings)
 ```
 
 All inter-component communication uses typed dataclasses from `core/models.py`. `SkillInput` holds `data: Dict[str, Any]`; `SkillOutput` carries `success`, `data`, `error`, `warnings`, `duration_ms`.
@@ -282,8 +282,9 @@ documents, one per schema. Full method and per-case reasoning in
 `tests/e2e/extraction_eval/RESULTS.md`.
 
 **Measured, and REPORTED BY INPUT KIND because averaging them hides the
-finding: prose 27-28/28 (96-100%), spreadsheet 7-9/12 (58-75%), regex
-fallback 0/40.**
+finding: prose 28/28, spreadsheet 11/12, regex fallback 0/40**, three identical
+runs on 2026-09-14. Before the Healthcare fixes it read prose 27/28 and
+spreadsheet 7-9/12; two of those fields were run-to-run variance, not the fix.
 
 **The eval's fixtures were all prose, and prose was easy to author.** The app
 does not only receive prose: `ExcelReaderSkill` emits a tabular dump and the
@@ -300,10 +301,16 @@ returned all seven.
 
 **Three failures the spreadsheet fixtures found**, none a matcher artefact:
 `revenue` emitted 2,379,900 -- exactly the Revenue column's sum, a figure in no
-document; `medications` included a drug whose Status column reads `Stopped`,
-which the same model correctly excluded from the PROSE fixture; and
-`patient_id` leaked every MRN despite the schema saying "anonymise if present",
-which held on prose and fails outright against a column.
+document; `medications` included a drug whose Status column reads `Stopped`;
+and `patient_id` leaked every MRN despite the schema saying "anonymise if
+present". The first is handled by the fabrication check below, the other two
+under "Healthcare: stopped drugs and patient identifiers".
+
+**Both Healthcare failures had been recorded inaccurately.** The stopped drug
+was listed WITH its status, `Ibuprofen 400 mg PRN (Stopped)`, in 10 of 10 draws:
+the field asked for *prescribed* medications and was being answered as written.
+And the identifier leak was not spreadsheet-specific: with the LLM cache off, the
+PROSE note returned the raw MRN in 6 of 10 draws.
 
 **EXTRACTION CAN INVENT A FIGURE, AND THE PROMPT DOES NOT PREVENT IT.** Asked
 to fill the Financial schema from a sales spreadsheet whose Revenue column has
@@ -337,11 +344,34 @@ pins the cases.
 
 **What it does not cover**, and this belongs next to the 27/27 citation figure
 rather than buried: a fabricated NAME, date range or claim carrying no digits
-passes it untouched, and two measured failures are unaddressed -- a medication
-whose Status column reads `Stopped` listed as current, and patient identifiers
-emitted from a schema that says to anonymise them. **Chat citations are 27/27
-with 0 wrong; extracted fields carry no equivalent guarantee and should be
-treated as a lead to verify.**
+passes it untouched. **Chat citations are 27/27 with 0 wrong; extracted fields
+carry no equivalent guarantee and should be treated as a lead to verify.**
+
+**Healthcare: stopped drugs and patient identifiers.** Both fixed on 2026-09-14;
+the measurements are in `tests/e2e/extraction_eval/RESULTS.md`.
+
+- *Wording.* `medications` now asks for current medications and names stopped,
+  discontinued and held; `patient_id` says WITHHELD, always null. Ibuprofen went
+  10/10 -> 0/50 on the sheet, `patient_id` 10/10 -> 0/50 on both fixtures.
+- *The wording held the field, not the identifier.* With the sheet's column
+  headed `Patient ID`, 1 of 16 draws returned `patient_id` null and put all
+  three MRNs in `dates`. So `_withhold()` enforces it: identifiers are read from
+  the DOCUMENT (a labelled value, or the column under an identifier header), and
+  every occurrence in every field, however re-punctuated, becomes `[withheld]`.
+  It runs BEFORE the fabrication check, whose warning would otherwise print a
+  re-punctuated MRN as an unverified figure. Its own warning never repeats the
+  identifier, and there is no escape hatch.
+- *Measured before wiring:* replayed over 112 recorded replies with no identifier
+  left, none in a warning, and no collateral change; no identifier found in the
+  non-health fixtures, 43 retrieval texts or nine parsed e2e samples. It runs
+  for the Healthcare schema only.
+- *Not guaranteed:* an unlabelled identifier; a label outside the list unless
+  the model put the value in `patient_id`; identifiers inside HTML tables from
+  structure recognition. `medications` has no check: a stopped drug listed
+  without its status would pass.
+- *The eval got stricter, not looser:* a withheld value is WRONG in every field
+  of its case, and `health-01` `patient_id` is `must_be_withheld` like the sheet
+  case. `tests/test_extraction_withholding.py` pins the recorded replies.
 
 **The eval distinguishes fabrication from policy**, because they are different
 tests with opposite fixture invariants: `must_be_absent` names a value that is
@@ -553,7 +583,7 @@ embedding was ranking most of that document from a lossy copy.
 
 ### UI
 
-`ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Custom glassmorphism styles are in `ui/styles/custom.css`.
+`ui/app.py` is the Streamlit entry point. Results display logic lives in `ui/components/results_view.py`. Styles are in `ui/styles/custom.css`, written against design tokens whose light values live in `_LIGHT_TOKENS` in `ui/app.py`.
 
 **Streamlit internals go through `ui/streamlit_compat.py` only.** They move
 between releases: `RerunException` has lived in three modules across 1.35-1.63,

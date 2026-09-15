@@ -60,8 +60,8 @@ torch download for a while.
 ### 5. Check it came up correctly
 
 In the app: upload `tests/e2e/samples/sample_report.pdf`. You should get a
-multi-paragraph summary with page citations, and the sidebar should report the
-summary method as `llm_single_groq`.
+multi-paragraph summary with page citations, and the method badge above the
+summary should read **AI summary**; hovering it shows `llm_single_groq`.
 
 **Check the method, not the confidence.** An earlier version of this step said
 to expect "a confidence around 96%". That fixture actually classifies as
@@ -438,8 +438,8 @@ number.
 
 ```bash
 # Everything else, locally.
-python -m pytest tests/ -q          # 121 tests
-python tests/e2e/e2e.py all         # 6 stages, needs a Groq key
+python -m pytest tests/ -q          # about 600 tests, roughly five minutes
+python tests/e2e/e2e.py all         # 8 stages, needs a Groq key
 ```
 
 ---

@@ -55,7 +55,8 @@ Think of it as a document analyst pipeline that:
 3. **Classifies** it — is this a questionnaire/form or a normal document? What domain?
 4. **Extracts structure** — pulls tables from complex domain documents using computer vision
 5. **Summarises** it — map-reduce approach for long documents, extractive fallback without LLM
-6. **Extracts questions** — three-layer extraction (regex + LLM + deduplication)
+6. **Extracts questions** — three-layer extraction (regex + LLM + deduplication), for questionnaires
+7. **Extracts key fields** — fills a domain schema (Financial, Legal, Healthcare, Research) with the LLM, then drops invented figures and withholds patient identifiers
 
 Every step is a separate, independently testable **skill**. The **agent** is just the coordinator that calls them in order.
 
@@ -71,9 +72,13 @@ Every library in this project was chosen for a specific reason. This section doc
 
 ### Python
 
-**Version:** 3.11+. Reason: `match` statements (used in config parsing), improved `tomllib`, and significantly faster interpreter than 3.10 on CPU-bound text processing.
+**Version:** `setup.py` declares 3.10+, and the deployment is pinned to 3.12 (DEPLOYMENT.md explains why). The test suite needs 3.11+, because `tests/test_run_interruption.py` imports `tomllib`.
+
+> **Corrected.** This used to say 3.11+ for `match` statements "used in config parsing". There are no `match` statements in the codebase.
 
 ### LLM Provider — Groq Cloud
+
+> **Superseded model.** What follows about Llama 3.3 70B records the original choice. Groq retired `llama-3.3-70b-versatile` on 17 June 2026, and the default is now **`openai/gpt-oss-120b`**, a reasoning model: `max_tokens` covers its reasoning as well as its reply, and it is roughly 4x slower per call than the 70b (a typical summary takes 12-18s against ~2s). The speed figures below are the 70b's. The budgets that apply now are in CLAUDE.md, "Token budgets and reasoning models".
 
 **Why Groq instead of OpenAI or Anthropic directly?**
 
@@ -91,7 +96,7 @@ We evaluated Llama 3.1 8B, 70B, and Mixtral 8x7B. 8B produces significantly wors
 
 **Why use the OpenAI SDK to call Groq?**
 
-Groq exposes an OpenAI-compatible REST API. By using the OpenAI Python SDK with `base_url="https://api.groq.com/openai/v1"`, we get all of OpenAI's client-side benefits (retry logic, timeout handling, streaming) while calling Groq's infrastructure. This also means switching to actual OpenAI requires changing two lines — the `base_url` and the model name.
+Groq exposes an OpenAI-compatible REST API. By using the OpenAI Python SDK with `base_url="https://api.groq.com/openai/v1"`, we get the SDK's request handling and timeouts while calling Groq's infrastructure. The SDK's own retries are deliberately **off** (`max_retries=0`): they retried a 429 on the same key and hid it from the key rotation (§8). This also means switching to actual OpenAI requires changing two lines — the `base_url` and the model name.
 
 ### PDF Parsing — pdfplumber (primary), PyMuPDF/fitz (fallback)
 
@@ -175,7 +180,7 @@ WeasyPrint requires a full HTML/CSS rendering engine and libcairo as a system de
 
 ### Testing — pytest
 
-Standard choice. `pytest-mock` used for LLM call mocking. No additional test framework needed.
+Standard choice. `pytest-mock` is listed in `requirements.txt`, but no test uses its `mocker` fixture. No additional test framework needed.
 
 ---
 
@@ -234,17 +239,21 @@ DocumentAgent.run(file_path)  ──or──  DocumentAgent.run_youtube(url)
     │       DocumentClassifierSkill
     │       → ClassificationResult (doc_type, domain, confidence)
     │
-    ├─► Step 3.5: Structure Recognition  [planner-gated, Technical/Financial only]
+    ├─► Step 3.5: Structure Recognition  [planner-gated; runs for Technical/Financial/Research/Scientific, on a CUDA GPU]
     │       StructureRecognitionSkill
     │       → ParsedDocument (tables enriched with HTML)
     │
-    ├─► Step 4: Summarise  [planner-gated]
+    ├─► Step 4: Summarise  [always planned]
     │       SummarizationSkill
     │       → {summary: str, citations: List[Dict]}
     │
-    ├─► Step 5: Extract Questions  [planner-gated]
+    ├─► Step 5: Extract Questions  [planner-gated: questionnaires only]
     │       QuestionExtractionSkill
     │       → {questions: List[str]}
+    │
+    ├─► Step 5.5: Structured Extraction  [planner-gated: not questionnaires, not audio, not the General schema]
+    │       StructuredExtractionSkill
+    │       → {entities: Dict, method: str, schema: str}
     │
     └─► Step 6: Assemble
             Builds PipelineResult from all outputs
@@ -254,24 +263,32 @@ DocumentAgent.run(file_path)  ──or──  DocumentAgent.run_youtube(url)
 
 Some skills are expensive. `StructureRecognitionSkill` can take 5–15 minutes on CPU for a complex document. `SummarizationSkill` makes multiple LLM calls that cost money and API quota. Running them on a 2-page CSV file would be wasteful and slow.
 
-`PipelinePlanner.plan(doc_stats)` decides which steps to run based on the document's characteristics:
+`PipelinePlanner.plan(stats, registered_skills)` in `agents/planner.py` returns an ordered **list of skill names**, and the agent runs a step when its name is in that list:
 
 ```python
 @dataclass
 class DocStats:
-    file_type: str        # "pdf" | "excel" | "audio"
-    word_count: int
-    page_count: int
-    doc_type: str         # from classification
-    domain: str           # from classification
+    file_type: str = "pdf"             # "pdf" | "excel" | "audio"
+    word_count: int = 0
+    page_count: int = 0
+    domain: str = "General"            # from classification
+    doc_type: str = "normal_document"  # from classification
+    has_tables: bool = False
 
-def plan(stats: DocStats) -> PipelineFlags:
-    return PipelineFlags(
-        run_structure  = stats.domain in TARGET_DOMAINS and stats.file_type == "pdf",
-        run_summarize  = stats.word_count > 50,
-        run_questions  = stats.doc_type == "questionnaire" or stats.word_count > 200,
-    )
+# what plan() includes
+#   text_cleaner, document_classifier, summarization    always
+#   structure_recognition   not audio, and the domain is in _STRUCTURE_DOMAINS
+#                           (Technical, Financial, Research, Scientific, Medical)
+#                           or the parser found tables
+#   question_extraction     doc_type == "questionnaire"
+#   structured_extraction   not a questionnaire, not audio, and the domain does not
+#                           resolve to the General schema (DOCAGENT_EXTRACT_GENERAL=true
+#                           includes it anyway)
 ```
+
+Being planned is not the whole gate for structure recognition: the skill returns the document untouched unless the domain is Technical, Financial, Research or Scientific and PaddlePaddle sees a CUDA GPU (or `pdf.allow_cpu_structure` is true). A Medical document, or any document on a CPU-only host such as Community Cloud, is planned for the step and skips it.
+
+> **Corrected.** This section showed `plan()` returning `PipelineFlags`, with a `TARGET_DOMAINS` constant and word-count gates on summarisation and question extraction. None of those exist.
 
 This is not AI-driven planning. It's deterministic business logic. That's intentional: predictable, testable, and fast.
 
@@ -360,7 +377,7 @@ class ClassificationResult:
     signals: Dict[str, Any]  # Which patterns matched, for debugging
 ```
 
-`domain` is the most architecturally important field. It gates `StructureRecognitionSkill` (only Technical/Financial/Research/Scientific), shapes the summarisation persona ("You are a Senior Financial Analyst" vs "You are a Technical Documentation Specialist"), and influences question extraction's few-shot examples.
+`domain` is the most architecturally important field. It gates `StructureRecognitionSkill` (only Technical/Financial/Research/Scientific), shapes the summarisation persona ("You are a Senior Financial Analyst" vs "You are a Technical Documentation Specialist"), is passed into question extraction's prompt, and selects the structured-extraction schema.
 
 ---
 
@@ -421,7 +438,7 @@ If the LLM is unavailable, the heuristic phase still runs and produces a classif
 ### Step 3.5: Structure Recognition (Planner-gated)
 
 ```python
-if plan.run_structure:
+if "structure_recognition" in plan:
     struct_out = self._struct_rec.safe_execute(SkillInput(data={
         "parsed_document": parsed_doc,
         "file_path": str(file_path),
@@ -451,6 +468,19 @@ summary  = summ_out.data.get("summary", "")   if (summ_out.success and summ_out.
 citations = summ_out.data.get("citations", []) if (summ_out.success and summ_out.data) else []
 ```
 
+### Step 5.5: Structured Extraction (Planner-gated)
+
+```python
+if "structured_extraction" in plan and self._struct_ext is not None:
+    se_out = self._struct_ext.safe_execute(SkillInput(data={
+        "full_text": full_text, "doc_type": doc_type, "domain": domain}))
+    if se_out.success and se_out.data:
+        extracted_entities = se_out.data.get("entities", {})
+    warnings.extend(se_out.warnings)
+```
+
+The domain selects a field schema. Two checks then run on what the LLM returned: patient identifiers are withheld from every field when the schema withholds them, and a value carrying a figure absent from the document is dropped. Each says what it removed in a warning that reaches `PipelineResult.warnings`. CLAUDE.md, "Structured extraction", has the measurements behind both.
+
 ### Step 6: Assemble
 
 ```python
@@ -462,6 +492,7 @@ return PipelineResult(
     summary     = summary,
     questions   = questions,
     tables      = parsed_doc.tables,
+    extracted_entities = extracted_entities,
     raw_text    = full_text,
     errors      = errors,
     warnings    = warnings,
@@ -620,16 +651,17 @@ The OCR pipeline for each page:
 ### 7.3 ExcelReaderSkill
 
 **Location:** `skills/excel_reader_skill.py`
-**Purpose:** Turn Excel (.xlsx, .xls) or CSV into a `ParsedDocument`.
+**Purpose:** Turn Excel (.xlsx) or CSV into a `ParsedDocument`.
+
+> **`.xls` is accepted and cannot be read.** The uploader, `ALLOWED_EXTENSIONS` and `SUPPORTED_EXTENSIONS` all admit `.xls`, and this reader hands it to openpyxl, which refuses the legacy format (`openpyxl does not support the old .xls file format`). A real `.xls` upload fails at parsing. Recorded here, not fixed.
 
 ```python
 wb = openpyxl.load_workbook(file_path, data_only=True)  # data_only ignores formulas
 for ws in wb.worksheets[:self._max_sheets]:
     rows = []
-    for row in ws.iter_rows(values_only=True):
-        row_vals = [str(c).strip() for c in row if c is not None]
-        if row_vals:
-            rows.append(row_vals)
+    for row in ws.iter_rows(max_row=self._max_rows, values_only=True):
+        if any(cell is not None for cell in row):
+            rows.append([str(c).strip() if c is not None else "" for c in row])
     df = self._rows_to_dataframe(rows)
     text = self._dataframe_to_text(df, ws.title)
 ```
@@ -641,12 +673,16 @@ openpyxl can load workbooks in two modes: with or without formulas. With formula
 **Smart sampling for large sheets:**
 
 ```python
-def _dataframe_to_text(self, df, sheet_name: str) -> str:
-    if len(df) > 600:
-        head = df.head(300).to_string(index=False, max_cols=30)
-        tail = df.tail(300).to_string(index=False, max_cols=30)
-        return f"{head}\n\n... [{len(df) - 600} rows omitted] ...\n\n{tail}"
-    return df.to_string(index=False, max_cols=30)
+def _dataframe_to_text(df, sheet_name: str) -> str:
+    row_count = len(df)
+    lines = [f"[Sheet: {sheet_name}]", f"- Total Rows: {row_count}", ""]
+    if row_count > 600:
+        lines.append(df.head(300).to_string(index=False, max_cols=30))
+        lines.append(f"\n... [Rows 301 to {row_count-300} omitted] ...\n")
+        lines.append(df.tail(300).to_string(index=False, max_cols=30))
+    else:
+        lines.append(df.to_string(index=False, max_cols=30))
+    return "\n".join(lines)
 ```
 
 A 10,000-row sales database would overflow the LLM's context window and waste significant API quota summarising rows that are structurally identical. The head+tail approach captures: (1) column headers in the first rows, (2) the data pattern in early rows, (3) how the data ends. The omitted row count tells the LLM the true scale of the dataset so it doesn't claim "this is a small dataset."
@@ -690,22 +726,16 @@ def _download_youtube_audio(self, youtube_url: str) -> Optional[Path]:
 
 **Why the CLI fallback exists:** `@st.cache_resource` keeps `DocumentAgent` alive in memory across Streamlit reruns for the session's lifetime. If `yt-dlp` is installed via pip *while Streamlit is already running*, the running Python process's module cache doesn't see the new package. `yt-dlp`'s binary (`/opt/anaconda3/bin/yt-dlp`), however, is immediately available via `shutil.which()` on the filesystem. The CLI fallback bridges this gap.
 
-#### Groq Whisper via OpenAI SDK
+#### Groq Whisper, through the same client
 
 ```python
-client = openai.OpenAI(
-    api_key=api_keys[0],
-    base_url="https://api.groq.com/openai/v1"
-)
-with open(audio_file, "rb") as f:
-    response = client.audio.transcriptions.create(
-        model="whisper-large-v3",
-        file=f,
-        response_format="text",
-    )
+llm = LLMClient.from_config({"groq": self._groq_cfg})
+transcript = llm.transcribe(audio_file, model=self._transcription_model)   # whisper-large-v3
 ```
 
-Same SDK, different endpoint path (`/audio/transcriptions` vs `/chat/completions`). This means the multi-key round-robin in `LLMClient` works for transcription too — rate limits are per API key, so rotating keys sustains throughput for batch audio processing.
+Transcription goes through `LLMClient`, so it gets the same key resolution, placeholder filtering, timeout, backoff and key rotation as every chat call (§8). Same SDK, different endpoint path (`/audio/transcriptions` vs `/chat/completions`).
+
+> **Corrected.** The sample here built its own `openai.OpenAI` client on the first key, with no retry. That was replaced; the docstring of `AudioReaderSkill._transcribe_audio()` records why.
 
 ---
 
@@ -749,7 +779,7 @@ Any line matching this guard is exempt from ALL cleaning rules that might remove
 
 #### Phase 1: Heuristic Scoring
 
-Twenty compiled regex patterns, each with a weight:
+Nineteen compiled regex patterns, each with a weight, plus up to 0.15 for question-mark density. The heaviest:
 
 | Pattern | Example match | Weight |
 |---|---|---|
@@ -764,9 +794,11 @@ Twenty compiled regex patterns, each with a weight:
 | Consent language | "I consent to…", "I declare that…" | 0.06 |
 | Yes/No pairs | "Yes / No" on a single line | 0.06 |
 
-Scores are summed and compared to `questionnaire_threshold` (default 0.4). Above 0.7: definitely a questionnaire (no LLM needed). Below 0.1: definitely a normal document (no LLM needed). Between 0.1–0.7: ambiguous, call LLM.
+The raw sum is divided by the total of the nineteen weights (1.81) and capped at 1.0. `questionnaire_threshold` (default 0.4) applies to the final score, not to this one.
 
-#### Phase 2: LLM Disambiguation (Borderline Only)
+> **Corrected.** This section described a borderline band, with no LLM call above 0.7 or below 0.1, and a separate domain-detection call on 1,500 characters. Neither exists. There is one LLM call, made for every document whenever a key is configured.
+
+#### Phase 2: One LLM Call, for Type and Domain
 
 ```python
 prompt = f"""Classify the document excerpt as questionnaire or normal_document.
@@ -776,27 +808,11 @@ Excerpt:
 {text[:3000]}"""
 ```
 
-The LLM confidence is blended with the heuristic: `0.7 * llm_conf + 0.3 * heuristic_score`. The 70/30 split favours the LLM (more context-aware) while keeping the heuristic as a stabilising prior (prevents wild swings from a single ambiguous LLM response).
+The reply gives a type, a confidence and a domain. It is turned into p(questionnaire) and blended, `0.7 * p + 0.3 * heuristic`, unless the heuristic alone is at least 0.85, in which case the heuristic stands and the LLM supplies only the domain. With a silent heuristic the blend cannot exceed 0.70; that ceiling is intended, and CLAUDE.md explains why. The call has a 512-token budget because the model reasons before it answers.
 
-**Why not always use the LLM?** Speed and cost. A document with "Customer Satisfaction Survey" in the title and 15 Likert items has a heuristic score of ~0.85 — obviously a questionnaire. The LLM call would add 2–5 seconds and use API quota to confirm what we already know with high certainty.
+**The LLM is used on every document when a key is configured**, because it is the only source of the domain, which gates structure recognition and selects the extraction schema. Without a key the domain stays `General` and the heuristic decides the type alone.
 
 **Why only 3000 chars for the LLM excerpt?** Classification quality plateaus after the first ~2000 characters. The document type is established by its title, opening section, and structural patterns — all apparent in the first few pages. Sending the entire 50,000-character document burns tokens without improving accuracy.
-
-#### Phase 3: Domain Detection
-
-Always runs if LLM is available:
-
-```python
-domain_prompt = f"""Classify this document's domain. Choose ONE from:
-Technical, Financial, Legal, Medical, Educational, Research, Scientific,
-Government, HR/Administrative, General.
-
-Document title/opening: {text[:1500]}
-
-Return JSON: {{"domain": "...", "confidence": 0.9}}"""
-```
-
-Domain detection uses only 1500 characters because the domain is almost always apparent from the title and opening paragraph. Running it on the full document would be wasteful.
 
 ---
 
@@ -805,7 +821,7 @@ Domain detection uses only 1500 characters because the domain is almost always a
 **Location:** `skills/structure_recognition_skill.py`
 **Purpose:** Extract high-fidelity tables from complex domain documents using computer vision.
 
-Only activates for Technical, Financial, Research, and Scientific domains — the domains where structured tables are both common and semantically important.
+Only activates for Technical, Financial, Research, and Scientific domains — the domains where structured tables are both common and semantically important — and only when PaddlePaddle can see a CUDA GPU. On CPU it takes 15–25 minutes a page, so it skips unless `pdf.allow_cpu_structure: true`. The deployment has no GPU and does not install paddle at all (DEPLOYMENT.md).
 
 #### Why Computer Vision for Tables?
 
@@ -825,7 +841,7 @@ PP-Structure (PP-StructureV3 from PaddleOCR) is trained to infer table structure
 def _get_engine(self):
     if self._engine is None:
         os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-        self._engine = PPStructureV3(lang="en", use_gpu=self._use_gpu, show_log=False)
+        self._engine = PPStructureV3(lang="en")   # PaddleOCR 3 removed use_gpu and show_log
     return self._engine
 ```
 
@@ -842,7 +858,7 @@ PP-Structure downloads ~400 MB of weights on first use and allocates significant
 
 #### Scenario A: Short Document (Single Chunk)
 
-The full text fits in the LLM's context window (~25,000 tokens for Llama 3.3 70B on Groq). One LLM call:
+The document is short enough to send in one request. One LLM call:
 
 ```
 [System] You are a Senior {domain} Analyst. Write for a {tone} audience.
@@ -887,7 +903,7 @@ Instructions:
 - Length target: {length_instruction}
 ```
 
-**Why not send the whole document in one reduce call?** Token cost and context window. A 100-page technical report might be 150,000 tokens. Llama 3.3 70B supports 128K context, but sending 150K tokens in one call would cost ~$0.15 per document and take 45+ seconds. The map phase compresses each section into ~200 tokens of bullet points. The reduce call sees ~5,000 tokens instead of 150,000 — 30× cheaper and faster.
+**Why not send the whole document in one reduce call?** Token cost and context window. A 100-page technical report might be 150,000 tokens, and a free-tier Groq key allows 8,000 tokens a minute. Groq refuses a request larger than what remains of that allowance rather than truncating it, so one call that size could not be sent at all. The map phase compresses each section into ~200 tokens of bullet points. The reduce call sees ~5,000 tokens instead of 150,000 — 30× cheaper and faster.
 
 **Why `temperature=0.1` for map, not 0.0?** Temperature 0.0 produces fully deterministic output but can cause the model to fixate on a single phrasing pattern. Temperature 0.1 introduces minimal variation that prevents repetitive bullet structures across chunks while maintaining factual precision. The reduce step uses `temperature=0.15` for slightly more natural prose.
 
@@ -948,7 +964,7 @@ A section is kept together in one chunk unless it exceeds 1.5× the target chunk
 
 **Layer 1: Regex (always runs, zero API cost)**
 
-Twelve compiled patterns targeting different question styles:
+Ten compiled patterns targeting different question styles:
 
 ```python
 # Numbered questions ending in ?
@@ -1059,7 +1075,9 @@ re-embedding. Vectors written by a different model are ignored, not compared.
 subprocess test, because checking `sys.modules` in-process passes alone and
 fails in a full run.
 
-#### Measured retrieval accuracy
+#### Measured retrieval accuracy — the adoption experiment
+
+> **These are the 18-pair figures from the decision to adopt embeddings**, kept because they answer that question. The current eval is 33 cases over overlapping ~100-word passages: 33/33 retrieved, 32/33 with the required sources leading the ranking. See README, "Measured retrieval accuracy", and `docs/retrieval-sub-chunking.md`.
 
 18 pairs across the fixtures, scored on whether the answering chunk was
 **ranked** (strictly outscored every excluded chunk) rather than merely present.
@@ -1126,9 +1144,10 @@ def _truncate_history(self, history):
     budget = MAX_HISTORY_TOKENS - sum(len(h["content"]) // 4 for h in kept)
     for turn in reversed(history[2:]):    # Fill from most recent backward
         cost = len(turn["content"]) // 4
-        if cost <= budget:
-            kept.insert(2, turn)
-            budget -= cost
+        if cost > budget:
+            break                         # stop at the first turn that does not fit
+        kept.insert(2, turn)
+        budget -= cost
     return kept
 ```
 
@@ -1201,49 +1220,33 @@ All LLM calls in every skill go through `LLMClient`. This centralises: API key m
 client = LLMClient.from_config(cfg_dict)
 ```
 
-`from_config` resolves API keys with this priority chain:
-1. `GROQ_API_KEYS` environment variable (comma-separated for multiple keys)
-2. `GROQ_API_KEY` environment variable (single key)
-3. `groq.api_keys` from config dict
-4. `groq.api_key` from config dict
+`from_config` takes its keys from `resolve_groq_api_keys()` in `utils/config.py`, which **combines** every source, deduplicated, in this order:
+1. `GROQ_API_KEYS` environment variable (comma-separated)
+2. `groq.api_keys` from config
+3. `GROQ_API_KEY` environment variable
+4. `groq.api_key` from config
 
-**Why this chain?** Environment variables take precedence because they represent deployment-time secrets (set in the container/VM/Kubernetes secret). Config dict values are defaults for development. The comma-separated `GROQ_API_KEYS` enables multi-key rotation without any code changes — just set an environment variable with multiple keys.
+Placeholders, values under 20 characters and values containing whitespace are rejected there (§16).
 
-### Multi-Key Round-Robin
+**Why combine them?** So that setting `GROQ_API_KEY` does not stop the keys in `api_keys` from being used. The comma-separated `GROQ_API_KEYS` enables multi-key rotation without any code changes.
 
-```python
-def chat(self, messages, temperature=None, max_tokens=3000):
-    attempts = 0
-    while attempts < len(self.api_keys):
-        try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature or self.temperature,
-                max_tokens=max_tokens,
-                timeout=self.timeout,
-            )
-            return response.choices[0].message.content
-        except openai.RateLimitError:
-            attempts += 1
-            self._current_key_idx = (self._current_key_idx + 1) % len(self.api_keys)
-            self._client = None    # Force SDK re-initialisation with new key
-            time.sleep(1)
-    return None    # All keys exhausted — graceful None return
-```
+### Key Rotation
 
-**Why `self._client = None` after key rotation?** The OpenAI SDK client is initialised with a specific API key at construction time. To switch keys, you must create a new client instance. Setting `_client = None` forces lazy re-creation on the next call via:
+Every API call, chat and transcription alike, goes through `_run_with_rotation()`, the one place failure handling lives:
 
-```python
-@property
-def _client(self):
-    if self.__client is None:
-        self.__client = openai.OpenAI(
-            api_key=self.api_keys[self._current_key_idx],
-            base_url=self.base_url,
-        )
-    return self.__client
-```
+| Response | What happens |
+|---|---|
+| 401 | the key is retired for the rest of the process; move to the next at once |
+| 429 | rotate to the next live key, untried keys immediately and otherwise after a backoff; a refusal against a daily limit **parks** the key until its window passes |
+| 413 | the key has less of its rolling per-minute allowance left than the request needs; rotate at once, no backoff |
+| connection, timeout, 5xx | retry with exponential backoff |
+| anything else | give up and return `None` |
+
+The attempt budget is one sweep across the live keys plus `max_total_retries` (default 4). Key state (retired keys, parked keys, the rotation pointer) is **shared by every `LLMClient` in the process**, because it belongs to the key and every skill builds its own client. One OpenAI client is built per key index, lazily, with the SDK's own retries off (`max_retries=0`).
+
+Replies are cached in an in-process LRU (`utils/llm_cache.py`, 128 entries by default) keyed on model, messages, temperature and `max_tokens`. `chat()` warns when a reply stops at `finish_reason: "length"`, which for a reasoning model can mean empty content.
+
+> **Corrected.** This section showed a loop that caught `RateLimitError`, slept one second and rebuilt a single client. That code is gone, and while the SDK's own retries were on, a 429 never reached the rotation at all.
 
 ### The `available` Guard
 
@@ -1352,7 +1355,7 @@ logging.getLogger("docagent.pdf_reader").setLevel(logging.DEBUG)  # Verbose for 
 
 This is essential for debugging in production: you can increase verbosity for a specific component without flooding the log with unrelated messages.
 
-**Dual handlers:** Console uses `cfg.log_level` (INFO by default, to avoid spamming the Streamlit terminal). File handler (`~/.docagent/app.log`) always uses DEBUG — so the full trace is available for post-hoc incident investigation even when the console was quiet.
+**Dual handlers:** Console uses `cfg.log_level` (INFO by default, to avoid spamming the Streamlit terminal). File handler (`logs/docagent.log` by default; `DOCAGENT_LOG_FILE` moves it) always uses DEBUG — so the full trace is available for post-hoc incident investigation even when the console was quiet.
 
 ---
 
@@ -1383,9 +1386,6 @@ st.session_state[f"doc_result_{filename}"] = result
 
 # ParsedDocument stored separately — needed for Chat and Edit tabs
 st.session_state[f"parsed_doc_{filename}"] = result.parsed_document
-
-# TTS audio cache — avoid regenerating on every rerun (if server-side TTS used)
-st.session_state[f"tts_audio_{filename}"] = (audio_bytes, mime_type)
 ```
 
 **Why store file bytes in session state?** Streamlit's `st.file_uploader` returns `UploadedFile` objects that are only valid within the current script execution. If the user toggles the theme (a non-upload interaction), `uploaded_files` becomes an empty list on the next rerun even though no new upload happened. Storing bytes in session state at upload time makes files persistent until the user explicitly clears them.
@@ -1421,26 +1421,31 @@ The `__wrapped_orig__` chain-unwrapping pattern solves this: always traverse to 
 
 ### 12.3 Theme System
 
-DocAgent supports dark and light themes toggled by the sidebar button. The implementation uses CSS custom properties (variables) injected by `st.markdown(unsafe_allow_html=True)`:
+A sidebar radio, `st.radio("Theme", ["Dark", "Light"], key="theme_choice")`, picks the theme. Both themes use the same design-token **roles** as CSS custom properties; only the values differ.
 
-**Dark mode (default):** Defined in `ui/styles/custom.css` with variables like `--bg-base: #0f0e1a`, `--accent: #7C3AED`.
+**Dark (default):** the `:root` block of `ui/styles/custom.css`, e.g. `--bg-base: #09090f`, `--accent: #3b82f6`.
 
-**Light mode:** Defined in `_LIGHT_VARS` (inline in `app.py`) as a CSS override block that redefines the same variables: `--bg-base: #fafafa`, `--accent: #1D4ED8`.
+**Light:** `_LIGHT_TOKENS` in `ui/app.py` re-values the same tokens, e.g. `--bg-base: #ffffff`, `--accent: #1d4ed8`, and holds no element rules.
 
 ```python
 def _inject_css() -> None:
     css_path = Path(__file__).parent / "styles" / "custom.css"
     if css_path.exists():
-        with open(css_path) as fh:
+        with open(css_path, encoding="utf-8") as fh:
             st.markdown(f"<style>{fh.read()}</style>", unsafe_allow_html=True)
 
-    if st.session_state.get("theme") == "light":
-        st.markdown(_LIGHT_VARS, unsafe_allow_html=True)   # Override CSS variables
+    # after custom.css, so this :root block wins
+    if st.session_state.get("theme_choice", "Dark") == "Light":
+        st.markdown(_LIGHT_TOKENS, unsafe_allow_html=True)
 ```
 
-**Why CSS variables instead of two separate CSS files?** Every component uses variables like `var(--bg-card)` and `var(--accent)`. Switching themes is one `st.markdown` call that redefines 20 variables. If we had two separate files, we'd need to conditionally apply different class names to every component — multiplying the maintenance burden by 2× across every style rule.
+`_inject_css()` runs before the sidebar draws the radio, which is why it reads the widget's key rather than a derived variable.
 
-**Why Streamlit doesn't natively support this:** Streamlit has its own theming system (`[theme]` in `.streamlit/config.toml`) but it only controls base colours and fonts. Custom component backgrounds, glassmorphic effects, badge colours, and animation styles require direct CSS injection.
+**Why tokens instead of two stylesheets?** Every element rule is written once against `var(--token)`, so it is right in both themes by construction and a new surface cannot be forgotten in one of them. The light block used to carry 51 `!important` overrides across 42 selectors, and whatever nobody remembered stayed dark.
+
+**What tokens cannot reach.** `.streamlit/config.toml` pins `base = "dark"`, and some widgets paint from Streamlit's own theme rather than from the stylesheet, so they stay dark in light mode until a rule pins them to a token. DEPENDENCIES.md section 6 lists every known instance and how to find the next one.
+
+> **Corrected.** This section described a sidebar button, a `_LIGHT_VARS` block keyed on `st.session_state["theme"]`, and a purple accent. All three were replaced.
 
 ### 12.4 Layout & Full-Width Rendering
 
@@ -1687,14 +1692,15 @@ _resumeText = remaining;
 | `doc_type` | str | "questionnaire" / "normal_document" |
 | `domain` | str | "Technical" / "Financial" / "Medical" / ... |
 | `classification_confidence` | float | 0.0 – 1.0 from classifier |
-| `classification_method` | str | "heuristic" / "llm" / "hybrid" |
+| `classification_method` | str | "heuristic" / "hybrid_groq" / "fallback" (classification failed) / "none" |
 | `summary` | str | Full Markdown summary with ## headings |
-| `summary_method` | str | "llm_single" / "map_reduce" / "extractive" |
+| `summary_method` | str | "llm_single_groq" / "llm_map_reduce_groq" / "extractive" / "skipped" / "none" |
 | `summary_citations` | List[Dict] | `[{paragraph_index, pages, section}]` |
 | `questions` | List[str] | Extracted questions (questionnaires only) |
-| `question_extraction_method` | str | "regex+llm" / "regex_only" |
+| `question_extraction_method` | str | "regex" / "llm_groq" / "hybrid_groq" / "skipped" / "none" |
 | `raw_text` | str | Full cleaned document text |
 | `tables` | List[Dict] | Structured table data with HTML |
+| `extracted_entities` | Dict[str, Any] | Structured extraction's fields, after withholding and the fabrication check; empty when the step did not run |
 | `word_count` | int | From cleaned full_text |
 | `page_count` | int | From ParsedDocument |
 | `metadata` | Dict | Title, author, creation date, etc. |
@@ -1710,13 +1716,15 @@ _resumeText = remaining;
 
 **`to_dict()`** serialises to JSON-compatible types. Used for the JSON download button. All non-serialisable objects (datetime instances, etc.) are converted to strings via `json.dumps(..., default=str)`.
 
-**Why store `raw_text` in the result?** The Chat and Edit features need the full document text for context. Without it, a result loaded from history cannot be chatted with. The trade-off: `raw_text` can be megabytes for long documents, inflating the session state. For history entries (stored in SQLite via `DocumentStore`), `raw_text` is intentionally not persisted — only the analytical outputs are stored. History-loaded results display a warning that Chat/Edit are unavailable.
+**Why store `raw_text` in the result?** The Chat and Edit features need the full document text for context. The trade-off: `raw_text` can be megabytes for long documents, inflating the session state. `DocumentStore` persists it with the history entry, alongside the retrieval passages and their embeddings, so a result reloaded from history can be chatted with. Only an older entry stored without its content is flagged as having none.
+
+> **Corrected.** This paragraph said `raw_text` was deliberately not persisted and that history reloads disabled Chat and Edit. The store keeps the text, and `_dict_to_pipeline_result` in `ui/app.py` restores it.
 
 ---
 
 ## 14. Testing Strategy
 
-**Location:** `tests/test_skills.py`, `tests/test_agent.py`
+**Location:** `tests/` (unit tests, one file per concern), `tests/e2e/e2e.py` (the real pipeline on the sample files in `tests/e2e/samples/`, against the live API), and the scored evals in `tests/e2e/rag_eval/` and `tests/e2e/extraction_eval/`.
 
 ### Core Principles
 
@@ -1724,6 +1732,8 @@ _resumeText = remaining;
 2. **No network calls** — All LLM calls are mocked. Tests should run with no internet connection, no API key, and complete in under 30 seconds.
 3. **Fixture helpers** — `_make_parsed_doc(text, file_type, n_pages)` creates a `ParsedDocument` from plain text. All skills that need a `ParsedDocument` use this helper.
 4. **Skill isolation** — Each skill is instantiated with `config={}` and tested independently. A failing classifier test tells you the classifier is broken, not the pipeline.
+
+> **Corrected.** These principles describe the unit tests only, and the speed claim no longer holds: the unit suite is about 600 tests and takes roughly five minutes, not 30 seconds. Real files and real API calls are exercised on purpose outside it, by `python tests/e2e/e2e.py all` and by the evals, because defects such as the 80-token classification budget passed every mocked test.
 
 ### Key Test Fixtures
 
@@ -1768,9 +1778,9 @@ Without `reset()`, skills registered by one test contaminate the next test's reg
 2. Add to `SUPPORTED_EXTENSIONS` in `agents/document_agent.py`: `{".myext": "mytype"}`
 3. Add to `ALLOWED_EXTENSIONS` in `utils/file_handler.py`
 4. Add to `st.file_uploader(type=[...])` in `ui/app.py`
-5. Add routing in `DocumentAgent._select_reader()`: `elif file_type == "mytype": return self._my_reader`
+5. Instantiate it in `DocumentAgent.__init__` and add it to the reader selection in `DocumentAgent.run()`, an inline conditional on `file_type`
 
-That's the complete blast radius — 4 lines across 3 files.
+That is the blast radius: the new skill, plus changes in `agents/document_agent.py`, `utils/file_handler.py` and `ui/app.py`. Read CLAUDE.md's frozen-pipeline rules before touching `document_agent.py`.
 
 ### Add a New Processing Step
 
@@ -1779,7 +1789,7 @@ That's the complete blast radius — 4 lines across 3 files.
 3. Add the call in `DocumentAgent._run_core_pipeline()` at the appropriate point
 4. If the result should be surfaced to users: add a field to `PipelineResult` in `core/pipeline_result.py`
 
-If the step should be planner-gated (only run for certain document types/domains), add a flag to `PipelineFlags` in `agents/planner.py` and the condition in `PipelinePlanner.plan()`.
+If the step should be planner-gated (only run for certain document types/domains), add its skill name, under its condition, to the list `PipelinePlanner.plan()` builds in `agents/planner.py`, and have the agent run it only when that name is in the plan. Adding a step changes the frozen pipeline, which needs an explicit instruction (CLAUDE.md).
 
 ### Add a New LLM-Powered Feature
 
@@ -1811,12 +1821,14 @@ class MyLLMSkill(BaseSkill):
 
 Critical: always implement a non-LLM fallback. `llm.chat()` returns `None` when all API keys are rate-limited or unavailable. Skills that return `SkillOutput(success=False, ...)` on LLM unavailability degrade gracefully; skills that crash when `response is None` break the pipeline.
 
+Size `max_tokens` for the reasoning as well as the reply: `openai/gpt-oss-120b` spends part of the budget thinking, and a budget sized to the answer comes back with empty content. CLAUDE.md, "Token budgets and reasoning models", has the measured figures.
+
 ### Extend the UI with a New Tab
 
 Results are displayed in `render_results()` in `ui/components/results_view.py`. The tab list is:
 
 ```python
-tab_labels = ["Summary", "Questions", "Chat", "Edit"]
+tab_labels = ["Summary", "Questions", "Chat", "Edit", "Document"]
 tabs = st.tabs(tab_labels)
 
 with tabs[0]:
@@ -1852,7 +1864,7 @@ Audio downloaded as WAV is uncompressed: 5 minutes ≈ 50 MB. MP3 at 128 kbps = 
 
 ### PaddleOCR First-Run Model Download
 
-`PPStructureV3` downloads ~400 MB of model weights from Baidu's CDN on first use. In a container with restricted internet access (or air-gapped), this fails silently (returns empty tables, not an error). Pre-download models and mount them at PaddleOCR's expected path, or set `PADDLE_MODEL_DIR` to point to a local cache.
+`PPStructureV3` downloads ~400 MB of model weights from Baidu's CDN on first use. In a container with restricted internet access (or air-gapped), this fails silently (returns empty tables, not an error). Pre-download the models into PaddleOCR's own cache. This codebase sets no model path of its own; `PADDLE_MODEL_DIR`, which this note used to recommend, is read nowhere in it.
 
 ### `@st.cache_resource` and Monkey-Patching
 
@@ -1889,21 +1901,7 @@ it:
 Rejections are logged at WARNING with the reason and the character count, but
 never the value — a rejected candidate may still be a real secret.
 
-**Known residual gap.** `AudioReaderSkill._transcribe_audio()` does *not* route
-through `resolve_groq_api_keys()`. It resolves keys itself:
-
-```python
-raw_keys = (os.environ.get("GROQ_API_KEYS") or os.environ.get("GROQ_API_KEY")
-            or self._groq_cfg.get("api_keys", "") or self._groq_cfg.get("api_key", ""))
-```
-
-In the production path this is safe: `DocumentAgent.__init__` builds the skill's
-config from `resolve_groq_api_keys()`, so the keys it receives are already
-filtered. The placeholder can only reach it if the skill is instantiated
-directly with the raw YAML config *and* neither env var is set — e.g. in a test
-or script on a machine with no `.env`. Consolidating every LLM call site onto one
-shared client is tracked separately; until then, prefer building skills through
-`DocumentAgent` rather than instantiating them with raw config.
+**The residual gap this section used to describe is closed.** `AudioReaderSkill._transcribe_audio()` now builds an `LLMClient` from config, so its keys come through `resolve_groq_api_keys()` like every other caller's.
 
 If `available` returns `False` unexpectedly, check the logs for
 "Ignoring Groq API key candidate" — that names the reason.
@@ -1921,7 +1919,7 @@ Any `st.*` call made inside a `with col:` block is confined to that column's wid
 | 200-page financial report | 30–60s | 5–15 min (CPU) | 2–10 min | 8–25 min |
 | 5-minute audio / YouTube | 15–30s (download) + 5–10s (transcribe) | (skipped) | 5–15s | ~1 min |
 
-Structure recognition on CPU is the bottleneck for technical/financial PDFs. If processing speed is critical, either: (a) deploy with a GPU and set `use_gpu=True` in config (10–15× speedup), or (b) disable structure recognition for domains where tables are not critical (`TARGET_DOMAINS` in `StructureRecognitionSkill`).
+The structure-recognition column assumes the step runs. By default it does not on CPU: the skill skips unless `pdf.allow_cpu_structure` is true, and GPU_SETUP.md measured 15–25 minutes a page when it is forced, far above these figures. If processing speed is critical, either: (a) deploy with an NVIDIA GPU and the `paddlepaddle-gpu` build (GPU_SETUP.md), which PaddleOCR 3 detects by itself (without one the step is skipped unless `pdf.allow_cpu_structure` is true), or (b) narrow the domains, which are listed in two places: `_STRUCTURE_DOMAINS` in `agents/planner.py` decides whether the step is planned, and the `target_domains` list in `StructureRecognitionSkill.execute()` decides whether it runs.
 
 ---
 

@@ -2,7 +2,7 @@
 SummarizationSkill -- generates detailed, structured summaries of document text.
 
 Key improvements:
-  - Uses unified LLMClient (Grok API first, Ollama fallback)
+  - Uses the shared LLMClient (Groq Cloud)
   - Section-aware chunking: detects headings and keeps sections intact
   - Structured output: fixed 4-section schema in every LLM prompt
   - Map phase extracts bullet-point facts; Reduce phase synthesises them
@@ -186,7 +186,7 @@ class SummarizationSkill(BaseSkill):
         # on very large documents. Increase in config for full coverage.
         self._max_map_chunks  = self.get_config("max_map_chunks", 20)
 
-        # Build unified LLM client (Grok > Ollama > None)
+        # Build the shared LLM client (Groq Cloud; unavailable without a key)
         from utils.llm_client import LLMClient
         self._llm = LLMClient.from_config(self.config)
 

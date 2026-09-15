@@ -5,12 +5,16 @@ dates, monetary amounts, named parties, and domain-specific fields from a docume
 Turns DocAgent from a summarizer into a document intelligence pipeline:
   - Financial report  → revenue, EPS, guidance, key metrics
   - Contract          → parties, effective date, termination clause, obligations
-  - Invoice           → vendor, amounts, line items, due date
-  - Medical record    → patient info, diagnoses, medications, dates
+  - Medical record    → diagnoses, current medications, procedures, dates
+                        (patient identifiers are withheld)
+  - Research paper    → title, authors, hypothesis, findings, datasets
   - General           → dates, organisations, monetary amounts, locations
 
-Uses Groq JSON mode (response_format={"type": "json_object"}) to guarantee
-parseable output. Falls back to regex-based extraction if LLM is unavailable.
+Asks for a JSON object in the prompt and parses the first balanced object in the
+reply; no provider JSON mode is requested. Two checks then run on the result:
+identifiers are withheld and unverifiable figures dropped. Without an LLM the
+stage reports itself unavailable, recovering only the regex-reachable fields a
+schema happens to define (`dates`, `monetary_values`).
 """
 
 from __future__ import annotations
@@ -49,9 +53,9 @@ _DOMAIN_SCHEMAS: Dict[str, Dict[str, str]] = {
         "penalties":       "Penalty or liquidated damages clauses",
     },
     "Healthcare": {
-        "patient_id":      "Patient identifier or MRN (anonymise if present)",
+        "patient_id":      "Patient identifier or MRN. WITHHELD: always null, and never copy an identifier into this or any other field",
         "diagnoses":       "ICD codes or diagnosis descriptions",
-        "medications":     "Prescribed medications with dosages",
+        "medications":     "Current medications with dosages; omit any whose status is stopped, discontinued or held",
         "procedures":      "Procedures or treatments performed",
         "dates":           "Key dates (admission, discharge, procedure)",
         "physician":       "Attending or ordering physician",
@@ -252,6 +256,142 @@ def unverified_numbers(value: object, source: str) -> List[str]:
             missing.append(token)
     return missing
 
+
+# ── Withheld fields: enforced after extraction, not only requested ───────────
+#
+# `patient_id` stays in the Healthcare schema so the model knows the field exists
+# and that it must not be filled. Asking was not enough. Measured at temperature
+# 0.0 with the cache off, 10 draws each, when the field said "anonymise if
+# present":
+#
+#     ward census sheet      patient_id leaked 10/10, an MRN in some field 9/10
+#     prose discharge note   patient_id leaked  6/10
+#
+# On the sheet the MRNs did not stay in `patient_id`: 5 draws prefixed nearly
+# every field with one ("55-40182: Amoxicillin 500 mg TDS"). Rewording the field
+# as WITHHELD took both fixtures to 0/50. It did not take the IDENTIFIER to zero:
+# with the column headed "Patient ID" instead of "MRN", 1 of 16 draws returned
+# `patient_id` null and wrote all three MRNs into `dates`. The instruction held
+# the field and not the value, so the value is enforced here, from the document
+# rather than from what the model chose to put in the withheld field.
+_WITHHELD_FIELDS = frozenset({"patient_id"})
+_WITHHELD_MARK = "[withheld]"
+
+#: Labels that introduce a patient identifier, in prose or as a column header.
+_RE_ID_LABEL = re.compile(
+    r"\b(?:MRN|medical record (?:number|no)|patient (?:id|identifier|number|no)|"
+    r"hospital (?:number|no)|NHS (?:number|no))\b\.?",
+    re.IGNORECASE)
+#: A value written straight after a label: "MRN 55-40182",
+#: "Patient identifier: MRN 55-40182", "NHS number: 485 777 3456".
+_RE_ID_AFTER_LABEL = re.compile(
+    r"[ \t]*[:#=]?[ \t]*(?:MRN[ \t]*[:#=]?[ \t]*)?"
+    r"([A-Za-z0-9][A-Za-z0-9/-]*(?:[ \t]\d+)*)")
+_RE_ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9/-]*")
+_RE_CELL = re.compile(r"\S+")
+_RE_DATE_TOKEN = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}")
+
+
+def _looks_like_identifier(token: str) -> bool:
+    """Four or more digits, and not a date. Loose on purpose: withholding a
+    number that was not an identifier costs a reader one value, and missing one
+    that was emits a health identifier."""
+    return (sum(c.isdigit() for c in token) >= 4
+            and not _RE_DATE_TOKEN.fullmatch(token))
+
+
+def identifiers_in(source: str) -> List[str]:
+    """Patient identifiers the document itself labels, as written there.
+
+    Two shapes, because the app produces both:
+
+      PROSE   a label with the value beside it: "Patient identifier: MRN
+              55-40182", "(MRN 55-40182)", "NHS number: 485 777 3456".
+      TABLE   a label with nothing beside it heads a column, as in the
+              `to_string` dump ExcelReaderSkill emits. The cell under the label
+              is read in each row of that block, and the column is accepted
+              when most rows hold something identifier-shaped. Right-aligned or
+              not, a cell under a header overlaps the header's span.
+
+    Measured before it was wired in: it finds the identifiers in both Healthcare
+    eval fixtures and in four rewordings of them (a "Patient ID" header, a
+    "Hospital No" column moved to the end, a spaced NHS number, an inline MRN),
+    and finds nothing in the six other extraction fixtures, the 43 retrieval-eval
+    texts, or the nine e2e sample files as the real readers parse them.
+
+    NOT covered: an identifier with no label near it, and a table embedded as
+    HTML by structure recognition. Those rest on the model's instruction and on
+    whatever the model itself put in a withheld field.
+    """
+    found = set()
+    lines = (source or "").splitlines()
+    for n, line in enumerate(lines):
+        for label in _RE_ID_LABEL.finditer(line):
+            beside = _RE_ID_AFTER_LABEL.match(line, label.end())
+            if beside and _looks_like_identifier(beside.group(1)):
+                value = beside.group(1)
+                found.add(value)
+                first = value.split()[0]
+                if first != value and _looks_like_identifier(first):
+                    found.add(first)
+                continue
+            block = []
+            for row in lines[n + 1:]:
+                if not row.strip():
+                    break
+                block.append(row)
+            cells = []
+            for row in block:
+                under = [m.group() for m in _RE_CELL.finditer(row)
+                         if m.start() < label.end() and m.end() > label.start()]
+                if len(under) == 1 and _looks_like_identifier(under[0]):
+                    cells.append(under[0])
+            if block and 2 * len(cells) > len(block):
+                found.update(cells)
+    return sorted(found)
+
+
+def _identifier_pattern(identifier: str) -> "re.Pattern[str]":
+    """The identifier however the model re-punctuated it: 55-40182, 5540182 and
+    55 40182 are one MRN."""
+    runs = re.findall(r"[A-Za-z0-9]+", identifier)
+    body = r"[\s/-]?".join(re.escape(run) for run in runs)
+    return re.compile(rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _as_text(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value, default=str)
+
+
+def _only_withheld(value: object) -> bool:
+    return not re.sub(r"\[withheld\]|[\W_]", "", _as_text(value))
+
+
+def _redact(value: Any, patterns: List["re.Pattern[str]"]) -> Any:
+    """Every identifier in `value`, at any depth, replaced by the mark. A list
+    item left holding nothing but the mark is dropped; an untouched one never is."""
+    if isinstance(value, str):
+        for pattern in patterns:
+            value = pattern.sub(_WITHHELD_MARK, value)
+        return value
+    if isinstance(value, (list, tuple)):
+        pairs = [(item, _redact(item, patterns)) for item in value]
+        return [new for old, new in pairs if not (new != old and _only_withheld(new))]
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            new_key = _redact(str(key), patterns)
+            # Two keys that differed only by an identifier must not overwrite
+            # each other once both read "[withheld]".
+            while new_key in out:
+                new_key += " "
+            out[new_key] = _redact(item, patterns)
+        return out
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _WITHHELD_MARK if _redact(str(value), patterns) != str(value) else value
+    return value
+
+
 def _first_json_object(text: str) -> str:
     """The first balanced {...} in `text`, or "".
 
@@ -405,6 +545,66 @@ class StructuredExtractionSkill(BaseSkill):
                 cleaned[key] = value
         return cleaned, dropped
 
+    def _withhold(
+        self, entities: Dict[str, Any], source: str, field_schema: Dict[str, str]
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Remove withheld fields, and the identifiers they would hold, from
+        every field.
+
+        Runs only when the schema has a withheld field, so the other four
+        schemas pass through untouched. Identifiers come from the document
+        (`identifiers_in`) and from whatever the model put in a withheld field
+        when that text also appears in the document, which catches a label this
+        module does not know provided the model announced the value.
+
+        NO ESCAPE HATCH, unlike `DOCAGENT_EXTRACTION_VERIFY`. That check is a
+        heuristic about fabrication and could be wrong in a way worth reversing.
+        This one enforces what the schema says, and a switch that emits patient
+        identifiers is not a behaviour to offer.
+
+        The warning never repeats an identifier: it is shown in the UI and
+        exported with the report, which is exactly where one must not appear.
+
+        Replayed over every recorded reply before it was wired in -- 20 from
+        before the schema change, 60 after, 32 on rewordings of the fixtures --
+        it left no identifier in any field, changed no field that carried none,
+        and put none in a warning.
+        """
+        if not _WITHHELD_FIELDS & set(field_schema):
+            return entities, None
+        removed = sorted(k for k in entities if k in _WITHHELD_FIELDS)
+        identifiers = set(identifiers_in(source))
+        for key in removed:
+            identifiers.update(
+                token for token in _RE_ID_TOKEN.findall(_as_text(entities[key]))
+                if _looks_like_identifier(token) and token in (source or ""))
+        patterns = [_identifier_pattern(i)
+                    for i in sorted(identifiers, key=len, reverse=True)]
+
+        cleaned: Dict[str, Any] = {}
+        scrubbed: List[str] = []
+        for key, value in entities.items():
+            if key in _WITHHELD_FIELDS:
+                continue
+            new = _redact(value, patterns)
+            if new != value:
+                scrubbed.append(key)
+                if _only_withheld(new):
+                    continue
+            cleaned[key] = new
+
+        if not removed and not scrubbed:
+            return cleaned, None
+        notes = []
+        if removed:
+            notes.append(f"Structured extraction withheld {', '.join(removed)}: "
+                         f"the schema never emits it.")
+        if scrubbed:
+            notes.append(f"A patient identifier found in the document was removed "
+                         f"from {', '.join(scrubbed)}.")
+        notes.append("The identifier is not repeated here.")
+        return cleaned, " ".join(notes)
+
     def _diagnose(self) -> Tuple[str, str]:
         """Which failure just happened, as (method, CAUSE clause).
 
@@ -536,17 +736,23 @@ class StructuredExtractionSkill(BaseSkill):
             return {}, method, warning
 
         entities, json_found = self._parse_json_response(content, field_schema)
+        # Withholding runs FIRST. The fabrication check names the figures it
+        # drops, and a re-punctuated MRN ("5540182") is a figure the document
+        # never writes, so in the other order the identifier would be printed in
+        # the very warning that reports its removal.
+        entities, withheld = self._withhold(entities, full_text, field_schema)
         if entities:
             entities, dropped = self._drop_unverified(entities, full_text)
+            notes = [withheld] if withheld else []
             if dropped:
                 names = "; ".join(f"{k} ({', '.join(nums)})" for k, nums in dropped)
-                return entities, f"llm_{self._llm.provider}", (
+                notes.append(
                     f"Structured extraction discarded {len(dropped)} field(s) "
                     f"carrying figures that do not appear in the document: "
                     f"{names}. A number presented as extracted must be findable "
                     f"in the text it was extracted from."
                 )
-            return entities, f"llm_{self._llm.provider}", None
+            return entities, f"llm_{self._llm.provider}", " ".join(notes) or None
 
         # VALID JSON WITH NOTHING IN IT IS NOT A FAILURE. The model read the
         # document, found none of the schema's fields, and said so in the shape
@@ -554,12 +760,14 @@ class StructuredExtractionSkill(BaseSkill):
         # there is no net income, no EPS, no guidance, and no STATED total
         # revenue. Reporting it as a failure blamed the system for working.
         if json_found:
-            return {}, _M_NO_FIELDS_FOUND, (
+            found_none = (
                 f"Structured extraction found none of the {len(field_schema)} "
                 f"fields the {domain} schema asks for. The document was read "
                 f"and the model reported no match, which is the correct answer "
                 f"when a document does not contain them."
             )
+            return {}, _M_NO_FIELDS_FOUND, (
+                f"{withheld} {found_none}" if withheld else found_none)
 
         # No JSON object at all. That IS a failure of the reply.
         salvaged = self._regex_supplement(full_text, field_schema)
