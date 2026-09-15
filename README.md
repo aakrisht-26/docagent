@@ -230,6 +230,25 @@ that changes. The LLM-dependent figures — answer and citation correctness — 
 **33/33 answers, 27/27 correct prose citations with 0 wrong**, measured on
 `openai/gpt-oss-120b`.
 
+### Summaries can state figures the document does not
+
+Chat citations are 27/27 correct. **Summaries carry no equivalent guarantee.**
+Measured on 85 recorded summaries, 42 (49%) state at least one false figure
+about their document:
+
+- a year it never gives: 21 of 45 summaries of undated documents, 0 of 40 dated
+- wrong arithmetic: 27 of 85
+- a number with no basis: 8 of 85
+
+Totals the model computes are usually right (19 summaries with a right one, 8
+with a wrong one), but they read as if the document stated them.
+
+**Invented years are flagged.** A summary that gives a year appearing nowhere in
+the document carries a warning naming it. Nothing else is checked, so the
+absence of a warning does not mean a figure was verified. Method, every verdict,
+and why the other options were not taken:
+[tests/e2e/summary_eval/RESULTS.md](tests/e2e/summary_eval/RESULTS.md).
+
 ### Structured extraction can invent a figure, and that is a real limitation
 
 Chat citations are 27/27 correct with 0 wrong. **Structured extraction carries
