@@ -651,9 +651,9 @@ The OCR pipeline for each page:
 ### 7.3 ExcelReaderSkill
 
 **Location:** `skills/excel_reader_skill.py`
-**Purpose:** Turn Excel (.xlsx) or CSV into a `ParsedDocument`.
+**Purpose:** Turn Excel (.xlsx, .xls) or CSV into a `ParsedDocument`.
 
-> **`.xls` is accepted and cannot be read.** The uploader, `ALLOWED_EXTENSIONS` and `SUPPORTED_EXTENSIONS` all admit `.xls`, and this reader hands it to openpyxl, which refuses the legacy format (`openpyxl does not support the old .xls file format`). A real `.xls` upload fails at parsing. Recorded here, not fixed.
+> **Corrected.** Until 2026-09-15 `.xls` was accepted and could not be read: every non-CSV file went to openpyxl, which refuses the legacy format. The reader now chooses its engine from the file's first bytes. An OLE2 compound document goes to xlrd; a ZIP goes to openpyxl, opened from a file object, since openpyxl rejects by extension; anything else is refused with a sentence the user can act on. Both produce the same rows, so a workbook reads identically saved either way, which `tests/test_xls_reader.py` pins on Excel-written pairs. The sample below is the `.xlsx` path. Costs and reasoning: DEPENDENCIES.md section 9.
 
 ```python
 wb = openpyxl.load_workbook(file_path, data_only=True)  # data_only ignores formulas

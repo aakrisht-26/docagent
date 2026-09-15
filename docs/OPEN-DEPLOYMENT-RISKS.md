@@ -66,8 +66,8 @@ near 885 MB. **Residual:** tornado's hard ceiling is still the 50 MB from
 environment, so a handcrafted POST can still push a 50 MB body. The page cap
 bounds what happens next.
 
-**Untrusted input reaching parsers.** `pdfplumber`, `PyMuPDF`, `openpyxl` and
-Tesseract all parse attacker-supplied bytes. These are widely used and
+**Untrusted input reaching parsers.** `pdfplumber`, `PyMuPDF`, `openpyxl`,
+`xlrd` and Tesseract all parse attacker-supplied bytes. These are widely used and
 reasonably hardened, but they are C-backed parsers and this is the classic
 place for a memory-safety bug. There is no sandbox: a parser exploit runs with
 the app's privileges, which includes reading `st.secrets` — i.e. your API keys.

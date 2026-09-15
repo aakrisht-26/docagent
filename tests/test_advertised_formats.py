@@ -7,8 +7,12 @@ non-CSV file to openpyxl, which cannot read the legacy format at all:
     openpyxl does not support the old .xls file format, please use xlrd to
     read this file, or convert it to the more recent .xlsx file format.
 
-So every real `.xls` failed at parsing, and the agent then replaced that
-sentence with "Parsing failed", which is all the user was shown.
+So every real `.xls` failed at parsing. The error box said only "Parsing
+failed"; openpyxl's sentence, telling a website visitor to use xlrd, appeared in
+the status panel's stage list.
+
+Fixed: the reader now chooses xlrd for a BIFF8 file by its bytes, and the case
+below is an ordinary pass. `tests/test_xls_reader.py` covers the reader itself.
 
 `samples/sample_sales.xls` is a genuine BIFF8 workbook, written by Excel 16.0
 (`SaveAs FileFormat=56`) from `samples/sample_sales.xlsx`. It cannot be
@@ -72,9 +76,7 @@ def _csv(tmp_path: Path) -> Path:
     ("pdf", PDFReaderSkill, lambda tmp: SAMPLES / "sample_report.pdf"),
     ("xlsx", ExcelReaderSkill, lambda tmp: SAMPLES / "sample_sales.xlsx"),
     ("csv", ExcelReaderSkill, _csv),
-    pytest.param("xls", ExcelReaderSkill, lambda tmp: SAMPLES / "sample_sales.xls",
-                 marks=pytest.mark.xfail(strict=True, reason=(
-                     "openpyxl cannot read BIFF8; the reader has no .xls engine"))),
+    ("xls", ExcelReaderSkill, lambda tmp: SAMPLES / "sample_sales.xls"),
 ])
 def test_a_real_file_of_each_advertised_document_format_parses(name, reader, make, tmp_path):
     path = make(tmp_path)

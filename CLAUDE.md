@@ -59,7 +59,9 @@ This was settled by an actual case: a failed YouTube download reported
 `"YouTube audio extraction failed"` regardless of whether it was a bot check, a
 deleted video, a missing ffmpeg or a genuine bug, because this file discarded
 `parse_out.error` and substituted a fixed string. The line now appends it. The
-user reviewed and approved that as within the freeze's intent.
+user reviewed and approved that as within the freeze's intent. `run()` does the
+same for a file whose reader fails, so an unreadable `.xls` reaches the user as
+the reader's own sentence rather than "Parsing failed" alone.
 
 **Still frozen, and unchanged by this:**
 

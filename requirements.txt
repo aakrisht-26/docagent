@@ -46,6 +46,14 @@ paddleocr>=2.6.0.3 ; sys_platform != "linux"
 
 # Excel / CSV Parsing
 openpyxl>=3.1.2
+# Legacy .xls (BIFF8): an advertised upload format that openpyxl cannot read at
+# all, so until this line every real .xls upload failed at parsing. xlrd 2.x
+# reads ONLY .xls. Pure Python, no dependencies: a 96 kB py2.py3 wheel, 383 KB
+# installed, and it resolves for cp312 manylinux. Measured on a 6.9 MB
+# Excel-written workbook of 540,000 cells: 4 MB to import, +32 MB peak and 1.1s
+# to read, where openpyxl on the same data as .xlsx took +237 MB and 12s.
+# DEPENDENCIES.md section 9.
+xlrd>=2.0.1,<3
 # The upper bound came from Streamlit 1.37.1, which declared `pandas<3,>=1.3.0`:
 # pandas 3.0.x against it made `pip check` report an incompatible environment.
 # The pinned 1.63.0 below declares `pandas<4,>=1.4.0`, so `<3` is now this

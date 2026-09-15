@@ -901,6 +901,79 @@ nothing visible happens until then. Not measured: a stage that makes no
 Streamlit call for a long time, such as OCR on a long scanned PDF, where the
 change would also wait to be delivered.
 
+## 9. `xlrd` — legacy `.xls`, supported rather than dropped
+
+**The finding.** `.xls` was advertised by the uploader, admitted by
+`ALLOWED_EXTENSIONS` and `SUPPORTED_EXTENSIONS`, and listed on the public
+deployment, and no real `.xls` could be read. `ExcelReaderSkill` sent every
+non-CSV file to openpyxl, which refuses the legacy BIFF8 format outright. The
+error box said "Parsing failed"; the status panel's stage list carried
+openpyxl's sentence telling a website visitor to use xlrd. Every other
+advertised format was checked from a real file and reads.
+
+**What hid it.** xlrd 2.0.2 was already installed on the development machine,
+put there by the Anaconda distribution, required by nothing in this project and
+absent from `requirements.txt`. The reader never called it, and a hosted build
+would not have had it. `tests/test_xls_reader.py` fails if the requirement line
+goes.
+
+**Why support it rather than stop advertising it.** Dropping `.xls` costs
+nothing to build and would turn an unreadable upload into a clear rejection.
+Supporting it costs a dependency, and that cost measured small:
+
+| | |
+|---|---|
+| wheel | `xlrd-2.0.2-py2.py3-none-any.whl`, 96 kB, pure Python, no dependencies |
+| installed | 383 KB, 29 files |
+| Python 3.12 | resolves for cp312 on manylinux as a binary wheel |
+| import | +4 MB |
+
+Measured on a 6.9 MB Excel-written `.xls` of 30,000 rows × 18 columns and the
+same data saved as `.xlsx`, each case in a fresh process. The figures are
+Windows peak working set; the hosted tier is Linux, so read them as the size of
+the cost rather than the exact number:
+
+| | peak above start | time |
+|---|---|---|
+| xlrd: open, and read every cell | +32 MB | 1.1 s |
+| openpyxl on the `.xlsx`: the same | +237 MB | 12 s |
+| `ExcelReaderSkill` end to end, `.xls` | +104 MB | 1.9 s |
+| `ExcelReaderSkill` end to end, `.xlsx` | +292 MB | 13.5 s |
+
+On the 1 GB hosted tier the new path is the cheapest spreadsheet read the app
+does. A `.xls` at the 10 MB upload cap was not measured; scaled linearly from
+the row above it would be roughly +150 MB, still about half what the existing
+`.xlsx` path costs for 6.9 MB of data.
+
+**How it is used.** The reader chooses its engine from the file's first bytes,
+not its name. An OLE2 compound document goes to xlrd. A ZIP goes to openpyxl,
+opened from a file object, because openpyxl refuses by extension before reading
+a byte, so an `.xlsx` renamed `.xls` used to fail on its name alone. Anything
+else is refused with a sentence the user can act on. xlrd returns every number
+as a float and every date as a serial, so cells are converted to the text the
+`.xlsx` path produces; one workbook reads identically saved either way, checked
+on three Excel-written pairs, one holding dates, times of day, booleans, a
+formula error and a merged cell.
+
+**What it does not do.**
+- Formula text: through xlrd, BIFF8 gives values only, so `include_formulas`
+  does not apply to `.xls`.
+- `.xlsb`, which is neither advertised nor read.
+- A web page or SpreadsheetML XML saved with a `.xls` name is refused with a
+  message, not converted.
+
+**Untrusted bytes.** xlrd parses attacker-supplied files on the public
+deployment. It is pure Python, so a malformed file raises rather than
+corrupting memory, and the reader turns that into a sentence: a truncated file
+used to surface a bare `IndexError` after warnings on stdout, and now reads
+"may be damaged". The upload cap bounds the size.
+
+**After changing it.** A `requirements.txt` change needs a reboot on Community
+Cloud (DEPLOYMENT.md, "Redeploying after a push"). Then run
+`pytest tests/test_xls_reader.py tests/test_advertised_formats.py`.
+
+---
+
 ## Verifying any dependency change
 
 After changing anything above, the full check is:

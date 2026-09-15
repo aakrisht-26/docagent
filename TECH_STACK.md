@@ -69,9 +69,10 @@ DocAgent is a production-quality document understanding system built on a modula
 - **GPU gate:** runs only when `_detect_gpu()` finds a CUDA GPU; on CPU it skips unless `pdf.allow_cpu_structure: true`, because a page takes 15–25 minutes there (GPU_SETUP.md)
 - **Lazy loading:** Engine created only on first call to avoid VRAM overhead at startup
 
-### Excel / CSV — openpyxl + pandas
-- **Packages:** `openpyxl >= 3.1.2`, `pandas >= 2.0.0, < 3`
-- **`.xls`:** accepted by the uploader but not readable: openpyxl refuses the legacy format, so the parse fails
+### Excel / CSV — openpyxl + xlrd + pandas
+- **Packages:** `openpyxl >= 3.1.2`, `xlrd >= 2.0.1, < 3`, `pandas >= 2.0.0, < 3`
+- **Engine by content:** the first bytes decide. OLE2 (legacy `.xls`) goes to xlrd and ZIP (`.xlsx`) to openpyxl, whatever the file is called; anything else is refused with a sentence the user can act on
+- **`.xls`:** values only, no formula text; cells are converted so a workbook reads identically as `.xls` and `.xlsx`
 - **Excel:** `openpyxl` in `data_only` mode (evaluates formulas to values unless `include_formulas=True`)
 - **CSV:** `pandas.read_csv` with encoding fallback chain: UTF-8 → Latin-1 → CP1252
 - **Smart sampling:** If sheet > 600 rows, takes head(300) + tail(300) with separator for token efficiency
@@ -206,6 +207,7 @@ configs/default.yaml
 | Tables | paddlepaddle | >= 2.6.2, not on Linux |
 | Tables | paddleocr | >= 2.6.0.3, not on Linux |
 | Excel | openpyxl | >= 3.1.2 |
+| Excel | xlrd | >= 2.0.1, < 3 |
 | Excel | pandas | >= 2.0.0, < 3 |
 | Text | ftfy | >= 6.1.3 |
 | LLM | openai | >= 1.12.0 |
