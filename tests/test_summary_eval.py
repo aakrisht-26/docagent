@@ -262,6 +262,53 @@ class TestTheAdjudicationHoldsToItsArithmetic(unittest.TestCase):
         self.assertTrue(adjudicate.shown_equal("$242,800", False, 242810))
 
 
+class TestTheChoiceOfResponse(unittest.TestCase):
+    """RESULTS.md recommends flagging only unstated years. That rests on four
+    candidate checks and regeneration measured on the recording; if those
+    numbers move, the recommendation has to be argued again."""
+
+    @classmethod
+    def setUpClass(cls):
+        options = _load("options")
+        cls.options = options
+        cls.per_summary, _problems = adjudicate.adjudicate(TRIALS)
+        trials = {(t["fixture"], t["round"]): t for t in map(json.loads, open(TRIALS, encoding="utf-8"))}
+        cls.scores = {name: options.score(flags, cls.per_summary)
+                      for name, flags in options.candidate_flags(cls.per_summary, trials, SOURCES).items()}
+
+    def test_each_candidate_check(self):
+        # (summaries flagged, of which state a false figure, figures flagged, false statements among them)
+        expected = {
+            "years the source never states": (22, 21, 40, 39),
+            "years and figures no arithmetic explains": (56, 39, 170, 85),
+            "every figure absent from the source": (74, 42, 821, 171),
+            "extraction's unverified_numbers": (43, 31, 261, 55),
+        }
+        got = {name: (s["summaries flagged"], s["flagged with a false figure"], s["flags"], s["false flags"])
+               for name, s in self.scores.items()}
+        self.assertEqual(got, expected)
+        self.assertEqual({s["false-figure summaries"] for s in self.scores.values()}, {42})
+
+    def test_only_the_year_check_flags_mostly_false_statements(self):
+        precision = {name: s["false flags"] / s["flags"] for name, s in self.scores.items()}
+        self.assertEqual(max(precision, key=precision.get), "years the source never states")
+        self.assertGreater(precision["years the source never states"], 0.9)
+        self.assertTrue(all(p <= 0.5 for name, p in precision.items() if name != "years the source never states"))
+
+    def test_regeneration_would_mostly_repeat_the_failure(self):
+        again, now = self.options.regeneration(self.per_summary)
+        self.assertEqual((round(again, 1), now), (34.8, 42))
+        again, now = self.options.regeneration(self.per_summary, ("year",))
+        self.assertEqual((round(again, 1), now), (15.4, 21))
+
+    def test_results_md_states_these_numbers(self):
+        text = (EVAL_DIR / "RESULTS.md").read_text(encoding="utf-8")
+        for phrase in ("40 flags over 22 summaries", "170 flags over 56 summaries", "821 flags over 74 summaries",
+                       "261 flags over 43 summaries", "34.8 of the 42", "15.4 of 21"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+
 class TestTheRecordingIsOfTheFixtures(unittest.TestCase):
     def test_every_summary_came_from_the_model_five_times_per_fixture(self):
         trials = [json.loads(line) for line in open(TRIALS, encoding="utf-8")]

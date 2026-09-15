@@ -5,6 +5,7 @@ Run with:
 ```bash
 python tests/e2e/summary_eval/adjudicate.py            # the rates below, from the recorded summaries
 python tests/e2e/summary_eval/analyse.py --calibrate   # classifier counts, and how far to trust them
+python tests/e2e/summary_eval/options.py               # what each possible response would do on the same summaries
 python tests/e2e/summary_eval/run_trials.py --rounds 5 --out new_trials.jsonl   # record a new run (API)
 ```
 
@@ -122,6 +123,34 @@ rest are right arithmetic or labelled assumptions.
   - Six fixtures had a false figure in all five runs: fin_quarterly, fin_sales_sheet, sample_sales, sample_large_report, sample_large_sales and sample_audio. The sales workbooks gave the Orion average price as 1,231.6 or 1,231.57 in every one of their ten runs.
   - Across the 42 summaries with a false figure, a new draw at that document's own rate would contain one again 83% of the time.
 - **Right arithmetic outnumbers wrong about four to one.** There are 568 correct computed figures against 116 wrong ones. 72% of summaries contain a correct derived figure: the margins, shares and growth rates the prompt asks for when it says "identifying overall trends and outliers".
+
+## Choosing a response
+
+Extraction drops a value when it carries a figure absent from its source. A
+summary cannot lose a figure and still read, so the question is what else is
+available. `options.py` measures each response on the same 85 summaries.
+
+| response | measured on the recording | |
+|---|---|---|
+| Prompt work | Both prompts already say "Never invent information — only use what is provided". Failures repeat per document (six fixtures 5/5). Extraction showed the same pattern, where a one-line change to the input flipped 0/20 to 20/20. Arithmetic cannot be forbidden without also losing the 568 correct computed figures the prompt asks for. A year-specific line would hold only for the documents it was tested on. | not chosen |
+| Regeneration | 34.8 of the 42 summaries with a false figure would still have one on a second draw at their own document's rate (83%). For years alone it is 15.4 of 21 (73%). It also doubles latency and tokens on a free tier already near its per-minute limit. | not chosen |
+| A warning on the whole summary | Its only trigger is a figure absent from the source, which fires on 74 of 85 summaries (87%). | not chosen: nearly every summary |
+| Flag every figure absent from the source | 821 flags over 74 summaries. 813 of the figures really are absent, but only 171 (21%) are false statements. The rest are right arithmetic (568) or labelled assumptions (74). It would also need the whole classifier in production. | not chosen: noise |
+| Flag years and figures no arithmetic explains | 170 flags over 56 summaries, 85 (50%) false. It names 46 correct figures and misses 86 of the 171 false ones. | not chosen |
+| Reuse extraction's `unverified_numbers` | 261 flags over 43 summaries, 55 (21%) false. 57 flag numbers the document does state: OCR numerals, "$11.02 M" for 11,020,000, "ten thousand". | not chosen |
+| **Flag years the source never states** | 40 flags over 22 summaries: 39 invented years, plus "e.g., 80% by 2028", a year genuinely absent from the document. 21 of the 22 flagged summaries state a false figure, and it reaches 21 of the 42 that do. No API call, and it covers documents nobody has tested. | **recommended** |
+| Accept and document | No check above names wrong arithmetic (27/85) or invented figures (8/85) without also naming right arithmetic. | **for everything else** |
+
+**Recommendation: flag the specific figures, and only years.**
+
+- It is the only check whose flags are almost all false statements.
+- It needs no model call, so it holds on documents never measured, unlike an instruction.
+- It catches half the summaries with a false figure, including the one that started this.
+
+Wrong arithmetic and invented figures are documented next to the citation
+guarantee instead. The warning itself must say that other figures are not
+checked. A reader who sees no warning must not conclude the figures were
+verified.
 
 ## Method
 
