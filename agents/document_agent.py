@@ -180,7 +180,12 @@ class DocumentAgent(BaseAgent):
         self._log_step("parse", parse_out.success, parse_out.duration_ms, parse_out.error)
 
         if not parse_out.success:
-            return self._error_result(file_path, "Parsing failed")
+            # Carry the reader's reason through, as run_youtube() does. "Parsing
+            # failed" was the whole of the error box for a .xls upload while the
+            # reader knew exactly what was wrong. Additive only: the CLAUDE.md
+            # carve-out for failure-message text.
+            detail = parse_out.error or "no further detail"
+            return self._error_result(file_path, f"Parsing failed: {detail}")
 
         parsed_doc: ParsedDocument = parse_out.data
         if parsed_doc.is_empty:

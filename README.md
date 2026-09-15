@@ -22,7 +22,7 @@ More, including before-and-after comparisons of every surface in both themes:
 
 ## Key Features
 
-- **Multi-Format Input** — Processes PDF, Excel (.xlsx), CSV, audio files (MP3, WAV, M4A, FLAC, OGG, WebM), and YouTube video URLs in a single unified pipeline. Legacy `.xls` is accepted but cannot currently be parsed.
+- **Multi-Format Input** — Processes PDF, Excel (.xlsx and legacy .xls), CSV, audio files (MP3, WAV, M4A, FLAC, OGG, WebM), and YouTube video URLs in a single unified pipeline.
 - **Audio & YouTube Transcription** — Downloads audio from any YouTube link via yt-dlp, transcribes it using Groq's Whisper-large-v3 API, then runs the full analysis pipeline on the transcript.
 - **Domain-Aware Summarisation** — Automatically detects the document domain (Technical, Financial, Legal, Educational) and adopts a specialist analyst persona for high-fidelity summaries with inline page citations.
 - **Audience-Tuned Output** — Produces summaries at four tones (Expert, Professional, General, Student) and four lengths (Concise → Exhaustive), all configurable from the UI.
@@ -405,7 +405,7 @@ the full annotated list.
 | Type | Extensions / Format |
 |---|---|
 | PDF | `.pdf` |
-| Excel | `.xlsx` (`.xls` is accepted but fails to parse: openpyxl cannot read the legacy format) |
+| Excel | `.xlsx`, `.xls` (the file's contents, not its name, decide how it is read) |
 | CSV | `.csv` |
 | Audio | `.mp3`, `.m4a`, `.wav`, `.flac`, `.ogg`, `.webm` |
 | YouTube | Any `youtube.com/watch?v=` or `youtu.be/` URL |
@@ -511,7 +511,7 @@ doc-agent/
 ├── skills/
 │   ├── base_skill.py          # Abstract BaseSkill (validate + safe_execute)
 │   ├── pdf_reader_skill.py    # 3-tier PDF engine (pdfplumber→fitz→OCR)
-│   ├── excel_reader_skill.py  # Excel/CSV parser (openpyxl + pandas)
+│   ├── excel_reader_skill.py  # Excel/CSV parser (openpyxl, xlrd, pandas)
 │   ├── audio_reader_skill.py  # Audio/YouTube transcription (yt-dlp + Whisper)
 │   ├── text_cleaner_skill.py  # Text normalisation (ftfy + regex)
 │   ├── document_classifier_skill.py  # Heuristic + LLM classification
@@ -599,7 +599,7 @@ class MySkill(BaseSkill):
 | PDF Parsing | pdfplumber, PyMuPDF |
 | Table Extraction | PaddleOCR PP-Structure V3 |
 | OCR | Tesseract + OpenCV + numpy |
-| Excel / CSV | openpyxl, pandas |
+| Excel / CSV | openpyxl, xlrd, pandas |
 | Text Repair | ftfy |
 | UI | Streamlit |
 | PDF Export | ReportLab |
