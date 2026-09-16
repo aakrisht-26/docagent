@@ -1714,6 +1714,12 @@ _resumeText = remaining;
 
 **`to_markdown()`** generates a human-readable report. Used for the Markdown download button and as the base for PDF generation.
 
+> **Corrected.** This said `to_markdown()` is the base for PDF generation. It
+> is not: `generate_pdf_bytes` builds its own reportlab story from the
+> `PipelineResult` and only falls back to the markdown bytes when reportlab is
+> missing. So the warnings section in `to_markdown()` reaches the Markdown
+> download alone — the PDF renders `errors` and still omits `warnings`.
+
 **`to_dict()`** serialises to JSON-compatible types. Used for the JSON download button. All non-serialisable objects (datetime instances, etc.) are converted to strings via `json.dumps(..., default=str)`.
 
 **Why store `raw_text` in the result?** The Chat and Edit features need the full document text for context. The trade-off: `raw_text` can be megabytes for long documents, inflating the session state. `DocumentStore` persists it with the history entry, alongside the retrieval passages and their embeddings, so a result reloaded from history can be chatted with. Only an older entry stored without its content is flagged as having none.

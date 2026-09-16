@@ -89,6 +89,31 @@ class PipelineResult:
         _conf = confidence_in_verdict(self.classification_confidence, self.doc_type)
         conf_pct = "not classified" if _conf is None else f"{_conf:.0%} confidence"
 
+        # Warnings are rendered ABOVE the summary because most of them are
+        # ABOUT the summary, and a reader who meets them afterwards has already
+        # believed it. The results view has always shown them
+        # (ui/components/results_view.py); this export showed none of them, so
+        # the app and its own download disagreed about what the run knew --
+        # a rate-limited run reduced to extractive, extraction figures dropped
+        # as unverified, a truncated map phase. The case that forced it: a
+        # summary stating a year the document never gives. The invented year
+        # survives in the exported summary text; the sentence saying it was
+        # invented did not survive at all.
+        warning_lines: List[str] = []
+        if self.warnings:
+            warning_lines = [
+                "---",
+                "",
+                "> ⚠️ **Warnings — read these before relying on the summary:**",
+            ]
+            # One line each. A warning can carry a skill's own error text, and a
+            # newline inside a blockquote item ends the blockquote -- the rest of
+            # the warning would land in the body as ordinary prose. Key fields
+            # collapses its values for the same reason.
+            for w in self.warnings:
+                warning_lines.append(f"> - {' '.join(str(w).split())}")
+            warning_lines.append("")
+
         lines: List[str] = [
             "# DocAgent — Analysis Report",
             "",
@@ -98,6 +123,7 @@ class PipelineResult:
             f"> **Words:** {self.word_count:,}  |  **Pages / Sheets:** {self.page_count}  ",
             f"> **Processing time:** {self.processing_time_ms / 1000:.2f}s",
             "",
+            *warning_lines,
             "---",
             "",
             "## 📋 Summary",
