@@ -310,6 +310,62 @@ class TestKeyFieldsInTheMarkdownExport(unittest.TestCase):
         self.assertNotIn("## Key fields", self._md({}))
 
 
+class TestWarningsInTheMarkdownExport(unittest.TestCase):
+    """The results view has rendered `warnings` since the beginning and
+    `to_markdown()` rendered none of them, so the app and its own download
+    disagreed about what the run knew.
+
+    The case that forced it: a summary stating a year the document never gives.
+    The invented year survives in the export's summary text; before this, the
+    sentence saying it was invented did not appear in the export at all. Every
+    other warning was lost the same way -- rate-limit fallbacks, extraction
+    figures dropped as unverified, a truncated map phase.
+    """
+
+    YEAR = ("The summary gives the year 2026, which does not appear anywhere in "
+            "the document. The model supplied it: treat any date or period in "
+            "this summary as unverified. Other figures in the summary are not "
+            "checked against the document.")
+    QUOTA = ("Summary reduced to extractive: the daily quota is spent on every "
+             "API key, so the model could not be called.")
+    SUMMARY_BODY = "The 2026 intake closed in March."
+
+    def _md(self, warnings):
+        from core.pipeline_result import PipelineResult
+        return PipelineResult(
+            file_name="intake.pdf", file_type="pdf", doc_type="questionnaire",
+            domain="General", classification_confidence=0.96,
+            classification_method="hybrid_groq", summary=self.SUMMARY_BODY,
+            summary_method="llm_single_groq", questions=[],
+            question_extraction_method="skipped", raw_text="Intake form.",
+            word_count=2, page_count=1, metadata={},
+            warnings=list(warnings)).to_markdown()
+
+    def test_the_export_carries_the_warning(self):
+        self.assertIn(self.YEAR, self._md([self.YEAR]))
+
+    def test_every_warning_is_carried_not_just_the_first(self):
+        md = self._md([self.YEAR, self.QUOTA])
+        self.assertIn(self.YEAR, md)
+        self.assertIn(self.QUOTA, md)
+
+    def test_the_warning_is_met_before_the_summary(self):
+        """Placement is the point. A reader who meets the warning after the
+        summary has already believed the summary."""
+        md = self._md([self.YEAR])
+        self.assertLess(md.index(self.YEAR), md.index(self.SUMMARY_BODY))
+
+    def test_no_section_when_there_are_no_warnings(self):
+        """A clean run must not carry an empty warnings heading."""
+        self.assertNotIn("Warnings", self._md([]))
+
+    def test_a_newline_in_a_warning_stays_inside_the_block(self):
+        """Warnings quote a skill's own error text, which can be multi-line. A
+        raw newline ends the blockquote and drops the rest into the body."""
+        md = self._md(["Text cleaning failed (bad glyph\nat page 3); using raw text."])
+        self.assertIn("> - Text cleaning failed (bad glyph at page 3); using raw text.", md)
+
+
 class TestMethodLabels(unittest.TestCase):
     """The badge showed the raw identifier title-cased — "Llm Single Groq" —
     which names an internal code path. The method string carries a provider
